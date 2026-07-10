@@ -11,8 +11,12 @@ import subprocess
 import datetime
 import atexit
 import httpx
+import base64
+from io import BytesIO
+import pypdfium2 as pdfium
 import gradio as gr
 from pypdf import PdfReader
+
 
 # Constants
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
@@ -186,6 +190,133 @@ def cleanup_active_runs():
 
 atexit.register(cleanup_docker)
 atexit.register(cleanup_active_runs)
+
+
+def get_dir_size(start_path):
+    total_size = 0
+    if not os.path.exists(start_path):
+        return 0
+    if os.path.isfile(start_path):
+        return os.path.getsize(start_path)
+    for dirpath, dirnames, filenames in os.walk(start_path):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            if not os.path.islink(fp):
+                try:
+                    total_size += os.path.getsize(fp)
+                except OSError:
+                    pass
+    return total_size
+
+
+def format_size(size_bytes):
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.2f} KB"
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.2f} MB"
+    else:
+        return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
+
+
+def perform_reset_cleanup(clean_runs, clean_gradio, clean_pycache, clean_hf):
+    freed_space = 0
+    deleted_items = []
+    errors = []
+
+    # 1. Clean obsolete runs
+    if clean_runs:
+        if os.path.exists(WORKSPACE_DIR):
+            for name in os.listdir(WORKSPACE_DIR):
+                dir_path = os.path.join(WORKSPACE_DIR, name)
+                if os.path.isdir(dir_path) and name.startswith("run_"):
+                    # Check if active
+                    is_active = False
+                    with active_runs_lock:
+                        for run_id, run_info in active_runs.items():
+                            proc = run_info.get("proc")
+                            if run_info.get("run_dir") == dir_path:
+                                if proc and proc.poll() is None:
+                                    is_active = True
+                                    break
+                                if not run_info.get("completed", False):
+                                    is_active = True
+                                    break
+                    if not is_active:
+                        size = get_dir_size(dir_path)
+                        try:
+                            shutil.rmtree(dir_path)
+                            freed_space += size
+                            deleted_items.append(f"Obsolete run directory: `{name}` ({format_size(size)})")
+                        except Exception as e:
+                            errors.append(f"Failed to delete run directory `{name}`: {e}")
+
+    # 2. Clean gradio temp
+    if clean_gradio:
+        gradio_temp_dir = "/tmp/gradio"
+        if os.path.exists(gradio_temp_dir):
+            size = get_dir_size(gradio_temp_dir)
+            try:
+                for name in os.listdir(gradio_temp_dir):
+                    item_path = os.path.join(gradio_temp_dir, name)
+                    if os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                    else:
+                        os.remove(item_path)
+                freed_space += size
+                deleted_items.append(f"Gradio upload temp files ({format_size(size)})")
+            except Exception as e:
+                errors.append(f"Failed to clean Gradio temp files: {e}")
+
+    # 3. Clean python bytecode cache
+    if clean_pycache:
+        repo_dir = os.path.dirname(os.path.abspath(__file__))
+        for root, dirs, files in list(os.walk(repo_dir)):
+            for d in list(dirs):
+                if d == "__pycache__":
+                    pycache_path = os.path.join(root, d)
+                    size = get_dir_size(pycache_path)
+                    try:
+                        shutil.rmtree(pycache_path)
+                        dirs.remove(d)  # Don't recurse into deleted dir
+                        freed_space += size
+                        deleted_items.append(f"Bytecode cache: `{os.path.relpath(pycache_path, repo_dir)}` ({format_size(size)})")
+                    except Exception as e:
+                        errors.append(f"Failed to delete `{pycache_path}`: {e}")
+
+    # 4. Clean hugging face cache
+    if clean_hf:
+        hf_cache_dir = os.path.expanduser("~/.cache/huggingface")
+        if os.path.exists(hf_cache_dir):
+            size = get_dir_size(hf_cache_dir)
+            try:
+                for name in os.listdir(hf_cache_dir):
+                    item_path = os.path.join(hf_cache_dir, name)
+                    if os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                    else:
+                        os.remove(item_path)
+                freed_space += size
+                deleted_items.append(f"Hugging Face cache ({format_size(size)})")
+            except Exception as e:
+                errors.append(f"Failed to clean Hugging Face cache: {e}")
+
+    # Prepare markdown summary
+    if not deleted_items and not errors:
+        return "### No files selected or found to clean up."
+
+    summary = f"### 🧹 Cleanup Summary\n\n**Total space freed:** `{format_size(freed_space)}`\n\n"
+    if deleted_items:
+        summary += "**Successfully cleaned:**\n"
+        for item in deleted_items:
+            summary += f"- {item}\n"
+    if errors:
+        summary += "\n**Warnings / Errors:**\n"
+        for err in errors:
+            summary += f"- <span style='color: #fca5a5;'>{err}</span>\n"
+
+    return summary
 
 
 # ─── Helper: Build progress bar HTML ────────────────────────────────
@@ -473,6 +604,7 @@ table td, table th {
 
 input, textarea, select, .wrap input {
     color: #e2e8f0 !important;
+    background-color: #1e293b !important;
 }
 
 .code-wrap, .cm-editor, .cm-content {
@@ -488,10 +620,99 @@ input, textarea, select, .wrap input {
     background: rgba(15, 23, 42, 0.5) !important;
 }
 
+/* Ensure all file upload/download containers are dark with high contrast text */
+.gradio-file,
+.upload-container,
+[data-testid="file-upload"],
+.file-preview,
+.compact-download,
+.compact-download .file-preview,
+.compact-download .upload-button,
+.compact-download .wrap {
+    background-color: #1e293b !important;
+    background: #1e293b !important;
+    color: #e2e8f0 !important;
+    border: 1px solid rgba(255, 255, 255, 0.1) !important;
+}
+
+.gradio-file *,
+.upload-container *,
+.file-preview *,
+.compact-download * {
+    color: #e2e8f0 !important;
+}
+
 /* File status table scrollable container */
 .file-status-wrap {
     max-height: 200px;
     overflow-y: auto;
+}
+
+/* 3-Window Dashboard Style */
+#pdf-scroll-container,
+#raw-scroll-container,
+#preview-scroll-container {
+    height: 70vh !important;
+    max-height: 70vh !important;
+    overflow-y: auto !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border-radius: 12px !important;
+    background-color: #020617 !important;
+}
+
+#pdf-scroll-container {
+    background-color: #000000 !important;
+}
+
+#raw-scroll-container {
+    font-family: 'JetBrains Mono', monospace !important;
+    color: #38bdf8 !important;
+    padding: 15px !important;
+    white-space: pre-wrap !important;
+    font-size: 0.85rem !important;
+    line-height: 1.5 !important;
+}
+
+#preview-scroll-container {
+    background: rgba(15, 23, 42, 0.3) !important;
+    padding: 20px !important;
+}
+
+/* Styled scrollbars for premium look and WCAG 1.4.11 compliance */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.03);
+}
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.25);
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(129, 140, 248, 0.6);
+}
+
+/* Visible Focus Indicator (WCAG 2.2 SC 2.4.7) */
+*:focus-visible {
+    outline: 2px solid #818cf8 !important;
+    outline-offset: 2px !important;
+    box-shadow: 0 0 0 4px rgba(129, 140, 248, 0.4) !important;
+}
+button:focus-visible, 
+input:focus-visible, 
+textarea:focus-visible, 
+select:focus-visible,
+[role="button"]:focus-visible,
+[role="combobox"]:focus-visible,
+[contenteditable="true"]:focus-visible,
+.label-wrap:focus-visible,
+.accordion:focus-visible,
+.tab-nav button:focus-visible {
+    outline: 2px solid #818cf8 !important;
+    outline-offset: 2px !important;
+    box-shadow: 0 0 0 4px rgba(129, 140, 248, 0.4) !important;
 }
 """
 
@@ -1000,7 +1221,189 @@ def load_markdown_content(selected_file, run_id_state):
             return f"Error reading file: {e}", f"Error reading file: {e}", None
     return "File not found.", "File not found.", None
 
+def pil_to_base64(img):
+    if img is None:
+        return ""
+    buffered = BytesIO()
+    img.save(buffered, format="PNG")
+    img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+    return f"data:image/png;base64,{img_str}"
+
+def render_pdf_page(pdf_path, page_num):
+    # page_num is 1-based
+    if not pdf_path or not os.path.exists(pdf_path):
+        return None
+    try:
+        doc = pdfium.PdfDocument(pdf_path)
+        if page_num < 1 or page_num > len(doc):
+            return None
+        page = doc[page_num - 1]
+        bitmap = page.render(scale=2)
+        return bitmap.to_pil()
+    except Exception as e:
+        print(f"Error rendering PDF page: {e}")
+        return None
+
+def get_page_mapping_and_pdf_path(selected_file, run_id_state):
+    # selected_file is like '0_souki_enclosures.md'
+    # returns: (pdf_path, total_pages, page_ranges)
+    # where page_ranges is a list of lists: [start_idx, end_idx, page_num]
+    if not selected_file or not run_id_state:
+        return None, 0, []
+
+    with active_runs_lock:
+        run_info = active_runs.get(run_id_state)
+        if not run_info:
+            return None, 0, []
+        run_dir = run_info["run_dir"]
+
+    # The PDF filename corresponding to the selected markdown file
+    pdf_filename = selected_file.rsplit(".", 1)[0] + ".pdf"
+    pdf_path = os.path.join(run_dir, "inputs", pdf_filename)
+    if not os.path.exists(pdf_path):
+        return None, 0, []
+
+    # Get total pages of PDF
+    try:
+        reader = PdfReader(pdf_path)
+        total_pages = len(reader.pages)
+    except Exception as e:
+        print(f"Error reading PDF page count: {e}")
+        total_pages = 0
+
+    # Look for page ranges in the results jsonl
+    page_ranges = []
+    results_dir = os.path.join(run_dir, "results")
+    if os.path.exists(results_dir):
+        for f in os.listdir(results_dir):
+            if f.endswith(".jsonl"):
+                jsonl_path = os.path.join(results_dir, f)
+                try:
+                    with open(jsonl_path, "r", encoding="utf-8") as file:
+                        for line in file:
+                            if not line.strip():
+                                continue
+                            data = json.loads(line)
+                            # Match the source file
+                            source_file = data.get("metadata", {}).get("Source-File", "")
+                            expected_source = f"inputs/{pdf_filename}"
+                            if source_file == expected_source or os.path.basename(source_file) == pdf_filename:
+                                attributes = data.get("attributes", {})
+                                pdf_page_numbers = attributes.get("pdf_page_numbers", [])
+                                page_ranges = pdf_page_numbers
+                                break
+                except Exception as e:
+                    print(f"Error reading jsonl {jsonl_path}: {e}")
+                if page_ranges:
+                    break
+
+    return pdf_path, total_pages, page_ranges
+
+def get_markdown_for_page(full_markdown, page_ranges, page_num):
+    # page_num is 1-based
+    if not full_markdown:
+        return ""
+    if not page_ranges:
+        return full_markdown  # Fallback to full markdown if no page mapping
+
+    for range_info in page_ranges:
+        if len(range_info) >= 3:
+            start_idx, end_idx, p_num = range_info[0], range_info[1], range_info[2]
+            if p_num == page_num:
+                return full_markdown[start_idx:end_idx]
+
+    return ""
+
+def on_file_selected(selected_file, run_id_state):
+    if not selected_file or not run_id_state:
+        return "", 0, [], "", gr.update(maximum=1, value=1), None
+
+    # Load pdf path, page ranges, total pages
+    pdf_path, total_pages, page_ranges = get_page_mapping_and_pdf_path(selected_file, run_id_state)
+    
+    # Load full markdown content
+    full_markdown = ""
+    with active_runs_lock:
+        run_info = active_runs.get(run_id_state)
+        if run_info:
+            run_dir = run_info["run_dir"]
+            file_path = os.path.join(run_dir, "markdown", "inputs", selected_file)
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        full_markdown = f.read()
+                except Exception as e:
+                    print(f"Error reading file: {e}")
+                    full_markdown = f"Error reading file: {e}"
+
+    return (
+        pdf_path or "",
+        total_pages or 0,
+        page_ranges or [],
+        full_markdown,
+        gr.update(maximum=max(2, total_pages), value=1, interactive=(total_pages > 1)),
+        pdf_path # Individual download btn filepath
+    )
+
+def update_view(selected_file, view_mode, page_num, pdf_path, total_pages, page_ranges, full_markdown):
+    if not selected_file:
+        return (
+            "<div id='pdf-scroll-container' class='sync-scroll-target' style='height: 70vh; display: flex; justify-content: center; align-items: center; background: #0f172a; color: #94a3b8; border-radius: 8px;'>Select a processed document to view.</div>",
+            "<div id='raw-scroll-container' class='sync-scroll-target' style='height: 70vh; display: flex; justify-content: center; align-items: center; background: #020617; color: #94a3b8; border-radius: 8px;'>Select a processed document to view.</div>",
+            "Select a processed document to preview."
+        )
+
+    # 1. Prepare PDF window HTML
+    pdf_html = ""
+    if view_mode == "Full Document":
+        # Render PDF in iframe
+        if pdf_path and os.path.exists(pdf_path):
+            pdf_url = f"/file={pdf_path}"
+            pdf_html = f"""<div id="pdf-scroll-container" class="sync-scroll-target" style="height: 70vh; overflow: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px;">
+                <iframe src="{pdf_url}" style="width: 100%; height: 100%; border: none;"></iframe>
+            </div>"""
+        else:
+            pdf_html = f"""<div id="pdf-scroll-container" class="sync-scroll-target" style="height: 70vh; display: flex; justify-content: center; align-items: center; background: #1e293b; color: #94a3b8; border-radius: 8px;">
+                <span>Original PDF file not found.</span>
+            </div>"""
+    else:
+        # Page-by-Page mode: render the selected page as an image
+        if pdf_path and os.path.exists(pdf_path):
+            pil_img = render_pdf_page(pdf_path, page_num)
+            if pil_img:
+                img_b64 = pil_to_base64(pil_img)
+                pdf_html = f"""<div id="pdf-scroll-container" class="sync-scroll-target" style="height: 70vh; overflow-y: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; background: #000; display: flex; justify-content: center; align-items: flex-start;">
+                    <img src="{img_b64}" style="width: 100%; height: auto; display: block;">
+                </div>"""
+            else:
+                pdf_html = f"""<div id="pdf-scroll-container" class="sync-scroll-target" style="height: 70vh; display: flex; justify-content: center; align-items: center; background: #1e293b; color: #94a3b8; border-radius: 8px;">
+                    <span>Failed to render page {page_num}</span>
+                </div>"""
+        else:
+            pdf_html = f"""<div id="pdf-scroll-container" class="sync-scroll-target" style="height: 70vh; display: flex; justify-content: center; align-items: center; background: #1e293b; color: #94a3b8; border-radius: 8px;">
+                <span>Original PDF file not found.</span>
+            </div>"""
+
+    # 2. Extract page markdown
+    raw_md_text = ""
+    if view_mode == "Full Document":
+        raw_md_text = full_markdown
+    else:
+        raw_md_text = get_markdown_for_page(full_markdown, page_ranges, page_num)
+
+    # 3. Prepare Raw Markdown window HTML
+    escaped_raw = (
+        raw_md_text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+    raw_md_html = f"""<div id="raw-scroll-container" class="sync-scroll-target" style="height: 70vh; overflow-y: auto; font-family: 'JetBrains Mono', monospace; white-space: pre-wrap; background: #020617; color: #38bdf8; padding: 15px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); font-size: 0.85rem; line-height: 1.5;">{escaped_raw}</div>"""
+
+    return pdf_html, raw_md_html, raw_md_text
+
 # GUI layout construction
+
 settings = load_settings()
 
 dark_theme = gr.themes.Base(
@@ -1043,6 +1446,10 @@ dark_theme = gr.themes.Base(
 with gr.Blocks(title="OLMOCR PDF Suite") as demo:
     # State tracking
     active_run_id = gr.State("")
+    current_pdf_path = gr.State("")
+    current_total_pages = gr.State(0)
+    current_page_ranges = gr.State([])
+    current_full_markdown = gr.State("")
 
     # ── Header ──────────────────────────────────────────────────────
     with gr.Row():
@@ -1052,7 +1459,7 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                 "<p style='color:#9ca3af; margin:4px 0 0 0; font-size:1rem;'>High-performance layout-aware PDF OCR pipeline using vision-language models</p>"
             )
         with gr.Column(scale=1, elem_classes=["glass-panel", "status-container"]):
-            gr.HTML("<h3 style='margin:0 0 8px 0; color:#e2e8f0; font-size:1rem; font-weight:600; text-align:center;'>🐳 Inference Status</h3>")
+            gr.HTML("<h2 style='margin:0 0 8px 0; color:#e2e8f0; font-size:1rem; font-weight:600; text-align:center;'>🐳 Inference Status</h2>")
             backend_status_badge = gr.HTML("<span class='badge-idle'>Checking Backend...</span>")
             with gr.Row():
                 header_docker_start_btn = gr.Button("▶️ Start", variant="secondary", size="sm")
@@ -1134,12 +1541,23 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                 docker_recreate_btn = gr.Button("🔄 Recreate & Run", variant="primary")
                 docker_action_status = gr.Markdown()
 
+            with gr.Accordion("🧹 Reset & Cleanup", open=False, elem_classes=["glass-panel"]):
+                gr.Markdown("Select components to clean up and reclaim disk space:")
+                clean_runs_chk = gr.Checkbox(label="Obsolete run directories (workspace/run_*)", value=True)
+                clean_gradio_chk = gr.Checkbox(label="Gradio upload temp files (/tmp/gradio)", value=True)
+                clean_pycache_chk = gr.Checkbox(label="Python bytecode cache (__pycache__)", value=True)
+                clean_hf_chk = gr.Checkbox(label="Hugging Face model cache (~/.cache/huggingface)", value=False)
+                gr.HTML("<span style='color: #f87171; font-size: 0.85rem; display: block; margin-top: -8px; margin-bottom: 8px;'>⚠️ WARNING: Hugging Face deletion will require re-downloading model weights (approx 10-30GB).</span>")
+                
+                reset_cleanup_btn = gr.Button("🧹 Clean & Reset", variant="stop")
+                reset_cleanup_status = gr.Markdown()
+
         # Center — Upload, Processing Controls, Monitoring, Log
         with gr.Column(scale=4):
             with gr.Row():
                 # Upload area
                 with gr.Column(scale=2, elem_classes=["glass-panel"]):
-                    gr.Markdown("### 📥 Source Documents")
+                    gr.Markdown("## 📥 Source Documents")
                     pdf_uploader = gr.File(
                         label="Upload / Drag-and-drop PDFs", 
                         file_count="multiple", 
@@ -1151,7 +1569,7 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
 
                 # Monitoring cards
                 with gr.Column(scale=1, elem_classes=["glass-panel"]):
-                    gr.Markdown("### 📊 Monitoring")
+                    gr.Markdown("## 📊 Monitoring")
                     status_badge = gr.HTML("<span class='badge-idle'>Idle</span>", label="Status")
                     progress_bar = gr.HTML(
                         make_progress_bar_html(0, 0),
@@ -1170,16 +1588,16 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
             # Upload manifest + File status (side by side)
             with gr.Row():
                 with gr.Column(scale=1, elem_classes=["glass-panel"]):
-                    gr.Markdown("### 📋 Upload Manifest")
+                    gr.Markdown("## 📋 Upload Manifest")
                     upload_manifest_display = gr.HTML("", elem_classes=["file-status-wrap"])
                 with gr.Column(scale=1, elem_classes=["glass-panel"]):
-                    gr.Markdown("### 📁 Per-File Status")
+                    gr.Markdown("## 📁 Per-File Status")
                     file_status_table = gr.HTML("", elem_classes=["file-status-wrap"])
 
             # Log viewer — full width under the upload + monitoring row
             with gr.Row(elem_classes=["glass-panel"]):
                 with gr.Column():
-                    gr.Markdown("### 📜 System Output Log")
+                    gr.Markdown("## 📜 System Output Log")
                     log_viewer = gr.Code(
                         label="Logs",
                         language="shell",
@@ -1192,10 +1610,36 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
     # ── Results Section (full-width, below main) ───────────────────
     gr.HTML("<hr class='section-divider'>")
     with gr.Row(elem_classes=["glass-panel"]):
-        with gr.Column(scale=3):
+        with gr.Column(scale=2):
             file_selector = gr.Dropdown(
                 label="📄 Select Processed Document", 
                 choices=[], 
+                interactive=True
+            )
+        with gr.Column(scale=1):
+            view_mode = gr.Radio(
+                choices=["Page-by-Page", "Full Document"],
+                value="Page-by-Page",
+                label="👁️ View Mode",
+                interactive=True
+            )
+        with gr.Column(scale=2):
+            with gr.Row():
+                prev_page_btn = gr.Button("⬅️ Prev Page", variant="secondary", size="sm")
+                page_selector = gr.Slider(
+                    label="Page",
+                    minimum=1,
+                    maximum=100,
+                    step=1,
+                    value=1,
+                    interactive=True
+                )
+                next_page_btn = gr.Button("Next Page ➡️", variant="secondary", size="sm")
+        with gr.Column(scale=1):
+            sync_scroll_check = gr.Checkbox(
+                label="Sync Scroll",
+                value=True,
+                elem_id="sync-scroll-checkbox",
                 interactive=True
             )
         with gr.Column(scale=1):
@@ -1212,28 +1656,35 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
             )
 
     with gr.Row():
+        # Column 1: PDF Viewer
+        with gr.Column(scale=1, elem_classes=["glass-panel"]):
+            gr.Markdown("## 📄 Original PDF")
+            pdf_viewer_panel = gr.HTML(
+                value="<div id='pdf-scroll-container' class='sync-scroll-target' style='height: 70vh; display: flex; justify-content: center; align-items: center; background: #0f172a; color: #94a3b8; border-radius: 8px;'>Select a processed document to view.</div>"
+            )
+            
+        # Column 2: Raw Markdown
         with gr.Column(scale=1, elem_classes=["glass-panel"]):
             with gr.Row():
-                gr.Markdown("### ✍️ Raw Markdown Output")
+                gr.Markdown("## ✍️ Raw Markdown Output")
                 copy_btn = gr.Button("📋 Copy", variant="secondary", size="sm")
-            raw_markdown = gr.Code(
-                label="Raw Text",
-                language="markdown",
-                interactive=False,
-                lines=22,
-                elem_classes=["raw-md-scroll"]
+            raw_markdown_panel = gr.HTML(
+                value="<div id='raw-scroll-container' class='sync-scroll-target' style='height: 70vh; display: flex; justify-content: center; align-items: center; background: #020617; color: #94a3b8; border-radius: 8px;'>Select a processed document to view.</div>"
             )
-        with gr.Column(scale=1, elem_classes=["glass-panel", "preview-container", "preview-scroll"]):
-            gr.Markdown("### 👁️ Rendered Preview")
+            
+        # Column 3: Rendered Preview
+        with gr.Column(scale=1, elem_id="preview-scroll-container", elem_classes=["glass-panel"]):
+            gr.Markdown("## 👁️ Rendered Preview")
             rendered_markdown = gr.Markdown(value="Select a processed document to preview.")
+
+    # Script block moved to demo.load to avoid innerHTML execution restrictions
 
     # ── Event handlers ─────────────────────────────────────────────
 
     # Copy to clipboard via JS
     copy_btn.click(
         None,
-        inputs=[raw_markdown],
-        js="(text) => { navigator.clipboard.writeText(text || ''); }"
+        js="() => { const rawContainer = document.getElementById('raw-scroll-container'); const text = rawContainer ? rawContainer.innerText : ''; navigator.clipboard.writeText(text); }"
     )
 
     def trigger_save_settings(url, model, wrk, concat, dim, retries, guided, d_port, d_gpu, d_maxlen, d_token):
@@ -1300,10 +1751,67 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
         outputs=[stop_btn]
     )
 
+    # Selection and update events
     file_selector.change(
-        load_markdown_content,
+        on_file_selected,
         inputs=[file_selector, active_run_id],
-        outputs=[raw_markdown, rendered_markdown, download_individual_btn]
+        outputs=[
+            current_pdf_path,
+            current_total_pages,
+            current_page_ranges,
+            current_full_markdown,
+            page_selector,
+            download_individual_btn
+        ]
+    ).then(
+        update_view,
+        inputs=[
+            file_selector, view_mode, page_selector,
+            current_pdf_path, current_total_pages, current_page_ranges, current_full_markdown
+        ],
+        outputs=[
+            pdf_viewer_panel, raw_markdown_panel, rendered_markdown
+        ]
+    )
+
+    view_mode.change(
+        update_view,
+        inputs=[
+            file_selector, view_mode, page_selector,
+            current_pdf_path, current_total_pages, current_page_ranges, current_full_markdown
+        ],
+        outputs=[
+            pdf_viewer_panel, raw_markdown_panel, rendered_markdown
+        ]
+    )
+
+    page_selector.change(
+        update_view,
+        inputs=[
+            file_selector, view_mode, page_selector,
+            current_pdf_path, current_total_pages, current_page_ranges, current_full_markdown
+        ],
+        outputs=[
+            pdf_viewer_panel, raw_markdown_panel, rendered_markdown
+        ]
+    )
+
+    def go_prev_page(current_page):
+        return max(1, current_page - 1)
+
+    def go_next_page(current_page, total_pages):
+        return min(total_pages, current_page + 1)
+
+    prev_page_btn.click(
+        go_prev_page,
+        inputs=[page_selector],
+        outputs=[page_selector]
+    )
+
+    next_page_btn.click(
+        go_next_page,
+        inputs=[page_selector, current_total_pages],
+        outputs=[page_selector]
     )
 
     # Docker event handlers
@@ -1356,6 +1864,12 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
         outputs=[docker_action_status, backend_status_badge, server_url_input]
     )
 
+    reset_cleanup_btn.click(
+        perform_reset_cleanup,
+        inputs=[clean_runs_chk, clean_gradio_chk, clean_pycache_chk, clean_hf_chk],
+        outputs=[reset_cleanup_status]
+    )
+
     # Header Docker buttons (same handlers, no status text output)
     def ui_header_start(port):
         start_docker_container()
@@ -1398,6 +1912,142 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
         periodic_status_check,
         inputs=[docker_port_input],
         outputs=[backend_status_badge]
+    )
+
+    demo.load(
+        None,
+        js="""
+        () => {
+            // 1. Declare page language and force dark theme (WCAG 2.2 compliance)
+            document.documentElement.setAttribute('lang', 'en');
+
+            const forceDarkMode = () => {
+                if (!document.documentElement.classList.contains('dark')) {
+                    document.documentElement.classList.add('dark');
+                    document.documentElement.style.colorScheme = 'dark';
+                }
+            };
+            forceDarkMode();
+
+            const darkThemeObserver = new MutationObserver(forceDarkMode);
+            darkThemeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+
+            // 2. Accessibility enhancer for interactive and non-text elements
+            function addAriaLabels() {
+                // Emojis and action button labels
+                const buttons = document.querySelectorAll('button');
+                buttons.forEach(btn => {
+                    const text = btn.innerText || '';
+                    if (text.includes('▶️ Start')) {
+                        btn.setAttribute('aria-label', 'Start Docker inference server');
+                    } else if (text.includes('⏹️ Stop')) {
+                        btn.setAttribute('aria-label', 'Stop Docker inference server');
+                    } else if (text.includes('🔄 Recreate & Run')) {
+                        btn.setAttribute('aria-label', 'Recreate and run Docker inference container');
+                    } else if (text.includes('🚀 Start Batch Processing')) {
+                        btn.setAttribute('aria-label', 'Start batch processing of uploaded PDF files');
+                    } else if (text.includes('🛑 Stop Process')) {
+                        btn.setAttribute('aria-label', 'Stop current batch processing pipeline');
+                    } else if (text.includes('⬅️ Prev Page')) {
+                        btn.setAttribute('aria-label', 'Go to previous page');
+                    } else if (text.includes('Next Page ➡️')) {
+                        btn.setAttribute('aria-label', 'Go to next page');
+                    } else if (text.includes('📋 Copy')) {
+                        btn.setAttribute('aria-label', 'Copy raw markdown text to clipboard');
+                    } else if (text.includes('💾 Save Configuration')) {
+                        btn.setAttribute('aria-label', 'Save pipeline configuration settings');
+                    } else if (text.includes('🧹 Clean & Reset')) {
+                        btn.setAttribute('aria-label', 'Perform cache and workspace cleanup');
+                    }
+                });
+
+                // Gradio settings button at the bottom of the page
+                const settingsBtn = document.querySelector('button.settings');
+                if (settingsBtn) {
+                    settingsBtn.setAttribute('aria-label', 'Settings drawer toggle');
+                    const settingsImg = settingsBtn.querySelector('img');
+                    if (settingsImg && !settingsImg.getAttribute('alt')) {
+                        settingsImg.setAttribute('alt', 'Settings icon');
+                    }
+                }
+
+                // Hide decorative SVGs inside file upload boxes and other zones from screen readers
+                const svgs = document.querySelectorAll('svg');
+                svgs.forEach(svg => {
+                    if (!svg.getAttribute('aria-hidden') && !svg.querySelector('title')) {
+                        svg.setAttribute('aria-hidden', 'true');
+                    }
+                });
+            }
+
+            // Run initial enhancement
+            addAriaLabels();
+
+            // Observe dynamic rendering changes to keep dynamic buttons/components compliant
+            const accessibilityObserver = new MutationObserver(addAriaLabels);
+            accessibilityObserver.observe(document.body, { childList: true, subtree: true });
+
+            // 3. Original scroll-sync logic
+            let activeScrollSource = null;
+            let scrollTimeout = null;
+
+            function findScrollableElement(el) {
+                if (!el) return null;
+                if (el.scrollHeight > el.clientHeight && (window.getComputedStyle(el).overflowY === 'auto' || window.getComputedStyle(el).overflowY === 'scroll')) {
+                    return el;
+                }
+                for (let i = 0; i < el.children.length; i++) {
+                    const found = findScrollableElement(el.children[i]);
+                    if (found) return found;
+                }
+                return null;
+            }
+
+            window.addEventListener('scroll', function(event) {
+                const syncCheckboxContainer = document.getElementById('sync-scroll-checkbox');
+                const syncCheckbox = syncCheckboxContainer ? syncCheckboxContainer.querySelector('input[type="checkbox"]') : null;
+                if (!syncCheckbox || !syncCheckbox.checked) return;
+
+                const source = event.target;
+                if (!source) return;
+
+                const pdf = document.getElementById('pdf-scroll-container');
+                const raw = document.getElementById('raw-scroll-container');
+                const previewContainer = document.getElementById('preview-scroll-container');
+                const preview = findScrollableElement(previewContainer) || previewContainer;
+
+                let sourceWindow = null;
+                if (pdf && (pdf === source || pdf.contains(source))) {
+                    sourceWindow = pdf;
+                } else if (raw && (raw === source || raw.contains(source))) {
+                    sourceWindow = raw;
+                } else if (preview && (preview === source || preview.contains(source))) {
+                    sourceWindow = preview;
+                }
+
+                if (!sourceWindow) return;
+
+                if (activeScrollSource && activeScrollSource !== sourceWindow) return;
+                activeScrollSource = sourceWindow;
+
+                const maxSourceScroll = sourceWindow.scrollHeight - sourceWindow.clientHeight;
+                if (maxSourceScroll <= 0) return;
+                const percentage = sourceWindow.scrollTop / maxSourceScroll;
+
+                const targets = [pdf, raw, preview].filter(el => el && el !== sourceWindow);
+
+                targets.forEach(target => {
+                    const maxTargetScroll = target.scrollHeight - target.clientHeight;
+                    target.scrollTop = percentage * maxTargetScroll;
+                });
+
+                clearTimeout(scrollTimeout);
+                scrollTimeout = setTimeout(() => {
+                    activeScrollSource = null;
+                }, 100);
+            }, true);
+        }
+        """
     )
 
 if __name__ == "__main__":

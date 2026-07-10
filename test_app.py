@@ -335,5 +335,112 @@ class TestOLMOCRApp(unittest.TestCase):
         self.assertTrue("Failed Pages" in final_yield[4]["value"])
         self.assertTrue("3" in final_yield[4]["value"])
 
+    def test_get_dir_size_and_format_size(self):
+        self.assertEqual(app.format_size(100), "100 B")
+        self.assertEqual(app.format_size(1500), "1.46 KB")
+        self.assertEqual(app.format_size(1500000), "1.43 MB")
+        self.assertEqual(app.format_size(1500000000), "1.40 GB")
+
+        # Create a temp dir with some files
+        temp_dir = tempfile.mkdtemp()
+        try:
+            f1 = os.path.join(temp_dir, "file1.txt")
+            with open(f1, "w") as f:
+                f.write("a" * 100) # 100 bytes
+            
+            sub_dir = os.path.join(temp_dir, "subdir")
+            os.makedirs(sub_dir)
+            f2 = os.path.join(sub_dir, "file2.txt")
+            with open(f2, "w") as f:
+                f.write("b" * 200) # 200 bytes
+
+            total_size = app.get_dir_size(temp_dir)
+            self.assertEqual(total_size, 300)
+        finally:
+            shutil.rmtree(temp_dir)
+
+    @patch("os.path.expanduser")
+    @patch("os.path.exists")
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    @patch("shutil.rmtree")
+    @patch("os.remove")
+    @patch("os.walk")
+    def test_perform_reset_cleanup(self, mock_walk, mock_remove, mock_rmtree, mock_listdir, mock_isdir, mock_exists, mock_expanduser):
+        # Save original workspace dir and assign mock path
+        orig_workspace = app.WORKSPACE_DIR
+        app.WORKSPACE_DIR = "/mock/workspace"
+
+        # Mock paths
+        mock_expanduser.return_value = "/mock/huggingface"
+        
+        # Configure os.path.exists behavior
+        repo_dir = os.path.dirname(os.path.abspath(app.__file__))
+        real_exists = os.path.exists
+        def exists_side_effect(path):
+            if path in ["/mock/workspace", "/tmp/gradio", "/mock/huggingface", "/mock/workspace/run_1", "/mock/workspace/run_2"]:
+                return True
+            if path == os.path.join(repo_dir, "__pycache__"):
+                return True
+            return real_exists(path)
+        mock_exists.side_effect = exists_side_effect
+
+        # Configure os.path.isdir behavior
+        def isdir_side_effect(path):
+            if path in ["/mock/workspace", "/mock/workspace/run_1", "/mock/workspace/run_2", "/tmp/gradio", "/tmp/gradio/gradio_upload_1", "/mock/huggingface", "/mock/huggingface/hub"]:
+                return True
+            return False
+        mock_isdir.side_effect = isdir_side_effect
+
+        # Mock listing directories
+        def listdir_side_effect(path):
+            if path == "/mock/workspace":
+                return ["run_1", "run_2", "other_file"]
+            elif path == "/tmp/gradio":
+                return ["gradio_upload_1", "gradio_upload_2"]
+            elif path == "/mock/huggingface":
+                return ["hub", "misc"]
+            return []
+        mock_listdir.side_effect = listdir_side_effect
+
+        # Mock active_runs
+        with app.active_runs_lock:
+            app.active_runs.clear()
+            app.active_runs["active_id"] = {
+                "proc": MagicMock(),
+                "completed": False,
+                "run_dir": "/mock/workspace/run_1"
+            }
+            app.active_runs["active_id"]["proc"].poll.return_value = None
+
+        # Mock os.walk for bytecode cache test
+        mock_walk.return_value = [
+            (repo_dir, ["__pycache__", "other"], ["app.py"]),
+            (os.path.join(repo_dir, "__pycache__"), [], ["app.pyc"])
+        ]
+
+        try:
+            # Call perform_reset_cleanup with all true
+            res = app.perform_reset_cleanup(clean_runs=True, clean_gradio=True, clean_pycache=True, clean_hf=True)
+        finally:
+            # Restore original workspace dir
+            app.WORKSPACE_DIR = orig_workspace
+
+        # Let's verify the calls
+        deleted_paths = [args[0] for args, kwargs in mock_rmtree.call_args_list] + [args[0] for args, kwargs in mock_remove.call_args_list]
+        self.assertIn("/mock/workspace/run_2", deleted_paths)
+        self.assertNotIn("/mock/workspace/run_1", deleted_paths)
+
+        self.assertIn("/tmp/gradio/gradio_upload_1", deleted_paths)
+        self.assertIn("/tmp/gradio/gradio_upload_2", deleted_paths)
+
+        self.assertIn(os.path.join(repo_dir, "__pycache__"), deleted_paths)
+
+        self.assertIn("/mock/huggingface/hub", deleted_paths)
+        self.assertIn("/mock/huggingface/misc", deleted_paths)
+
+        self.assertTrue("Cleanup Summary" in res)
+        self.assertTrue("Successfully cleaned" in res)
+
 if __name__ == "__main__":
     unittest.main()
