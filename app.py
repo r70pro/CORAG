@@ -161,6 +161,8 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len):
         return False, f"Failed to create container: {e.stderr.strip()}"
 
 def cleanup_docker():
+    if os.environ.get("TESTING") == "true":
+        return
     print("Application shutting down. Stopping local OLMOCR Docker container to release VRAM...")
     try:
         subprocess.run(["docker", "stop", "olmocr"], capture_output=True)
@@ -168,7 +170,22 @@ def cleanup_docker():
     except Exception as e:
         print(f"Error stopping container on shutdown: {e}")
 
+def cleanup_active_runs():
+    if os.environ.get("TESTING") == "true":
+        return
+    with active_runs_lock:
+        for run_id, run_info in active_runs.items():
+            proc = run_info.get("proc")
+            if proc and proc.poll() is None:
+                print(f"Terminating running pipeline process for run {run_id[:8]}...")
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=2)
+                except Exception:
+                    pass
+
 atexit.register(cleanup_docker)
+atexit.register(cleanup_active_runs)
 
 
 # ─── Helper: Build progress bar HTML ────────────────────────────────
@@ -293,9 +310,21 @@ body {
 
 .gradio-container {
     background-color: #090d16 !important;
-    max-width: 1800px !important;
+    max-width: 96% !important;
+    width: 96% !important;
     margin: 0 auto !important;
     padding: 0 24px !important;
+}
+
+.sidebar-panel {
+    max-width: 320px !important;
+    min-width: 280px !important;
+}
+
+/* Prevent table text/filenames from overflowing and causing horizontal scroll */
+table td, table th {
+    word-break: break-all !important;
+    white-space: normal !important;
 }
 
 .glass-panel {
@@ -663,6 +692,9 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
     completed_file_indices = set()
     failed_file_indices = set()
     start_time = time.monotonic()
+    
+    current_headers = None
+    worker_states = {}
 
     # Regex patterns
     pattern_completed = re.compile(r"completed_pages\s+([\d.]+)")
@@ -691,7 +723,8 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
 
     # Track incremental choices
     streaming_choices = []
-    streaming_dropdown_value = None
+    dropdown_value_set = False
+    last_yield_time = time.monotonic()
 
     try:
         while t.is_alive() or not q.empty():
@@ -704,13 +737,18 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
                     except subprocess.TimeoutExpired:
                         proc.kill()
                     elapsed = time.monotonic() - start_time
+                    if not dropdown_value_set and streaming_choices:
+                        dropdown_val_update = gr.update(choices=streaming_choices, value=streaming_choices[0][1])
+                        dropdown_value_set = True
+                    else:
+                        dropdown_val_update = gr.update(choices=streaming_choices)
                     yield (
                         accumulated_logs + "\n\n[PROCESS TERMINATED BY USER]\n",
                         gr.update(value="<span class='badge-stopped'>Stopped</span>"),
                         make_progress_bar_html(completed_pages, total_pages, elapsed),
                         gr.update(value=f"<div class='stat-card'><div class='stat-value'>{completed_pages}</div><div class='stat-label'>Completed Pages</div></div>"),
                         gr.update(value=f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"),
-                        gr.update(choices=streaming_choices, value=streaming_dropdown_value),
+                        dropdown_val_update,
                         None,
                         None,
                         gr.update(interactive=True),
@@ -737,6 +775,52 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
                         failed_pages = max(failed_pages, int(float(match_f.group(1))))
                     except (ValueError, TypeError):
                         pass
+
+            # Parse worker status table and log summaries
+            parts = [p.strip() for p in line.split("|")]
+            if "Worker ID" in line:
+                current_headers = [h.strip() for h in line.split("|")]
+            elif len(parts) >= 2 and all(p.isdigit() for p in parts):
+                if not current_headers or len(parts) != len(current_headers):
+                    if len(parts) == 3:
+                        current_headers = ["Worker ID", "finished", "started"]
+                    elif len(parts) == 4:
+                        current_headers = ["Worker ID", "errored", "finished", "started"]
+                
+                worker_id = int(parts[0])
+                if worker_id not in worker_states:
+                    worker_states[worker_id] = {}
+                for i in range(1, len(parts)):
+                    if i < len(current_headers):
+                        state = current_headers[i]
+                        try:
+                            val = int(parts[i])
+                            worker_states[worker_id][state] = val
+                        except (ValueError, TypeError):
+                            pass
+                
+                total_completed = sum(states.get("finished", 0) for states in worker_states.values())
+                total_failed = sum(states.get("errored", 0) for states in worker_states.values())
+                completed_pages = max(completed_pages, total_completed)
+                failed_pages = max(failed_pages, total_failed)
+
+            if "Completed pages:" in line:
+                match_c = re.search(r"Completed pages:\s*([\d,]+)", line)
+                if match_c:
+                    try:
+                        val = int(match_c.group(1).replace(",", ""))
+                        completed_pages = max(completed_pages, val)
+                    except (ValueError, TypeError):
+                        pass
+
+            if "Failed pages:" in line:
+                match_f = re.search(r"Failed pages:\s*([\d,]+)", line)
+                if match_f:
+                    try:
+                        val = int(match_f.group(1).replace(",", ""))
+                        failed_pages = max(failed_pages, val)
+                    except (ValueError, TypeError):
+                        pass
             
             # Scan markdown output directory for completed files
             md_inputs_dir = os.path.join(run_dir, "markdown", "inputs")
@@ -749,16 +833,12 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
                         file_idx = int(match.group(1))
                         if file_idx not in completed_file_indices:
                             completed_file_indices.add(file_idx)
-                            temp_completed_pages += file_page_counts.get(file_idx, 1)
                             # Add to incremental dropdown
                             orig_name = file_mapping.get(file_idx, md_file)
                             choice_tuple = (orig_name, md_file)
                             if choice_tuple not in streaming_choices:
                                 streaming_choices.append(choice_tuple)
-                                if streaming_dropdown_value is None:
-                                    streaming_dropdown_value = md_file
-                        else:
-                            temp_completed_pages += file_page_counts.get(file_idx, 1)
+                        temp_completed_pages += file_page_counts.get(file_idx, 1)
                 completed_pages = max(completed_pages, temp_completed_pages)
 
             # Check vLLM queue logs
@@ -772,26 +852,35 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
                     vllm_running = int(vllm_match_standalone.group(1))
                     vllm_queued = int(vllm_match_standalone.group(2))
 
-            elapsed = time.monotonic() - start_time
-            
-            status_html = f"<div class='stat-card'><div class='stat-value'>{completed_pages}</div><div class='stat-label'>Completed Pages</div></div>"
-            failed_html = f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"
-            file_status_html = make_file_status_html(file_mapping, file_page_counts, completed_file_indices, failed_file_indices)
-            
-            yield (
-                accumulated_logs,
-                gr.update(value="<span class='badge-running'>Running</span>"),
-                make_progress_bar_html(completed_pages, total_pages, elapsed),
-                gr.update(value=status_html),
-                gr.update(value=failed_html),
-                gr.update(choices=streaming_choices, value=streaming_dropdown_value),
-                None,
-                None,
-                gr.update(interactive=False),
-                run_id,
-                file_status_html,
-                manifest_html,
-            )
+            # Throttle yields to at most once every 0.2 seconds
+            now = time.monotonic()
+            if now - last_yield_time >= 0.2:
+                elapsed = now - start_time
+                status_html = f"<div class='stat-card'><div class='stat-value'>{completed_pages}</div><div class='stat-label'>Completed Pages</div></div>"
+                failed_html = f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"
+                file_status_html = make_file_status_html(file_mapping, file_page_counts, completed_file_indices, failed_file_indices)
+                
+                if not dropdown_value_set and streaming_choices:
+                    dropdown_val_update = gr.update(choices=streaming_choices, value=streaming_choices[0][1])
+                    dropdown_value_set = True
+                else:
+                    dropdown_val_update = gr.update(choices=streaming_choices)
+                
+                yield (
+                    accumulated_logs,
+                    gr.update(value="<span class='badge-running'>Running</span>"),
+                    make_progress_bar_html(completed_pages, total_pages, elapsed),
+                    gr.update(value=status_html),
+                    gr.update(value=failed_html),
+                    dropdown_val_update,
+                    None,
+                    None,
+                    gr.update(interactive=False),
+                    run_id,
+                    file_status_html,
+                    manifest_html,
+                )
+                last_yield_time = now
 
         # Process ended
         proc.wait()
@@ -818,7 +907,10 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
                 
             # Create ZIP
             zip_file_path = os.path.join(run_dir, "all_markdown_results.zip")
-            make_zip(md_inputs_dir, zip_file_path)
+            try:
+                make_zip(md_inputs_dir, zip_file_path)
+            except Exception as e:
+                print(f"Error creating ZIP archive: {e}")
 
         # Recount completed pages from final file set
         final_completed = sum(file_page_counts.get(idx, 1) for idx in completed_file_indices)
@@ -833,13 +925,19 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
 
         file_status_html = make_file_status_html(file_mapping, file_page_counts, completed_file_indices, failed_file_indices)
 
+        if not dropdown_value_set and choices:
+            dropdown_val_update = gr.update(choices=choices, value=dropdown_value)
+            dropdown_value_set = True
+        else:
+            dropdown_val_update = gr.update(choices=choices)
+
         yield (
             accumulated_logs + f"\n\n[PROCESS EXITED WITH CODE {exit_code}]\n",
             gr.update(value=status_text),
             make_progress_bar_html(completed_pages, total_pages, elapsed),
             gr.update(value=f"<div class='stat-card'><div class='stat-value'>{completed_pages}</div><div class='stat-label'>Completed Pages</div></div>"),
             gr.update(value=f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"),
-            gr.update(choices=choices, value=dropdown_value),
+            dropdown_val_update,
             zip_file_path,
             None, # Individual file will be set when user selects dropdown
             gr.update(interactive=True),
@@ -963,7 +1061,7 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
     # ── Main Content ────────────────────────────────────────────────
     with gr.Row():
         # Left sidebar — Settings (collapsible)
-        with gr.Column(scale=1):
+        with gr.Column(scale=1, elem_classes=["sidebar-panel"]):
             with gr.Accordion("⚙️ Pipeline Settings", open=False, elem_classes=["glass-panel"]):
                 server_url_input = gr.Textbox(
                     label="vLLM OpenAI Server URL", 
@@ -1037,7 +1135,7 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                 docker_action_status = gr.Markdown()
 
         # Center — Upload, Processing Controls, Monitoring, Log
-        with gr.Column(scale=3):
+        with gr.Column(scale=4):
             with gr.Row():
                 # Upload area
                 with gr.Column(scale=2, elem_classes=["glass-panel"]):
