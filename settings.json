@@ -1,0 +1,8 @@
+{
+  "server_url": "http://localhost:8000/v1",
+  "model_name": "allenai/olmOCR-2-7B-1025-FP8",
+  "workers": 4,
+  "max_concurrent_requests": 20,
+  "target_longest_image_dim": 1288,
+  "max_page_retries": 8
+}
