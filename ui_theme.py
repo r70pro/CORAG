@@ -284,6 +284,36 @@ select:focus-visible,
     outline-offset: 2px !important;
     box-shadow: 0 0 0 4px rgba(129, 140, 248, 0.4) !important;
 }
+
+/* RAG Analysis Section */
+.analysis-chatbot {
+    background: rgba(15, 23, 42, 0.5) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border-radius: 12px !important;
+}
+
+.analysis-chatbot .message {
+    font-size: 0.95rem !important;
+    line-height: 1.6 !important;
+}
+
+.analysis-chatbot .bot {
+    background: rgba(30, 41, 59, 0.7) !important;
+}
+
+.analysis-chatbot .user {
+    background: rgba(99, 102, 241, 0.15) !important;
+}
+
+.mode-hint {
+    font-size: 0.85rem !important;
+    color: #94a3b8 !important;
+}
+
+.mode-hint p {
+    margin: 0 !important;
+    font-style: italic;
+}
 """
 
 dark_theme = gr.themes.Base(

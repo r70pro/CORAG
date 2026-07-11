@@ -1,0 +1,232 @@
+"""
+Comprehensive unit tests for rag/embedding.py targeting 100% statement and branch coverage.
+"""
+
+import os
+import unittest
+from unittest.mock import patch, MagicMock
+
+# Prevent system operations during import
+os.environ["TESTING"] = "true"
+
+import rag.embedding as rag_emb
+
+
+class TestRAGEmbeddingAll(unittest.TestCase):
+
+    def test_get_collection_name_branches(self):
+        # 1. Over 40 characters limit
+        name = rag_emb.get_collection_name("a" * 50)
+        self.assertTrue(len(name) <= 60)
+
+        # 2. None model name with exception
+        with patch("rag.embedding.load_settings", side_effect=Exception("Load failed")):
+            name2 = rag_emb.get_collection_name(None)
+            self.assertTrue("sentence-transformers" in name2 or "minilm" in name2)
+
+    @patch("rag.embedding.QdrantClient")
+    def test_get_qdrant_client(self, mock_qdrant):
+        # 1. Config is None (default lookup)
+        client = rag_emb.get_qdrant_client()
+        self.assertIsNotNone(client)
+        
+        # 2. Config is provided
+        client2 = rag_emb.get_qdrant_client({"host": "custom", "port": 6333})
+        self.assertIsNotNone(client2)
+
+    @patch("rag.embedding.get_qdrant_client")
+    def test_is_healthy_success_and_exception(self, mock_get_client):
+        # 1. Success
+        mock_client = mock_get_client.return_value
+        mock_client.get_collections.return_value = MagicMock()
+        self.assertTrue(rag_emb.is_healthy())
+
+        # 2. Exception
+        mock_client.get_collections.side_effect = Exception("Qdrant down")
+        self.assertFalse(rag_emb.is_healthy())
+
+    @patch("rag.embedding.get_qdrant_client")
+    def test_init_collection_exception(self, mock_get_client):
+        mock_client = mock_get_client.return_value
+        mock_client.get_collections.side_effect = Exception("Qdrant down")
+        
+        # Expect exception to be raised on dim detection or creation fallback
+        with self.assertRaises(Exception):
+            rag_emb.init_collection(model_name="model_name", dimension=384)
+
+    @patch("rag.embedding.get_qdrant_client")
+    @patch("rag.embedding.get_embedding_dimension")
+    def test_init_collection_no_dimension(self, mock_dim, mock_get_client):
+        mock_dim.return_value = 128
+        mock_client = mock_get_client.return_value
+        
+        # Configure collections list mock to not contain model
+        mock_collections_res = MagicMock()
+        mock_collections_res.collections = []
+        mock_client.get_collections.return_value = mock_collections_res
+
+        rag_emb.init_collection(model_name="auto_dim_model")
+        mock_client.create_collection.assert_called_once()
+
+    @patch("rag.embedding.get_qdrant_client")
+    @patch("rag.embedding.get_embedding_dimension")
+    def test_init_collection_with_dimension(self, mock_dim, mock_get_client):
+        mock_client = mock_get_client.return_value
+        mock_collections_res = MagicMock()
+        mock_collections_res.collections = []
+        mock_client.get_collections.return_value = mock_collections_res
+
+        # Call with explicit dimension = 256
+        rag_emb.init_collection(model_name="custom_dim_model", dimension=256)
+        mock_dim.assert_not_called()
+        mock_client.create_collection.assert_called_once()
+
+    @patch("rag.embedding.get_qdrant_client")
+    def test_init_collection_already_exists(self, mock_get_client):
+        mock_client = mock_get_client.return_value
+        mock_col = MagicMock()
+        mock_col.name = "olmocr_documents_sentence-transformers_all-minilm-l6-v2"
+        
+        mock_collections_res = MagicMock()
+        mock_collections_res.collections = [mock_col]
+        mock_client.get_collections.return_value = mock_collections_res
+
+        # Call init_collection -> early returns print message
+        rag_emb.init_collection(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        mock_client.create_collection.assert_not_called()
+
+    @patch("rag.embedding.get_qdrant_client")
+    def test_get_collection_info_success(self, mock_get_client):
+        mock_client = mock_get_client.return_value
+        mock_info = MagicMock()
+        mock_info.points_count = 5
+        mock_info.vectors_count = 5
+        mock_info.indexed_vectors_count = 5
+        mock_info.status.value = "green"
+        mock_client.get_collection.return_value = mock_info
+        
+        info = rag_emb.get_collection_info("model_name")
+        self.assertEqual(info["status"], "green")
+        self.assertEqual(info["points_count"], 5)
+
+    @patch("rag.embedding.get_qdrant_client")
+    def test_get_collection_info_not_found(self, mock_get_client):
+        mock_client = mock_get_client.return_value
+        mock_client.get_collection.side_effect = Exception("Collection not found")
+        
+        info = rag_emb.get_collection_info("model_name")
+        self.assertEqual(info["status"], "not_found")
+        self.assertEqual(info["points_count"], 0)
+
+    @patch("rag.embedding.get_qdrant_client")
+    def test_delete_run_vectors_success_and_exception(self, mock_get_client):
+        # 1. Success
+        rag_emb.delete_run_vectors("run1", "model")
+
+        # 2. Exception
+        mock_client = mock_get_client.return_value
+        mock_client.delete.side_effect = Exception("Qdrant error")
+        rag_emb.delete_run_vectors("run1", "model")
+
+    @patch("rag.embedding.get_qdrant_client")
+    def test_delete_collection_success_and_exception(self, mock_get_client):
+        # 1. Success
+        rag_emb.delete_collection("model")
+
+        # 2. Exception
+        mock_client = mock_get_client.return_value
+        mock_client.delete_collection.side_effect = Exception("Qdrant error")
+        rag_emb.delete_collection("model")
+
+    @patch("rag.embedding.get_qdrant_client")
+    def test_upsert_chunks_empty(self, mock_get_client):
+        # Empty list early return
+        self.assertEqual(rag_emb.upsert_chunks([]), [])
+
+    @patch("rag.embedding.get_qdrant_client")
+    @patch("rag.embedding.get_embedding_dimension")
+    @patch("sentence_transformers.SentenceTransformer")
+    def test_upsert_chunks_success(self, mock_transformer, mock_dim, mock_get_client):
+        mock_dim.return_value = 4
+        mock_client = mock_get_client.return_value
+        
+        # Configure collections list mock
+        mock_collections_res = MagicMock()
+        mock_collections_res.collections = []
+        mock_client.get_collections.return_value = mock_collections_res
+        
+        mock_model = mock_transformer.return_value
+        mock_tolist = MagicMock()
+        mock_tolist.tolist.return_value = [[0.1, 0.2, 0.3, 0.4]]
+        mock_model.encode.return_value = mock_tolist
+
+        chunks = [{
+            "chunk_id": "c1",
+            "doc_id": "d1",
+            "run_id": "r1",
+            "chunk_index": 0,
+            "text": "text",
+            "page_number": 1,
+            "document_type": "type",
+            "author": "author",
+            "date_extracted": "2026-07-11",
+            "section_type": "sec",
+            "patient_name": "patient",
+            "token_count": 5
+        }]
+
+        # 1. Normal success
+        rag_emb._embedding_model = None
+        res = rag_emb.upsert_chunks(chunks, model_name="sentence-transformers/all-MiniLM-L6-v2")
+        self.assertEqual(len(res), 1)
+
+        # 2. None model with settings load exception
+        with patch("rag.embedding.load_settings", side_effect=Exception("Disk error")):
+            rag_emb._embedding_model = None
+            res2 = rag_emb.upsert_chunks(chunks, model_name=None)
+            self.assertEqual(len(res2), 1)
+
+    @patch("sentence_transformers.SentenceTransformer")
+    def test_get_embedding_dimension(self, mock_transformer):
+        # Reset cached model reference to invoke SentenceTransformer init
+        rag_emb._embedding_model = None
+
+        # From model.get_embedding_dimension()
+        mock_model = mock_transformer.return_value
+        mock_model.get_embedding_dimension.return_value = 128
+        self.assertEqual(rag_emb.get_embedding_dimension("model"), 128)
+
+    def test_encode_texts_empty(self):
+        self.assertEqual(rag_emb.encode_texts([]), [])
+
+    @patch("rag.embedding.load_settings")
+    @patch("sentence_transformers.SentenceTransformer")
+    def test_load_embedding_model_branches(self, mock_transformer, mock_load_settings):
+        # 1. Trigger Exception inside load_settings lookup
+        mock_load_settings.side_effect = Exception("Load settings failed")
+        
+        # Reset cached reference
+        rag_emb._embedding_model = None
+        model = rag_emb.load_embedding_model(None)
+        self.assertIsNotNone(model)
+
+        # 2. Singleton caching hit path
+        model2 = rag_emb.load_embedding_model(None)
+        self.assertEqual(model, model2)
+
+    @patch("sentence_transformers.SentenceTransformer")
+    def test_encode_query(self, mock_transformer):
+        # Reset cached reference
+        rag_emb._embedding_model = None
+
+        mock_model = mock_transformer.return_value
+        mock_tolist = MagicMock()
+        mock_tolist.tolist.return_value = [0.1, 0.2, 0.3]
+        mock_model.encode.return_value = mock_tolist
+
+        vec = rag_emb.encode_query("my query", "model_name")
+        self.assertEqual(vec, [0.1, 0.2, 0.3])
+
+
+if __name__ == "__main__":
+    unittest.main()

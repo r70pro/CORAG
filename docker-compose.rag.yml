@@ -1,0 +1,75 @@
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: olmocr_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: olmocr_rag
+      POSTGRES_USER: olmocr
+      POSTGRES_PASSWORD: olmocr_rag_2026
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./workspace/pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U olmocr -d olmocr_rag"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: olmocr_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./workspace/redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: olmocr_minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: olmocr_minio
+      MINIO_ROOT_PASSWORD: olmocr_minio_2026
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ./workspace/minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:v1.10.1
+    container_name: olmocr_qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./workspace/qdrant_storage:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: 6334
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+networks:
+  default:
+    name: olmocr_rag_network
+    driver: bridge

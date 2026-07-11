@@ -43,6 +43,9 @@ from pipeline_manager import process_pdfs, stop_processing, cleanup_active_runs
 # Styling and theme properties
 from ui_theme import custom_css, dark_theme
 
+# RAG Document Analysis UI
+from rag_ui import build_analysis_ui
+
 # Register exit hooks
 atexit.register(cleanup_docker)
 atexit.register(cleanup_active_runs)
@@ -286,6 +289,9 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
         with gr.Column(scale=1, elem_id="preview-scroll-container", elem_classes=["glass-panel"]):
             gr.Markdown("## 👁️ Rendered Preview")
             rendered_markdown = gr.Markdown(value="Select a processed document to preview.")
+
+    # ── RAG Document Analysis Section ──────────────────────────────
+    rag_components = build_analysis_ui()
 
     # Script block moved to demo.load to avoid innerHTML execution restrictions
 
@@ -660,6 +666,6 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
         """
     )
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     demo.queue()
     demo.launch(server_name="127.0.0.1", server_port=7860, css=custom_css, theme=dark_theme, allowed_paths=["/home/owner"])

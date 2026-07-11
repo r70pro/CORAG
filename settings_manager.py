@@ -16,7 +16,16 @@ def load_settings():
         "docker_port": 8000,
         "docker_gpu_mem": 0.80,
         "docker_max_model_len": 15360,
-        "hf_token": os.environ.get("HF_TOKEN", "")
+        "hf_token": os.environ.get("HF_TOKEN", ""),
+        # RAG Analysis settings
+        "analysis_model_name": "microsoft/Phi-4-reasoning-plus",
+        "analysis_server_url": "http://localhost:8000/v1",
+        "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+        "embedding_device": "cpu",
+        "chunk_size": 800,
+        "chunk_overlap": 100,
+        "retrieval_top_k": 8,
+        "rag_auto_start_infra": False,
     }
     if os.path.exists(SETTINGS_FILE):
         try:

@@ -123,7 +123,7 @@ def get_markdown_for_page(full_markdown, page_ranges, page_num):
 
 def on_file_selected(selected_file, run_id_state):
     if not selected_file or not run_id_state:
-        return "", 0, [], "", gr.update(maximum=1, value=1), None
+        return "", 0, [], "", gr.update(maximum=2, value=1, interactive=False), None
 
     pdf_path, total_pages, page_ranges = get_page_mapping_and_pdf_path(selected_file, run_id_state)
     

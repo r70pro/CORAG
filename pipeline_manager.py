@@ -284,11 +284,8 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
                 for i in range(1, len(parts)):
                     if i < len(current_headers):
                         state_name = current_headers[i]
-                        try:
-                            val = int(parts[i])
-                            worker_states[worker_id][state_name] = val
-                        except (ValueError, TypeError):
-                            pass
+                        val = int(parts[i])
+                        worker_states[worker_id][state_name] = val
                 
                 total_completed = sum(states.get("finished", 0) for states in worker_states.values())
                 total_failed = sum(states.get("errored", 0) for states in worker_states.values())
@@ -298,20 +295,12 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
             if "Completed pages:" in line:
                 match_c = re.search(r"Completed pages:\s*([\d,]+)", line)
                 if match_c:
-                    try:
-                        val = int(match_c.group(1).replace(",", ""))
-                        completed_pages = max(completed_pages, val)
-                    except (ValueError, TypeError):
-                        pass
+                    completed_pages = max(completed_pages, int(match_c.group(1).replace(",", "")))
 
             if "Failed pages:" in line:
                 match_f = re.search(r"Failed pages:\s*([\d,]+)", line)
                 if match_f:
-                    try:
-                        val = int(match_f.group(1).replace(",", ""))
-                        failed_pages = max(failed_pages, val)
-                    except (ValueError, TypeError):
-                        pass
+                    failed_pages = max(failed_pages, int(match_f.group(1).replace(",", "")))
             
             md_inputs_dir = os.path.join(run_dir, "markdown", "inputs")
             if os.path.exists(md_inputs_dir):
@@ -321,13 +310,11 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
                     match = re.match(r"^(\d+)_", md_file)
                     if match:
                         file_idx = int(match.group(1))
-                        if file_idx not in completed_file_indices:
-                            completed_file_indices.add(file_idx)
-                            orig_name = file_mapping.get(file_idx, md_file)
-                            choice_tuple = (orig_name, md_file)
-                            if choice_tuple not in streaming_choices:
-                                streaming_choices.append(choice_tuple)
-                        temp_completed_pages += file_page_counts.get(file_idx, 1)
+                        completed_file_indices.add(file_idx)
+                        orig_name = file_mapping.get(file_idx, md_file)
+                        choice_tuple = (orig_name, md_file)
+                        streaming_choices.append(choice_tuple)
+                    temp_completed_pages += file_page_counts.get(file_idx, 1)
                 completed_pages = max(completed_pages, temp_completed_pages)
 
             vllm_match = pattern_vllm_queue.search(line)
