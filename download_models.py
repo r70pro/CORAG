@@ -1,5 +1,3 @@
-import os
-import sys
 import time
 from huggingface_hub import snapshot_download
 

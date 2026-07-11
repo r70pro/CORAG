@@ -4,7 +4,7 @@ import gradio as gr
 # Shared State
 
 # Settings
-from settings_manager import load_settings, save_settings, WORKSPACE_DIR
+from settings_manager import load_settings, save_settings, WORKSPACE_DIR  # noqa: F401
 
 # Docker Container operations
 from docker_manager import (
@@ -37,11 +37,11 @@ from ui_theme import custom_css, dark_theme
 from rag_ui import build_analysis_ui
 
 # Expose additional state and utility functions for tests
-from state import active_runs, active_runs_lock
-from docker_manager import check_server_ready, get_docker_status
-from html_utils import make_upload_manifest_html, make_file_status_html
-from pdf_manager import make_zip, load_markdown_content
-from cleanup_manager import get_dir_size, format_size
+from state import active_runs, active_runs_lock  # noqa: F401
+from docker_manager import check_server_ready, get_docker_status  # noqa: F401
+from html_utils import make_upload_manifest_html, make_file_status_html  # noqa: F401
+from pdf_manager import make_zip, load_markdown_content  # noqa: F401
+from cleanup_manager import get_dir_size, format_size  # noqa: F401
 
 # Register exit hooks
 atexit.register(cleanup_docker)
