@@ -207,6 +207,78 @@ def index_all_runs():
     yield "\n✅ All runs processed."
 
 
+RAG_LOG_BUFFER = []
+
+def log_to_rag(message: str):
+    """Log a message to the RAG system log buffer with a timestamp."""
+    import datetime
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Clean message of markdown formatting for console
+    clean_msg = message.replace("**", "").replace("`", "").strip()
+    if clean_msg:
+        RAG_LOG_BUFFER.append(f"[{timestamp}] {clean_msg}")
+        if len(RAG_LOG_BUFFER) > 500:
+            RAG_LOG_BUFFER.pop(0)
+
+def get_rag_logs() -> str:
+    """Get all accumulated RAG logs as a single string."""
+    return "\n".join(RAG_LOG_BUFFER)
+
+
+def start_rag_infra_ui_wrapper():
+    log_to_rag("Starting RAG infrastructure services...")
+    msg, status_html = start_rag_infra_ui()
+    log_to_rag(f"Start infrastructure result: {msg}")
+    return msg, status_html, get_rag_logs()
+
+
+def stop_rag_infra_ui_wrapper():
+    log_to_rag("Stopping RAG infrastructure services...")
+    msg, status_html = stop_rag_infra_ui()
+    log_to_rag(f"Stop infrastructure result: {msg}")
+    return msg, status_html, get_rag_logs()
+
+
+def index_run_ui_wrapper(run_dir):
+    accumulated_status = ""
+    log_to_rag(f"Initiated manual indexing for run directory: {run_dir}")
+    for update in index_run(run_dir):
+        accumulated_status += update
+        log_to_rag(update)
+        yield accumulated_status, get_rag_logs()
+
+
+def index_all_runs_ui_wrapper():
+    accumulated_status = ""
+    log_to_rag("Initiated bulk indexing for all runs")
+    for update in index_all_runs():
+        accumulated_status += update
+        log_to_rag(update)
+        yield accumulated_status, get_rag_logs()
+
+
+def extract_text_content(content) -> str:
+    """Extract plain text from potential Gradio 6 chatbot content format."""
+    if not content:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts = []
+        for item in content:
+            if isinstance(item, str):
+                text_parts.append(item)
+            elif isinstance(item, dict):
+                # Gradio 6 format: {'text': "...", 'type': 'text'}
+                if "text" in item:
+                    text_parts.append(item["text"])
+        return "".join(text_parts)
+    if isinstance(content, dict):
+        if "text" in content:
+            return content["text"]
+    return str(content)
+
+
 # ── Chat functions ─────────────────────────────────────────────
 
 def chat_respond(message, history, analysis_mode, analysis_model_url, analysis_model_name, top_k):
@@ -232,9 +304,9 @@ def chat_respond(message, history, analysis_mode, analysis_model_url, analysis_m
     if history:
         for user_msg, assistant_msg in history:
             if user_msg:
-                chat_history.append({"role": "user", "content": user_msg})
+                chat_history.append({"role": "user", "content": extract_text_content(user_msg)})
             if assistant_msg:
-                chat_history.append({"role": "assistant", "content": assistant_msg})
+                chat_history.append({"role": "assistant", "content": extract_text_content(assistant_msg)})
 
     # Map display mode to internal key
     mode_map = {
@@ -445,6 +517,7 @@ def build_analysis_ui():
                 avatar_images=(None, None),
                 elem_classes=["analysis-chatbot"],
             )
+
             with gr.Row():
                 chat_input = gr.Textbox(
                     label="Ask a question about your documents",
@@ -462,16 +535,27 @@ def build_analysis_ui():
                     elem_classes=["mode-hint"],
                 )
 
+            # ── RAG System Log viewer — directly under Chat question field ──
+            gr.Markdown("## 📜 RAG System Log")
+            rag_log_viewer = gr.Code(
+                label="System Logs",
+                language="shell",
+                value="",
+                interactive=False,
+                lines=10,
+                elem_classes=["log-console"]
+            )
+
     # ── Event wiring ──────────────────────────────────────────
 
     # Infrastructure controls
     rag_start_btn.click(
-        start_rag_infra_ui,
-        outputs=[rag_infra_msg, rag_infra_status],
+        start_rag_infra_ui_wrapper,
+        outputs=[rag_infra_msg, rag_infra_status, rag_log_viewer],
     )
     rag_stop_btn.click(
-        stop_rag_infra_ui,
-        outputs=[rag_infra_msg, rag_infra_status],
+        stop_rag_infra_ui_wrapper,
+        outputs=[rag_infra_msg, rag_infra_status, rag_log_viewer],
     )
 
     # Corpus stats refresh
@@ -488,9 +572,9 @@ def build_analysis_ui():
 
     # Index single run
     index_run_btn.click(
-        index_run,
+        index_run_ui_wrapper,
         inputs=[run_selector],
-        outputs=[index_status],
+        outputs=[index_status, rag_log_viewer],
     ).then(
         refresh_corpus_display,
         outputs=[corpus_stats],
@@ -498,8 +582,8 @@ def build_analysis_ui():
 
     # Index all runs
     index_all_btn.click(
-        index_all_runs,
-        outputs=[index_status],
+        index_all_runs_ui_wrapper,
+        outputs=[index_status, rag_log_viewer],
     ).then(
         refresh_corpus_display,
         outputs=[corpus_stats],
@@ -517,26 +601,31 @@ def build_analysis_ui():
     def bot_respond(history, mode, model_url, model_name, top_k):
         """Generate bot response with streaming."""
         if not history:
-            yield history
+            yield history, get_rag_logs()
             return
 
         last_user_msg = None
         for msg in reversed(history):
             if msg.get("role") == "user":
-                last_user_msg = msg["content"]
+                last_user_msg = extract_text_content(msg.get("content"))
                 break
 
         if not last_user_msg:
-            yield history
+            yield history, get_rag_logs()
             return
 
         # Convert history to pairs for the analyze function
         chat_pairs = []
         for msg in history[:-1]:  # Exclude the last user message
-            chat_pairs.append(msg)
+            role = msg.get("role")
+            content = extract_text_content(msg.get("content", ""))
+            chat_pairs.append({"role": role, "content": content})
 
         # Stream the response
         history.append({"role": "assistant", "content": ""})
+
+        log_to_rag(f"RAG query received: '{last_user_msg}'")
+        log_to_rag(f"Retrieving top {top_k} matching chunks from vector database...")
 
         try:
             mode_map = {
@@ -562,11 +651,14 @@ def build_analysis_ui():
             ):
                 partial += chunk
                 history[-1]["content"] = partial
-                yield history
+                yield history, get_rag_logs()
+
+            log_to_rag("LLM response generation finished successfully.")
 
         except Exception as e:
             history[-1]["content"] = f"⚠️ Error: {str(e)}"
-            yield history
+            log_to_rag(f"RAG query error: {str(e)}")
+            yield history, get_rag_logs()
 
     chat_input.submit(
         user_message_submit,
@@ -575,7 +667,7 @@ def build_analysis_ui():
     ).then(
         bot_respond,
         inputs=[chatbot, analysis_mode, analysis_model_url, analysis_model_name, retrieval_top_k],
-        outputs=[chatbot],
+        outputs=[chatbot, rag_log_viewer],
     )
 
     chat_submit_btn.click(
@@ -585,7 +677,7 @@ def build_analysis_ui():
     ).then(
         bot_respond,
         inputs=[chatbot, analysis_mode, analysis_model_url, analysis_model_name, retrieval_top_k],
-        outputs=[chatbot],
+        outputs=[chatbot, rag_log_viewer],
     )
 
     def save_analysis_settings(url, name, top_k, emb_model):
@@ -620,4 +712,5 @@ def build_analysis_ui():
         "chatbot": chatbot,
         "analysis_mode": analysis_mode,
         "corpus_stats": corpus_stats,
+        "rag_log_viewer": rag_log_viewer,
     }

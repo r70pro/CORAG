@@ -307,7 +307,22 @@ def analyze(
     messages = build_prompt(query, context, mode, chat_history)
 
     # Step 4: Query LLM
+    resolved_model = model_name
+    if os.environ.get("TESTING") != "true":
+        try:
+            url = server_url.rstrip("/") + "/models"
+            response = httpx.get(url, timeout=2.0)
+            if response.status_code == 200:
+                data = response.json()
+                loaded_models = [m["id"] for m in data.get("data", [])]
+                if loaded_models and model_name not in loaded_models:
+                    resolved_model = loaded_models[0]
+                    yield f"⚠️ **Note**: Model `{model_name}` is not loaded in vLLM. Falling back to `{resolved_model}`.\n\n"
+        except Exception:
+            pass
+
     if stream:
-        yield from query_llm_streaming(messages, server_url, model_name)
+        yield from query_llm_streaming(messages, server_url, resolved_model)
     else:
-        yield query_llm(messages, server_url, model_name)
+        yield query_llm(messages, server_url, resolved_model)
+

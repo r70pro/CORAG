@@ -191,6 +191,35 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         res = list(rag_anz.query_llm_streaming("prompt", "http://localhost:8000/v1", "phi-4"))
         self.assertEqual(res, ["part1", "part2"])
 
+    @patch("rag.analyzer.search_similar")
+    @patch("rag.analyzer.format_context_for_llm")
+    @patch("rag.analyzer.query_llm_streaming")
+    @patch("httpx.get")
+    def test_analyze_model_fallback(self, mock_get, mock_stream_llm, mock_format, mock_search):
+        mock_search.return_value = [{"chunk_id": "c1"}]
+        mock_format.return_value = "formatted context"
+        mock_stream_llm.return_value = iter(["answer"])
+        
+        # Mock /models response showing that "phi-4" is not loaded, but "olmocr" is.
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "data": [{"id": "allenai/olmOCR-2-7B-1025-FP8"}]
+        }
+        mock_get.return_value = mock_response
+
+        # Temporarily disable TESTING env var to allow network call execution
+        with patch.dict(os.environ, {"TESTING": "false"}):
+            gen = rag_anz.analyze("query", model_name="microsoft/Phi-4-reasoning-plus", stream=True)
+            res = list(gen)
+            
+            # Check that it warns the user and falls back
+            self.assertTrue(any("not loaded in vLLM. Falling back to" in item for item in res))
+            # Verify stream called with resolved model
+            mock_stream_llm.assert_called_once()
+            self.assertEqual(mock_stream_llm.call_args[0][2], "allenai/olmOCR-2-7B-1025-FP8")
+
+
 
 if __name__ == "__main__":
     unittest.main()

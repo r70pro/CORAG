@@ -8,7 +8,7 @@
   "guided_decoding": true,
   "docker_port": 8000,
   "docker_gpu_mem": 0.8,
-  "docker_max_model_len": 15360,
+  "docker_max_model_len": 12288,
   "hf_token": "",
   "analysis_model_name": "microsoft/Phi-4-reasoning-plus",
   "analysis_server_url": "http://localhost:8000/v1",

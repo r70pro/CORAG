@@ -308,20 +308,22 @@ class TestUICallbacks(unittest.TestCase):
         self.assertEqual(user_submit("hello", []), ("", [{"role": "user", "content": "hello"}]))
 
         # 2. Test bot_respond empty/missing user msg
-        self.assertEqual(list(bot_respond([], "Free Q&A", "http://", "phi", 5)), [[]])
-        self.assertEqual(list(bot_respond([{"role": "assistant", "content": ""}], "Free Q&A", "http://", "phi", 5)), [[{"role": "assistant", "content": ""}]])
+        rag_ui.RAG_LOG_BUFFER.clear()
+        self.assertEqual(list(bot_respond([], "Free Q&A", "http://", "phi", 5)), [([], "")])
+        rag_ui.RAG_LOG_BUFFER.clear()
+        self.assertEqual(list(bot_respond([{"role": "assistant", "content": ""}], "Free Q&A", "http://", "phi", 5)), [([{"role": "assistant", "content": ""}], "")])
 
         # 3. Test bot_respond success stream
         mock_analyze.return_value = ["res1", "res2"]
         history = [{"role": "user", "content": "hello"}]
         res_stream = list(bot_respond(history, "Free Q&A", "http://", "phi", 5))
-        self.assertEqual(res_stream[-1][-1]["content"], "res1res2")
+        self.assertEqual(res_stream[-1][0][-1]["content"], "res1res2")
 
         # 4. Test bot_respond exception
         mock_analyze.side_effect = Exception("Generation crash")
         history2 = [{"role": "user", "content": "hello"}]
         res_stream_fail = list(bot_respond(history2, "Free Q&A", "http://", "phi", 5))
-        self.assertIn("Error", res_stream_fail[-1][-1]["content"])
+        self.assertIn("Error", res_stream_fail[-1][0][-1]["content"])
 
         # 5. Test save_analysis_settings success/failure
         with patch("settings_manager.save_settings") as mock_save:
@@ -441,7 +443,20 @@ class TestUICallbacks(unittest.TestCase):
             {"role": "user", "content": "q2"}
         ]
         res_stream = list(bot_respond(history, "Free Q&A", "http://", "phi", 5))
-        self.assertEqual(res_stream[-1][-1]["content"], "ok")
+        self.assertEqual(res_stream[-1][0][-1]["content"], "ok")
+
+    def test_extract_text_content(self):
+        from rag_ui import extract_text_content
+        # 1. string
+        self.assertEqual(extract_text_content("hello"), "hello")
+        # 2. list of string
+        self.assertEqual(extract_text_content(["hello", " ", "world"]), "hello world")
+        # 3. Gradio 6 style list of dicts
+        self.assertEqual(extract_text_content([{"text": "what is claimant's name?", "type": "text"}]), "what is claimant's name?")
+        # 4. dict
+        self.assertEqual(extract_text_content({"text": "test"}), "test")
+        # 5. empty/None
+        self.assertEqual(extract_text_content(None), "")
 
 
 if __name__ == "__main__":
