@@ -4,11 +4,10 @@ Unit tests for pipeline_manager.py.
 
 import os
 import sys
-import io
 import queue
 import unittest
 import subprocess
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import patch, MagicMock
 
 # Prevent system operations during import
 os.environ["TESTING"] = "true"
@@ -528,7 +527,6 @@ class TestPipelineManager(unittest.TestCase):
                 return ["0_test.md", "invalid.md"]
             return []
 
-        import sys
         app_module = sys.modules.pop('app', None)
         try:
             with local_patch("os.path.exists", side_effect=exists_side_effect), \

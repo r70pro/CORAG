@@ -10,7 +10,6 @@ Provides:
 import os
 import io
 from minio import Minio
-from minio.error import S3Error
 
 # Default configuration
 DEFAULT_MINIO_CONFIG = {

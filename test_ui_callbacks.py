@@ -6,7 +6,7 @@ import os
 import unittest
 import tempfile
 import shutil
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import gradio as gr
 
 # Prevent system operations during import

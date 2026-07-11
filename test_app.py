@@ -1,6 +1,4 @@
 import os
-import sys
-import json
 import unittest
 import subprocess
 from unittest.mock import patch, MagicMock, mock_open

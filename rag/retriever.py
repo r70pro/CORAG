@@ -5,16 +5,13 @@ and Maximal Marginal Relevance (MMR) re-ranking.
 This module connects user queries to the most relevant document chunks.
 """
 
-import os
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 
-from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Filter,
     FieldCondition,
     MatchValue,
     Range,
-    SearchRequest,
 )
 
 from rag.embedding import (
@@ -166,7 +163,6 @@ def _mmr_rerank(
     Returns:
         Re-ranked list of results.
     """
-    import numpy as np
 
     if len(results) <= top_k:
         return results

@@ -1,6 +1,10 @@
 import os
 import json
 
+# Redirect Hugging Face cache to writeable workspace directory
+if "HF_HOME" not in os.environ:
+    os.environ["HF_HOME"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace", "huggingface")
+
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
 WORKSPACE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace")
 
@@ -18,7 +22,7 @@ def load_settings():
         "docker_max_model_len": 15360,
         "hf_token": os.environ.get("HF_TOKEN", ""),
         # RAG Analysis settings
-        "analysis_model_name": "microsoft/Phi-4-reasoning-plus",
+        "analysis_model_name": "nvidia/Phi-4-reasoning-plus-NVFP4",
         "analysis_server_url": "http://localhost:8000/v1",
         "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
         "embedding_device": "cpu",

@@ -11,8 +11,7 @@ Handles:
 import os
 import re
 import uuid
-import hashlib
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 from settings_manager import load_settings
 
@@ -24,8 +23,6 @@ from qdrant_client.models import (
     Filter,
     FieldCondition,
     MatchValue,
-    Range,
-    CollectionInfo,
 )
 
 # Default configuration
@@ -221,7 +218,7 @@ def get_collection_info(model_name=None):
         info = client.get_collection(collection_name=collection_name)
         return {
             "points_count": info.points_count,
-            "vectors_count": info.vectors_count,
+            "vectors_count": getattr(info, "vectors_count", info.points_count),
             "indexed_vectors_count": info.indexed_vectors_count,
             "status": info.status.value if info.status else "unknown",
         }

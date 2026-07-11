@@ -3,7 +3,6 @@ Unit tests for cleanup_manager.py.
 """
 
 import os
-import shutil
 import unittest
 from unittest.mock import patch, MagicMock
 

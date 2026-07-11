@@ -109,7 +109,7 @@ class TestRAGCacheAll(unittest.TestCase):
 
     def test_get_client_instantiation(self):
         # Test default instantiation branch
-        with patch("redis.Redis") as mock_redis_class:
+        with patch("redis.Redis"):
             client = rag_cache.get_client()
             self.assertIsNotNone(client)
             

@@ -1,17 +1,13 @@
-import os
 import atexit
 import gradio as gr
 
 # Shared State
-from state import active_runs, active_runs_lock
 
 # Settings
-from settings_manager import SETTINGS_FILE, WORKSPACE_DIR, load_settings, save_settings
+from settings_manager import load_settings, save_settings, WORKSPACE_DIR
 
 # Docker Container operations
 from docker_manager import (
-    get_docker_status,
-    check_server_ready,
     get_docker_status_str,
     start_docker_container,
     stop_docker_container,
@@ -20,19 +16,13 @@ from docker_manager import (
 )
 
 # Resets & Space metrics
-from cleanup_manager import get_dir_size, format_size, perform_reset_cleanup
+from cleanup_manager import perform_reset_cleanup
 
 # HTML templates
-from html_utils import make_progress_bar_html, make_file_status_html, make_upload_manifest_html
+from html_utils import make_progress_bar_html
 
 # PDF rendering and file conversions
 from pdf_manager import (
-    make_zip,
-    load_markdown_content,
-    pil_to_base64,
-    render_pdf_page,
-    get_page_mapping_and_pdf_path,
-    get_markdown_for_page,
     on_file_selected,
     update_view
 )
@@ -46,9 +36,17 @@ from ui_theme import custom_css, dark_theme
 # RAG Document Analysis UI
 from rag_ui import build_analysis_ui
 
+# Expose additional state and utility functions for tests
+from state import active_runs, active_runs_lock
+from docker_manager import check_server_ready, get_docker_status
+from html_utils import make_upload_manifest_html, make_file_status_html
+from pdf_manager import make_zip, load_markdown_content
+from cleanup_manager import get_dir_size, format_size
+
 # Register exit hooks
 atexit.register(cleanup_docker)
 atexit.register(cleanup_active_runs)
+
 
 
 # GUI layout construction
@@ -88,11 +86,24 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                     value=settings["server_url"], 
                     placeholder="http://localhost:8000/v1"
                 )
-                model_name_input = gr.Textbox(
-                    label="Model Name", 
-                    value=settings["model_name"], 
-                    placeholder="allenai/olmOCR-2-7B-1025-FP8"
+                current_model = settings.get("model_name", "allenai/olmOCR-2-7B-1025-FP8")
+                model_choices = [
+                    "allenai/olmOCR-2-7B-1025-FP8",
+                    "nvidia/Qwen3.6-35B-A3B-NVFP4",
+                    "nvidia/Phi-4-reasoning-plus-NVFP4",
+                    "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
+                    "nvidia/Llama-3.3-70B-Instruct-NVFP4"
+                ]
+                if current_model not in model_choices:
+                    model_choices.append(current_model)
+
+                model_name_input = gr.Dropdown(
+                    label="Model Name",
+                    choices=model_choices,
+                    value=current_model,
+                    interactive=True
                 )
+
                 
                 with gr.Accordion("Advanced Parameters", open=False):
                     workers_input = gr.Slider(

@@ -6,7 +6,6 @@ import os
 import subprocess
 import unittest
 from unittest.mock import patch, MagicMock
-import httpx
 
 import sys
 

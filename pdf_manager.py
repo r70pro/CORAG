@@ -166,7 +166,7 @@ def update_view(selected_file, view_mode, page_num, pdf_path, total_pages, page_
                 <iframe src="{pdf_url}" style="width: 100%; height: 100%; border: none;"></iframe>
             </div>"""
         else:
-            pdf_html = f"""<div id="pdf-scroll-container" class="sync-scroll-target" style="height: 70vh; display: flex; justify-content: center; align-items: center; background: #1e293b; color: #94a3b8; border-radius: 8px;">
+            pdf_html = """<div id="pdf-scroll-container" class="sync-scroll-target" style="height: 70vh; display: flex; justify-content: center; align-items: center; background: #1e293b; color: #94a3b8; border-radius: 8px;">
                 <span>Original PDF file not found.</span>
             </div>"""
     else:
@@ -182,7 +182,7 @@ def update_view(selected_file, view_mode, page_num, pdf_path, total_pages, page_
                     <span>Failed to render page {page_num}</span>
                 </div>"""
         else:
-            pdf_html = f"""<div id="pdf-scroll-container" class="sync-scroll-target" style="height: 70vh; display: flex; justify-content: center; align-items: center; background: #1e293b; color: #94a3b8; border-radius: 8px;">
+            pdf_html = """<div id="pdf-scroll-container" class="sync-scroll-target" style="height: 70vh; display: flex; justify-content: center; align-items: center; background: #1e293b; color: #94a3b8; border-radius: 8px;">
                 <span>Original PDF file not found.</span>
             </div>"""
 

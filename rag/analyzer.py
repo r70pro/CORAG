@@ -150,13 +150,18 @@ def query_llm_streaming(
     """
     url = server_url.rstrip("/") + "/chat/completions"
 
+    is_reasoning_model = "reasoning" in model_name.lower() or "r1" in model_name.lower()
+    actual_temp = 0.7 if (is_reasoning_model and temperature == 0.1) else temperature
+
     payload = {
         "model": model_name,
         "messages": messages,
-        "temperature": temperature,
+        "temperature": actual_temp,
         "max_tokens": max_tokens,
         "stream": True,
     }
+    if is_reasoning_model:
+        payload["repetition_penalty"] = 1.05
 
     try:
         with httpx.stream(
@@ -219,13 +224,18 @@ def query_llm(
     """
     url = server_url.rstrip("/") + "/chat/completions"
 
+    is_reasoning_model = "reasoning" in model_name.lower() or "r1" in model_name.lower()
+    actual_temp = 0.7 if (is_reasoning_model and temperature == 0.1) else temperature
+
     payload = {
         "model": model_name,
         "messages": messages,
-        "temperature": temperature,
+        "temperature": actual_temp,
         "max_tokens": max_tokens,
         "stream": False,
     }
+    if is_reasoning_model:
+        payload["repetition_penalty"] = 1.05
 
     try:
         response = httpx.post(
@@ -253,7 +263,7 @@ def analyze(
     query: str,
     mode: str = "free_qa",
     server_url: str = "http://localhost:8000/v1",
-    model_name: str = "microsoft/Phi-4-reasoning-plus",
+    model_name: str = "nvidia/Phi-4-reasoning-plus-NVFP4",
     top_k: int = 8,
     chat_history: Optional[List[Dict]] = None,
     doc_type_filter: Optional[str] = None,
@@ -315,9 +325,33 @@ def analyze(
             if response.status_code == 200:
                 data = response.json()
                 loaded_models = [m["id"] for m in data.get("data", [])]
-                if loaded_models and model_name not in loaded_models:
-                    resolved_model = loaded_models[0]
-                    yield f"⚠️ **Note**: Model `{model_name}` is not loaded in vLLM. Falling back to `{resolved_model}`.\n\n"
+                if loaded_models:
+                    # Normalize/map known equivalent models to avoid unnecessary fallbacks
+                    equivalents = {
+                        "microsoft/Phi-4-reasoning-plus": "nvidia/Phi-4-reasoning-plus-NVFP4",
+                    }
+                    def is_equivalent(m1: str, m2: str) -> bool:
+                        if m1 == m2:
+                            return True
+                        if equivalents.get(m1) == m2:
+                            return True
+                        if equivalents.get(m2) == m1:
+                            return True
+                        return False
+
+                    if model_name in loaded_models:
+                        resolved_model = model_name
+                    else:
+                        equivalent_model = None
+                        for lm in loaded_models:
+                            if is_equivalent(model_name, lm):
+                                equivalent_model = lm
+                                break
+                        if equivalent_model:
+                            resolved_model = equivalent_model
+                        else:
+                            resolved_model = loaded_models[0]
+                            yield f"⚠️ **Note**: Model `{model_name}` is not loaded in vLLM. Falling back to `{resolved_model}`.\n\n"
         except Exception:
             pass
 

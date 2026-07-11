@@ -4,7 +4,7 @@ Unit tests targeting remaining inner callback functions in app.py to achieve 100
 
 import os
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 # Prevent system operations during import
 os.environ["TESTING"] = "true"

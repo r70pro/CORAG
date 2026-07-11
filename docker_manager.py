@@ -17,7 +17,7 @@ def get_docker_status():
             return "not_found"
         else:
             return "error"
-    except Exception as e:
+    except Exception:
         return "error"
 
 def check_server_ready(port):
@@ -88,7 +88,7 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len):
         "-v", f"{hf_cache_dir}:/root/.cache/huggingface",
         "-e", f"HF_TOKEN={hf_token}",
         "-e", "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
-        "vllm/vllm-openai:v0.24.0",
+        "vllm/vllm-openai:cu130-nightly",
         "--model", model,
         "--gpu_memory_utilization", f"{float(gpu_mem):.2f}",
         "--max_model_len", str(int(max_model_len)),

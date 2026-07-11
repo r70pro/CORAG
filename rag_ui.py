@@ -11,9 +11,7 @@ Builds the UI layout and event handlers for:
 
 import os
 import re
-import json
 import hashlib
-import threading
 import gradio as gr
 
 from settings_manager import WORKSPACE_DIR, load_settings
@@ -488,11 +486,24 @@ def build_analysis_ui():
                     value=settings.get("analysis_server_url", "http://localhost:8000/v1"),
                     placeholder="http://localhost:8000/v1",
                 )
-                analysis_model_name = gr.Textbox(
+                current_analysis_model = settings.get("analysis_model_name", "nvidia/Phi-4-reasoning-plus-NVFP4")
+                analysis_choices = [
+                    "allenai/olmOCR-2-7B-1025-FP8",
+                    "nvidia/Qwen3.6-35B-A3B-NVFP4",
+                    "nvidia/Phi-4-reasoning-plus-NVFP4",
+                    "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
+                    "nvidia/Llama-3.3-70B-Instruct-NVFP4"
+                ]
+                if current_analysis_model not in analysis_choices:
+                    analysis_choices.append(current_analysis_model)
+
+                analysis_model_name = gr.Dropdown(
                     label="Analysis Model Name",
-                    value=settings.get("analysis_model_name", "microsoft/Phi-4-reasoning-plus"),
-                    placeholder="Model name as served by vLLM",
+                    choices=analysis_choices,
+                    value=current_analysis_model,
+                    interactive=True,
                 )
+
                 retrieval_top_k = gr.Slider(
                     label="Retrieval Top-K",
                     minimum=3,
@@ -512,7 +523,7 @@ def build_analysis_ui():
         with gr.Column(scale=3, elem_classes=["glass-panel"]):
             chatbot = gr.Chatbot(
                 label="Document Analysis Chat",
-                height=500,
+                height=1000,
                 buttons=["copy"],
                 avatar_images=(None, None),
                 elem_classes=["analysis-chatbot"],
@@ -529,7 +540,7 @@ def build_analysis_ui():
 
             with gr.Row():
                 clear_chat_btn = gr.Button("🗑️ Clear Chat", variant="secondary", size="sm")
-                mode_hint = gr.Markdown(
+                gr.Markdown(
                     value="*💡 Tip: Switch analysis mode for specialised outputs "
                           "(Timeline, Summary, Inconsistencies, Medications)*",
                     elem_classes=["mode-hint"],

@@ -4,8 +4,7 @@ Comprehensive unit tests for rag/storage.py targeting 100% statement and branch 
 
 import os
 import unittest
-from unittest.mock import patch, MagicMock
-from minio import Minio
+from unittest.mock import patch
 
 # Prevent system operations during import
 os.environ["TESTING"] = "true"

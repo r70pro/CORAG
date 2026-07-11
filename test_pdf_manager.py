@@ -4,7 +4,6 @@ Unit tests for pdf_manager.py.
 
 import os
 import io
-import json
 import unittest
 from unittest.mock import patch, MagicMock, mock_open
 from PIL import Image

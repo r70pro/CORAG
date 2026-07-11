@@ -9,7 +9,6 @@ Manages:
 
 import os
 import json
-import datetime
 import psycopg2
 import psycopg2.extras
 from contextlib import contextmanager

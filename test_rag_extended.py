@@ -4,9 +4,8 @@ Extended unit tests targeting remaining code coverage gaps in chunker.py and rag
 
 import os
 import io
-import json
 import unittest
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import patch, MagicMock
 
 # Prevent system operations during import
 os.environ["TESTING"] = "true"

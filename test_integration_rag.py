@@ -11,7 +11,6 @@ Ensures real interactions with local Docker services:
 import os
 import unittest
 import time
-import hashlib
 from datetime import date
 
 # Activate live settings

@@ -6,7 +6,6 @@ Launches the Gradio application inside the test thread to record code coverage o
 
 import os
 import unittest
-from unittest.mock import patch
 from gradio_client import Client
 
 # Disable actual docker controls during startup
@@ -76,7 +75,7 @@ class TestAppE2E(unittest.TestCase):
         # Test endpoint to save analysis configurations
         result = self.client.predict(
             url="http://localhost:8000/v1",
-            name="microsoft/Phi-4-reasoning-plus",
+            name="nvidia/Phi-4-reasoning-plus-NVFP4",
             top_k=5,
             emb_model="sentence-transformers/all-MiniLM-L6-v2",
             api_name="/save_analysis_settings"

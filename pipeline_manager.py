@@ -1,4 +1,5 @@
 import os
+import sys
 import re
 import uuid
 import time
@@ -129,8 +130,9 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
             "file_mapping": file_mapping
         }
 
+    python_exe = sys.executable or "python"
     cmd = [
-        "/home/owner/olmocr-env/bin/python", "-u",
+        python_exe, "-u",
         "-m", "olmocr.pipeline",
         ".",
         "--pdfs"
@@ -184,8 +186,6 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
     accumulated_logs = ""
     completed_pages = 0
     failed_pages = 0
-    vllm_running = 0
-    vllm_queued = 0
     completed_file_indices = set()
     failed_file_indices = set()
     start_time = time.monotonic()
@@ -193,7 +193,7 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
     current_headers = None
     worker_states = {}
 
-    pattern_completed = re.compile(r"completed_pages\s+([\d.]+)")
+    re.compile(r"completed_pages\s+([\d.]+)")
     pattern_failed = re.compile(r"failed_pages\s+([\d.]+)")
     pattern_vllm_queue = re.compile(r"vllm running req:\s*(\d+)\s+queue req:\s*(\d+)")
     pattern_vllm_standalone_queue = re.compile(r"Running:\s*(\d+).*?(?:Waiting|Pending):\s*(\d+)")
@@ -206,8 +206,8 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
         "Initializing pipeline...",
         gr.update(value="<span class='badge-running'>Running</span>"),
         progress_bar_fn(0, total_pages),
-        gr.update(visible=True, value=f"<div class='stat-card'><div class='stat-value'>0</div><div class='stat-label'>Completed Pages</div></div>"),
-        gr.update(visible=True, value=f"<div class='stat-card'><div class='stat-value'>0</div><div class='stat-label'>Failed Pages</div></div>"),
+        gr.update(visible=True, value="<div class='stat-card'><div class='stat-value'>0</div><div class='stat-label'>Completed Pages</div></div>"),
+        gr.update(visible=True, value="<div class='stat-card'><div class='stat-value'>0</div><div class='stat-label'>Failed Pages</div></div>"),
         gr.update(choices=[], value=None),
         None,
         None,
@@ -319,13 +319,13 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
 
             vllm_match = pattern_vllm_queue.search(line)
             if vllm_match:
-                vllm_running = int(vllm_match.group(1))
-                vllm_queued = int(vllm_match.group(2))
+                int(vllm_match.group(1))
+                int(vllm_match.group(2))
             else:
                 vllm_match_standalone = pattern_vllm_standalone_queue.search(line)
                 if vllm_match_standalone:
-                    vllm_running = int(vllm_match_standalone.group(1))
-                    vllm_queued = int(vllm_match_standalone.group(2))
+                    int(vllm_match_standalone.group(1))
+                    int(vllm_match_standalone.group(2))
 
             now = time.monotonic()
             if now - last_yield_time >= 0.2:
