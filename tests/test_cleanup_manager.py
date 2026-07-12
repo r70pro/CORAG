@@ -63,16 +63,19 @@ class TestCleanupManager(unittest.TestCase):
         mock_isdir.return_value = True
         mock_listdir.return_value = ["run_active", "run_incomplete"]
         
+        from settings_manager import WORKSPACE_DIR
+        workspace_dir = state.get_val('WORKSPACE_DIR', WORKSPACE_DIR)
+
         # Configure state.active_runs
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None # Process running
         state.active_runs["run_active"] = {
-            "run_dir": "/home/owner/OLMOCR/workspace/run_active",
+            "run_dir": os.path.join(workspace_dir, "run_active"),
             "proc": mock_proc,
             "completed": False
         }
         state.active_runs["run_incomplete"] = {
-            "run_dir": "/home/owner/OLMOCR/workspace/run_incomplete",
+            "run_dir": os.path.join(workspace_dir, "run_incomplete"),
             "proc": None,
             "completed": False
         }
@@ -138,8 +141,10 @@ class TestCleanupManager(unittest.TestCase):
     def test_perform_reset_cleanup_completed_runs(self, mock_rmtree, mock_listdir, mock_isdir, mock_exists):
         # Normal runs cleanup where run is completed = True, so loop continues (line 55->49 branch)
         mock_listdir.return_value = ["run_completed"]
+        from settings_manager import WORKSPACE_DIR
+        workspace_dir = state.get_val('WORKSPACE_DIR', WORKSPACE_DIR)
         state.active_runs["run_completed"] = {
-            "run_dir": "/home/owner/OLMOCR/workspace/run_completed",
+            "run_dir": os.path.join(workspace_dir, "run_completed"),
             "proc": None,
             "completed": True
         }
