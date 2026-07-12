@@ -138,6 +138,34 @@ class TestPdfManager(unittest.TestCase):
         self.assertTrue("iframe" in res[0])
         self.assertEqual(res[2], "markdown text")
 
+    def test_is_safe_filename(self):
+        self.assertTrue(pdf_manager.is_safe_filename("document.md"))
+        self.assertTrue(pdf_manager.is_safe_filename("0_doc.pdf"))
+        self.assertFalse(pdf_manager.is_safe_filename(""))
+        self.assertFalse(pdf_manager.is_safe_filename("../etc/passwd"))
+        self.assertFalse(pdf_manager.is_safe_filename("inputs/../../etc/passwd"))
+        self.assertFalse(pdf_manager.is_safe_filename("/etc/passwd"))
+        self.assertFalse(pdf_manager.is_safe_filename("c:\\windows\\win.ini"))
+
+    def test_load_markdown_content_traversal(self):
+        res = pdf_manager.load_markdown_content("../../../etc/passwd", "run1")
+        self.assertEqual(res[0], "Invalid file path.")
+        self.assertEqual(res[1], "Invalid file path.")
+        self.assertIsNone(res[2])
+
+    def test_get_page_mapping_and_pdf_path_traversal(self):
+        path, total_pages, page_ranges = pdf_manager.get_page_mapping_and_pdf_path("../../../etc/passwd", "run1")
+        self.assertIsNone(path)
+        self.assertEqual(total_pages, 0)
+        self.assertEqual(page_ranges, [])
+
+    def test_on_file_selected_traversal(self):
+        res = pdf_manager.on_file_selected("../../../etc/passwd", "run1")
+        self.assertEqual(res[0], "")
+        self.assertEqual(res[1], 0)
+        self.assertEqual(res[2], [])
+        self.assertEqual(res[3], "Invalid file path.")
+
 
 if __name__ == "__main__":
     unittest.main()

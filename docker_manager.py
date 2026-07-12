@@ -84,7 +84,7 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len):
         "--restart", "unless-stopped",
         "--gpus", "all",
         "--ipc=host",
-        "-p", f"{int(port)}:8000",
+        "-p", f"127.0.0.1:{int(port)}:8000",
         "-v", f"{hf_cache_dir}:/root/.cache/huggingface",
         "-e", f"HF_TOKEN={hf_token}",
         "-e", "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",

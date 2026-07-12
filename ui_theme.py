@@ -30,7 +30,6 @@ table td, table th {
 
 .glass-panel {
     background: rgba(17, 24, 39, 0.7) !important;
-    backdrop-filter: blur(16px) !important;
     border: 1px solid rgba(255, 255, 255, 0.08) !important;
     border-radius: 16px !important;
     box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5) !important;
@@ -313,6 +312,26 @@ select:focus-visible,
 .mode-hint p {
     margin: 0 !important;
     font-style: italic;
+}
+
+/* Dropdown visibility and overflow fix */
+.gradio-dropdown {
+    z-index: 999 !important;
+}
+.gradio-dropdown .options {
+    z-index: 9999 !important;
+}
+.gradio-dropdown input,
+.gradio-dropdown select,
+.dropdown-container input,
+.dropdown-container select,
+.svelte-1xfsv4t input,
+input[role="combobox"] {
+    padding-left: 12px !important;
+    padding-right: 48px !important;
+}
+.accordion, .accordion-content, .sidebar-panel, .glass-panel {
+    overflow: visible !important;
 }
 """
 

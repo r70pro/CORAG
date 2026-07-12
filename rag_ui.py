@@ -439,7 +439,7 @@ def build_analysis_ui():
         # ── Left sidebar: Controls ──
         with gr.Column(scale=1, elem_classes=["sidebar-panel"]):
             # Infrastructure
-            with gr.Accordion("🔧 RAG Infrastructure", open=False, elem_classes=["glass-panel"]):
+            with gr.Accordion("🔧 RAG Infrastructure", open=False):
                 rag_infra_status = gr.HTML(
                     value="<span class='badge-idle'>Not checked</span>",
                     label="Service Status"
@@ -450,7 +450,7 @@ def build_analysis_ui():
                 rag_infra_msg = gr.Markdown("")
 
             # Indexing
-            with gr.Accordion("📦 Document Indexing", open=True, elem_classes=["glass-panel"]):
+            with gr.Accordion("📦 Document Indexing", open=True):
                 corpus_stats = gr.Markdown(value="*Click refresh to load stats*")
                 refresh_corpus_btn = gr.Button("🔄 Refresh Stats", variant="secondary", size="sm")
 
@@ -468,7 +468,7 @@ def build_analysis_ui():
                 index_status = gr.Markdown("")
 
             # Analysis settings
-            with gr.Accordion("⚙️ Analysis Settings", open=False, elem_classes=["glass-panel"]):
+            with gr.Accordion("⚙️ Analysis Settings", open=False):
                 analysis_mode = gr.Dropdown(
                     label="Analysis Mode",
                     choices=[
@@ -511,10 +511,20 @@ def build_analysis_ui():
                     step=1,
                     value=settings.get("retrieval_top_k", 8),
                 )
-                embedding_model = gr.Textbox(
+                current_embedding_model = settings.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2")
+                embedding_choices = [
+                    "sentence-transformers/all-MiniLM-L6-v2",
+                    "BAAI/bge-large-en-v1.5",
+                ]
+                if current_embedding_model not in embedding_choices:
+                    embedding_choices.append(current_embedding_model)
+
+                embedding_model = gr.Dropdown(
                     label="Embedding Model Name",
-                    value=settings.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2"),
-                    placeholder="e.g., BAAI/bge-large-en-v1.5",
+                    choices=embedding_choices,
+                    value=current_embedding_model,
+                    interactive=True,
+                    allow_custom_value=False,
                 )
                 save_analysis_btn = gr.Button("💾 Save Analysis Configuration", variant="secondary")
                 analysis_config_status = gr.Markdown()

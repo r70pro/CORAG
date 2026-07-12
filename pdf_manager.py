@@ -8,6 +8,11 @@ from pypdf import PdfReader
 import gradio as gr
 import state
 
+def is_safe_filename(filename):
+    if not filename:
+        return False
+    return os.path.basename(filename) == filename and ".." not in filename and "/" not in filename and "\\" not in filename
+
 def make_zip(markdown_dir, zip_path):
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
         for root, _, files in os.walk(markdown_dir):
@@ -20,6 +25,9 @@ def make_zip(markdown_dir, zip_path):
 def load_markdown_content(selected_file, run_id_state):
     if not selected_file or not run_id_state:
         return "", "", None
+
+    if not is_safe_filename(selected_file):
+        return "Invalid file path.", "Invalid file path.", None
 
     with state.active_runs_lock:
         run_info = state.active_runs.get(run_id_state)
@@ -61,6 +69,9 @@ def render_pdf_page(pdf_path, page_num):
 
 def get_page_mapping_and_pdf_path(selected_file, run_id_state):
     if not selected_file or not run_id_state:
+        return None, 0, []
+
+    if not is_safe_filename(selected_file):
         return None, 0, []
 
     with state.active_runs_lock:
@@ -124,6 +135,9 @@ def get_markdown_for_page(full_markdown, page_ranges, page_num):
 def on_file_selected(selected_file, run_id_state):
     if not selected_file or not run_id_state:
         return "", 0, [], "", gr.update(maximum=2, value=1, interactive=False), None
+
+    if not is_safe_filename(selected_file):
+        return "", 0, [], "Invalid file path.", gr.update(maximum=2, value=1, interactive=False), None
 
     pdf_path, total_pages, page_ranges = get_page_mapping_and_pdf_path(selected_file, run_id_state)
     
