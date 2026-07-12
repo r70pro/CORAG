@@ -358,6 +358,102 @@ def get_corpus_stats():
             return cur.fetchone()
 
 
+def get_runs_with_stats():
+    """Get all indexed runs with per-run document, chunk, author, and date stats.
+
+    Returns:
+        List of dicts with run_id, run_dir, total_documents, total_chunks,
+        unique_authors, earliest_date, latest_date, indexed_at.
+    """
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    r.run_id,
+                    r.run_dir,
+                    r.created_at,
+                    r.indexed_at,
+                    r.total_documents,
+                    r.total_chunks,
+                    r.status,
+                    COUNT(DISTINCT c.author) FILTER (WHERE c.author IS NOT NULL) AS unique_authors,
+                    MIN(c.date_extracted) AS earliest_date,
+                    MAX(c.date_extracted) AS latest_date
+                FROM ocr_runs r
+                LEFT JOIN chunks c ON r.run_id = c.run_id
+                WHERE r.status = 'indexed'
+                GROUP BY r.run_id, r.run_dir, r.created_at, r.indexed_at,
+                         r.total_documents, r.total_chunks, r.status
+                ORDER BY r.created_at DESC
+            """)
+            return cur.fetchall()
+
+
+def get_authors_for_run(run_id):
+    """Get unique author names for a specific run.
+
+    Args:
+        run_id: The OCR run identifier.
+
+    Returns:
+        List of author name strings (non-null, sorted).
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT author
+                FROM chunks
+                WHERE run_id = %s AND author IS NOT NULL
+                ORDER BY author
+            """, (run_id,))
+            return [row[0] for row in cur.fetchall()]
+
+
+def get_doc_types_for_run(run_id):
+    """Get unique document types for a specific run.
+
+    Args:
+        run_id: The OCR run identifier.
+
+    Returns:
+        List of document type strings (non-null, sorted).
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT document_type
+                FROM chunks
+                WHERE run_id = %s AND document_type IS NOT NULL
+                ORDER BY document_type
+            """, (run_id,))
+            return [row[0] for row in cur.fetchall()]
+
+
+def get_date_range_for_run(run_id):
+    """Get the earliest and latest dates for a specific run.
+
+    Args:
+        run_id: The OCR run identifier.
+
+    Returns:
+        Dict with 'earliest' and 'latest' ISO date strings (or None).
+    """
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    MIN(date_extracted) AS earliest,
+                    MAX(date_extracted) AS latest
+                FROM chunks
+                WHERE run_id = %s AND date_extracted IS NOT NULL
+            """, (run_id,))
+            row = cur.fetchone()
+            return {
+                "earliest": str(row["earliest"]) if row and row["earliest"] else None,
+                "latest": str(row["latest"]) if row and row["latest"] else None,
+            }
+
+
 def delete_run_data(run_id):
     """Delete all data for a run (chunks, documents, and run record)."""
     with get_connection() as conn:

@@ -309,20 +309,20 @@ class TestUICallbacks(unittest.TestCase):
 
         # 2. Test bot_respond empty/missing user msg
         rag_ui.RAG_LOG_BUFFER.clear()
-        self.assertEqual(list(bot_respond([], "Free Q&A", "http://", "phi", 5)), [([], "")])
+        self.assertEqual(list(bot_respond([], "Free Q&A", "http://", "phi", 5, "", "", "", "", "")), [([], "")])
         rag_ui.RAG_LOG_BUFFER.clear()
-        self.assertEqual(list(bot_respond([{"role": "assistant", "content": ""}], "Free Q&A", "http://", "phi", 5)), [([{"role": "assistant", "content": ""}], "")])
+        self.assertEqual(list(bot_respond([{"role": "assistant", "content": ""}], "Free Q&A", "http://", "phi", 5, "", "", "", "", "")), [([{"role": "assistant", "content": ""}], "")])
 
         # 3. Test bot_respond success stream
         mock_analyze.return_value = ["res1", "res2"]
         history = [{"role": "user", "content": "hello"}]
-        res_stream = list(bot_respond(history, "Free Q&A", "http://", "phi", 5))
+        res_stream = list(bot_respond(history, "Free Q&A", "http://", "phi", 5, "", "", "", "", ""))
         self.assertEqual(res_stream[-1][0][-1]["content"], "res1res2")
 
         # 4. Test bot_respond exception
         mock_analyze.side_effect = Exception("Generation crash")
         history2 = [{"role": "user", "content": "hello"}]
-        res_stream_fail = list(bot_respond(history2, "Free Q&A", "http://", "phi", 5))
+        res_stream_fail = list(bot_respond(history2, "Free Q&A", "http://", "phi", 5, "", "", "", "", ""))
         self.assertIn("Error", res_stream_fail[-1][0][-1]["content"])
 
         # 5. Test save_analysis_settings success/failure
@@ -442,7 +442,7 @@ class TestUICallbacks(unittest.TestCase):
             {"role": "assistant", "content": "a1"},
             {"role": "user", "content": "q2"}
         ]
-        res_stream = list(bot_respond(history, "Free Q&A", "http://", "phi", 5))
+        res_stream = list(bot_respond(history, "Free Q&A", "http://", "phi", 5, "", "", "", "", ""))
         self.assertEqual(res_stream[-1][0][-1]["content"], "ok")
 
     def test_extract_text_content(self):
@@ -457,6 +457,81 @@ class TestUICallbacks(unittest.TestCase):
         self.assertEqual(extract_text_content({"text": "test"}), "test")
         # 5. empty/None
         self.assertEqual(extract_text_content(None), "")
+
+    @patch("rag_ui.start_rag_infra_ui")
+    def test_start_rag_infra_ui_wrapper(self, mock_start):
+        mock_start.return_value = ("Success message", "<div>status html</div>")
+        msg, html, logs = rag_ui.start_rag_infra_ui_wrapper()
+        self.assertEqual(msg, "Success message")
+        self.assertEqual(html, "<div>status html</div>")
+        self.assertTrue("Starting RAG infrastructure" in logs)
+
+    @patch("rag_ui.stop_rag_infra_ui")
+    def test_stop_rag_infra_ui_wrapper(self, mock_stop):
+        mock_stop.return_value = ("Stopped message", "<div>status html</div>")
+        msg, html, logs = rag_ui.stop_rag_infra_ui_wrapper()
+        self.assertEqual(msg, "Stopped message")
+        self.assertEqual(html, "<div>status html</div>")
+        self.assertTrue("Stopping RAG infrastructure" in logs)
+
+    @patch("rag_ui.index_run")
+    def test_index_run_ui_wrapper(self, mock_index_run):
+        mock_index_run.return_value = ["Step 1\n", "Step 2\n"]
+        res = list(rag_ui.index_run_ui_wrapper("/path/to/run"))
+        self.assertEqual(len(res), 2)
+        accumulated_status, logs = res[-1]
+        self.assertEqual(accumulated_status, "Step 1\nStep 2\n")
+        self.assertTrue("manual indexing" in logs)
+
+    @patch("rag_ui.index_all_runs")
+    def test_index_all_runs_ui_wrapper(self, mock_index_all):
+        mock_index_all.return_value = ["Start\n", "Done\n"]
+        res = list(rag_ui.index_all_runs_ui_wrapper())
+        self.assertEqual(len(res), 2)
+        accumulated_status, logs = res[-1]
+        self.assertEqual(accumulated_status, "Start\nDone\n")
+        self.assertTrue("bulk indexing" in logs)
+
+    @patch("rag.db.get_runs_with_stats")
+    def test_build_case_dashboard_html(self, mock_stats):
+        import datetime
+        # Scenario 1: Case stats returned successfully
+        mock_stats.return_value = [
+            {
+                "run_id": "run_123",
+                "run_dir": "/workspace/runs/run_123",
+                "total_documents": 5,
+                "total_chunks": 25,
+                "unique_authors": 2,
+                "earliest_date": "2026-01-01",
+                "latest_date": "2026-01-10",
+                "indexed_at": datetime.datetime(2026, 7, 12, 12, 0, 0)
+            },
+            {
+                "run_id": "run_456",
+                "run_dir": "",
+                "total_documents": 0,
+                "total_chunks": 0,
+                "unique_authors": 0,
+                "earliest_date": "2026-01-01",
+                "latest_date": None,
+                "indexed_at": "2026-07-12 12:00:00"
+            }
+        ]
+        html = rag_ui._build_dashboard_html()
+        self.assertTrue("run_123" in html)
+        self.assertTrue("run_456" in html)
+        self.assertTrue("Documents: <span class=\"stat-val\">5</span>" in html)
+
+        # Scenario 2: No runs indexed
+        mock_stats.return_value = []
+        html_empty = rag_ui._build_dashboard_html()
+        self.assertTrue("No indexed cases yet" in html_empty)
+
+        # Scenario 3: Database raises exception
+        mock_stats.side_effect = Exception("DB crash")
+        html_err = rag_ui._build_dashboard_html()
+        self.assertTrue("Cannot load cases" in html_err)
 
 
 if __name__ == "__main__":

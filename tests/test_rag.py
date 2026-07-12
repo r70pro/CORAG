@@ -254,6 +254,45 @@ A/Prof. Eugene T. Ek
         # get_chunks_for_document
         rag_db.get_chunks_for_document("doc_1")
 
+        # get_runs_with_stats
+        mock_cur.fetchall.return_value = [
+            {
+                "run_id": "run_1",
+                "run_dir": "dir",
+                "total_documents": 2,
+                "total_chunks": 10,
+                "unique_authors": 1,
+                "earliest_date": "2026-01-01",
+                "latest_date": "2026-01-02",
+                "indexed_at": "2026-01-01 00:00:00",
+                "status": "indexed"
+            }
+        ]
+        stats = rag_db.get_runs_with_stats()
+        self.assertEqual(len(stats), 1)
+
+        # get_authors_for_run
+        mock_cur.fetchall.return_value = [("Author Name",)]
+        authors = rag_db.get_authors_for_run("run_1")
+        self.assertEqual(authors, ["Author Name"])
+
+        # get_doc_types_for_run
+        mock_cur.fetchall.return_value = [("Document Type",)]
+        types = rag_db.get_doc_types_for_run("run_1")
+        self.assertEqual(types, ["Document Type"])
+
+        # get_date_range_for_run (case with values)
+        mock_cur.fetchone.return_value = {"earliest": "2026-01-01", "latest": "2026-01-02"}
+        date_range1 = rag_db.get_date_range_for_run("run_1")
+        self.assertEqual(date_range1["earliest"], "2026-01-01")
+        self.assertEqual(date_range1["latest"], "2026-01-02")
+
+        # get_date_range_for_run (case with None)
+        mock_cur.fetchone.return_value = None
+        date_range2 = rag_db.get_date_range_for_run("run_1")
+        self.assertIsNone(date_range2["earliest"])
+        self.assertIsNone(date_range2["latest"])
+
         # delete_run_data
         rag_db.delete_run_data("run_1")
 

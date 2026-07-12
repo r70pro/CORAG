@@ -266,6 +266,7 @@ def analyze(
     model_name: str = "nvidia/Phi-4-reasoning-plus-NVFP4",
     top_k: int = 8,
     chat_history: Optional[List[Dict]] = None,
+    run_id_filter: Optional[str] = None,
     doc_type_filter: Optional[str] = None,
     author_filter: Optional[str] = None,
     date_from: Optional[str] = None,
@@ -284,6 +285,7 @@ def analyze(
         model_name: Model name served by vLLM.
         top_k: Number of chunks to retrieve.
         chat_history: Previous conversation messages.
+        run_id_filter: Optional run/case ID filter for case isolation.
         doc_type_filter: Optional document type filter.
         author_filter: Optional author filter.
         date_from: Optional date range start.
@@ -298,6 +300,7 @@ def analyze(
     results = search_similar(
         query=query,
         top_k=top_k,
+        run_id_filter=run_id_filter,
         doc_type_filter=doc_type_filter,
         author_filter=author_filter,
         date_from=date_from,

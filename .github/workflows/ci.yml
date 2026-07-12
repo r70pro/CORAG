@@ -43,6 +43,7 @@ jobs:
       run: |
         ruff check .
 
-    - name: Run Test Suite
+    - name: Run Test Suite with Coverage
       run: |
-        pytest
+        coverage run -m pytest
+        coverage report --fail-under=90

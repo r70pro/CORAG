@@ -333,6 +333,339 @@ input[role="combobox"] {
 .accordion, .accordion-content, .sidebar-panel, .glass-panel {
     overflow: visible !important;
 }
+
+/* ── Case Dashboard ──────────────────────────── */
+.case-dashboard-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 16px;
+    padding: 8px 0;
+}
+
+.case-card {
+    background: rgba(17, 24, 39, 0.75);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 14px;
+    padding: 18px 20px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+}
+
+.case-card:hover {
+    border-color: rgba(99, 102, 241, 0.4);
+    box-shadow: 0 6px 24px rgba(99, 102, 241, 0.15);
+    transform: translateY(-2px);
+}
+
+.case-card-title {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: #e2e8f0;
+    margin-bottom: 10px;
+    word-break: break-all;
+}
+
+.case-card-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 16px;
+    font-size: 0.85rem;
+    color: #9ca3af;
+    margin-bottom: 12px;
+}
+
+.case-card-stats .stat-val {
+    color: #c7d2fe;
+    font-weight: 600;
+}
+
+.case-card-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 6px;
+}
+
+.case-card-actions button {
+    flex: 1;
+    padding: 6px 12px;
+    border-radius: 8px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+
+.case-card-actions .btn-analyse {
+    background: linear-gradient(135deg, #6366f1, #3b82f6);
+    color: #fff;
+}
+.case-card-actions .btn-analyse:hover {
+    background: linear-gradient(135deg, #818cf8, #60a5fa);
+}
+
+.case-card-actions .btn-delete {
+    background: rgba(127, 29, 29, 0.5);
+    color: #fca5a5;
+}
+.case-card-actions .btn-delete:hover {
+    background: rgba(127, 29, 29, 0.8);
+}
+
+.dashboard-empty {
+    text-align: center;
+    padding: 48px 20px;
+    color: #6b7280;
+    font-size: 1.1rem;
+}
+
+.dashboard-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+/* ── Active Case Banner ──────────────────────── */
+.active-case-banner {
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(59, 130, 246, 0.1));
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    border-radius: 10px;
+    padding: 10px 16px;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.active-case-banner .banner-icon {
+    font-size: 1.2rem;
+}
+
+.active-case-banner .banner-label {
+    font-size: 0.85rem;
+    color: #9ca3af;
+}
+
+.active-case-banner .banner-value {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #c7d2fe;
+}
+
+/* ── Search Filter Panel ─────────────────────── */
+.filter-panel {
+    background: rgba(15, 23, 42, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    padding: 12px;
+}
+
+.filter-hint {
+    font-size: 0.78rem;
+    color: #6b7280;
+    font-style: italic;
+    margin-top: 4px;
+}
+
+/* ── Export Row ───────────────────────────────── */
+.export-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.export-row button {
+    font-size: 0.82rem !important;
+}
+
+/* ── Keyboard Shortcut Hint ──────────────────── */
+.shortcut-hint {
+    font-size: 0.75rem;
+    color: #4b5563;
+    text-align: right;
+    padding: 4px 8px;
+}
+
+.shortcut-hint kbd {
+    background: rgba(30, 41, 59, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    color: #9ca3af;
+}
+
+/* ── Workspace Sidebar Restructuring ─────────── */
+.sidebar-panel {
+    background: rgba(10, 15, 30, 0.95) !important;
+    border-right: 1px solid rgba(255, 255, 255, 0.08) !important;
+    padding: 20px 15px !important;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    height: 95vh;
+}
+
+.sidebar-logo-container {
+    padding: 10px 5px 20px 5px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    margin-bottom: 20px;
+}
+
+.sidebar-logo-title {
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: #e2e8f0;
+    margin: 0;
+    letter-spacing: 0.5px;
+}
+
+.sidebar-logo-sub {
+    font-size: 0.8rem;
+    color: #64748b;
+    margin: 2px 0 0 0;
+}
+
+.nav-btn {
+    text-align: left !important;
+    justify-content: flex-start !important;
+    background: transparent !important;
+    border: 1px solid transparent !important;
+    color: #94a3b8 !important;
+    border-radius: 8px !important;
+    padding: 10px 14px !important;
+    font-size: 0.95rem !important;
+    font-weight: 500 !important;
+    transition: all 0.2s ease !important;
+    margin-bottom: 8px !important;
+}
+
+.nav-btn:hover {
+    background: rgba(255, 255, 255, 0.05) !important;
+    color: #f1f5f9 !important;
+    border-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+.active-nav-btn {
+    background: rgba(99, 102, 241, 0.15) !important;
+    color: #c7d2fe !important;
+    border-color: rgba(99, 102, 241, 0.3) !important;
+    font-weight: 600 !important;
+}
+
+.sidebar-footer-container {
+    margin-top: auto;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    padding-top: 15px;
+}
+
+.sidebar-version {
+    font-size: 0.75rem;
+    color: #475569;
+    margin-top: 8px;
+    display: block;
+    text-align: center;
+}
+
+/* ── Cozy vs Compact Layout ──────────────────── */
+.layout-compact .glass-panel {
+    padding: 10px 14px !important;
+    margin-bottom: 8px !important;
+    border-radius: 10px !important;
+}
+.layout-compact h1, .layout-compact h2, .layout-compact .gradient-title {
+    font-size: 1.4rem !important;
+    margin-top: 2px !important;
+    margin-bottom: 2px !important;
+}
+.layout-compact p, .layout-compact span, .layout-compact label, .layout-compact .stat-label {
+    font-size: 0.85rem !important;
+}
+.layout-compact input, .layout-compact textarea, .layout-compact select, .layout-compact button {
+    padding: 4px 8px !important;
+    font-size: 0.85rem !important;
+}
+.layout-compact .stat-value {
+    font-size: 1.4rem !important;
+}
+.layout-compact .stat-card {
+    padding: 8px !important;
+}
+
+/* ── Diagnostics Dashboard ────────────────────── */
+.diag-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    gap: 20px;
+    padding: 10px 0;
+}
+
+.diag-service-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: rgba(30, 41, 59, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 10px;
+    padding: 12px 18px;
+    margin-bottom: 10px;
+    transition: background 0.2s ease;
+}
+
+.diag-service-row:hover {
+    background: rgba(30, 41, 59, 0.5);
+}
+
+.diag-service-name {
+    font-weight: 600;
+    color: #e2e8f0;
+    font-size: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.diag-service-latency {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    color: #94a3b8;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+/* Sparkline simulated SVG graphs */
+.sparkline-svg {
+    width: 60px;
+    height: 20px;
+    stroke: #34d399;
+    stroke-width: 1.5;
+    fill: none;
+}
+
+.sparkline-red {
+    stroke: #f87171;
+}
+
+.vram-progress-container {
+    margin-top: 15px;
+}
+
+.vram-bar-outer {
+    background: rgba(255,255,255,0.06);
+    border-radius: 6px;
+    height: 8px;
+    overflow: hidden;
+    margin: 8px 0;
+}
+
+.vram-bar-inner {
+    height: 100%;
+    background: linear-gradient(90deg, #34d399, #059669);
+    transition: width 0.5s ease-out;
+}
 """
 
 dark_theme = gr.themes.Base(
