@@ -11,13 +11,14 @@ from qdrant_client.models import (
     Filter,
     FieldCondition,
     MatchValue,
-    Range,
+    DatetimeRange,
 )
 
 from rag.embedding import (
     encode_query,
     get_qdrant_client,
     get_collection_name,
+    init_collection,
 )
 from rag import db as rag_db
 
@@ -80,21 +81,41 @@ def search_similar(
         if date_to:
             range_kwargs["lte"] = date_to
         must_conditions.append(
-            FieldCondition(key="date_extracted", match=None, range=Range(**range_kwargs))
+            FieldCondition(key="date_extracted", match=None, range=DatetimeRange(**range_kwargs))
         )
 
     query_filter = Filter(must=must_conditions) if must_conditions else None
 
     # Search Qdrant
     client = get_qdrant_client()
-    results = client.search(
-        collection_name=get_collection_name(),
-        query_vector=query_vector,
-        query_filter=query_filter,
-        limit=top_k * 2,  # Fetch extra for MMR re-ranking
-        score_threshold=score_threshold,
-        with_payload=True,
-    )
+    try:
+        results = client.search(
+            collection_name=get_collection_name(),
+            query_vector=query_vector,
+            query_filter=query_filter,
+            limit=top_k * 2,  # Fetch extra for MMR re-ranking
+            score_threshold=score_threshold,
+            with_payload=True,
+        )
+    except Exception as e:
+        error_msg = str(e)
+        if "doesn't exist" in error_msg or "Not found" in error_msg:
+            try:
+                init_collection()
+                results = client.search(
+                    collection_name=get_collection_name(),
+                    query_vector=query_vector,
+                    query_filter=query_filter,
+                    limit=top_k * 2,
+                    score_threshold=score_threshold,
+                    with_payload=True,
+                )
+            except Exception as e2:
+                print(f"Error searching after collection initialization: {e2}")
+                return []
+        else:
+            print(f"Error searching Qdrant: {e}")
+            return []
 
     if not results:
         return []

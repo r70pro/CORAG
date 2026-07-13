@@ -118,9 +118,9 @@ table td, table th {
     max-height: 70vh !important;
 }
 
-/* Height containment: log viewer capped at 250px */
+/* Height containment: log viewer capped at 750px */
 .log-console .cm-editor {
-    max-height: 250px !important;
+    max-height: 750px !important;
 }
 
 /* Compact download file components */
@@ -247,6 +247,32 @@ input, textarea, select, .wrap input {
     padding: 20px !important;
 }
 
+/* Left-align text, tables, and cells in Rendered Preview, and allow them to take full width */
+#preview-scroll-container,
+#preview-scroll-container.prose,
+#preview-scroll-container.md,
+#preview-scroll-container.markdown-body,
+#preview-scroll-container .prose,
+#preview-scroll-container .md,
+#preview-scroll-container .markdown-body {
+    max-width: 100% !important;
+    margin-left: 0 !important;
+    margin-right: auto !important;
+    text-align: left !important;
+}
+
+#preview-scroll-container table {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin-left: 0 !important;
+    margin-right: auto !important;
+}
+
+#preview-scroll-container th,
+#preview-scroll-container td {
+    text-align: left !important;
+}
+
 /* Styled scrollbars for premium look and WCAG 1.4.11 compliance */
 ::-webkit-scrollbar {
     width: 8px;
@@ -337,7 +363,7 @@ input[role="combobox"] {
 /* ── Case Dashboard ──────────────────────────── */
 .case-dashboard-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
     gap: 16px;
     padding: 8px 0;
 }
@@ -502,10 +528,27 @@ input[role="combobox"] {
     background: rgba(10, 15, 30, 0.95) !important;
     border-right: 1px solid rgba(255, 255, 255, 0.08) !important;
     padding: 20px 15px !important;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    height: 95vh;
+}
+
+@media (max-width: 767px) {
+    .sidebar-panel {
+        border-right: none !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+        max-width: 100% !important;
+        min-width: 100% !important;
+    }
+}
+
+.main-sidebar {
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: space-between !important;
+}
+
+@media (min-width: 768px) {
+    .main-sidebar {
+        height: 95vh !important;
+    }
 }
 
 .sidebar-logo-container {
@@ -597,7 +640,7 @@ input[role="combobox"] {
 /* ── Diagnostics Dashboard ────────────────────── */
 .diag-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(400px, 100%), 1fr));
     gap: 20px;
     padding: 10px 0;
 }

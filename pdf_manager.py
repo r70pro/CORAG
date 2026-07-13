@@ -175,7 +175,7 @@ def update_view(selected_file, view_mode, page_num, pdf_path, total_pages, page_
     pdf_html = ""
     if view_mode == "Full Document":
         if pdf_path and os.path.exists(pdf_path):
-            pdf_url = f"/file={pdf_path}"
+            pdf_url = f"/gradio_api/file={pdf_path}"
             pdf_html = f"""<div id="pdf-scroll-container" class="sync-scroll-target" style="height: 70vh; overflow: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px;">
                 <iframe src="{pdf_url}" style="width: 100%; height: 100%; border: none;"></iframe>
             </div>"""

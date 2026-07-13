@@ -77,7 +77,7 @@ class TestAppE2E(unittest.TestCase):
             url="http://localhost:8000/v1",
             name="nvidia/Phi-4-reasoning-plus-NVFP4",
             top_k=5,
-            emb_model="sentence-transformers/all-MiniLM-L6-v2",
+            emb_model="BAAI/bge-large-en-v1.5",
             api_name="/save_analysis_settings"
         )
         self.assertTrue("saved successfully" in result.lower())

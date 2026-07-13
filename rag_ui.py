@@ -206,6 +206,7 @@ def index_all_runs():
 
 
 RAG_LOG_BUFFER = []
+LAST_CREATED_RUN_ID = None
 
 def log_to_rag(message: str):
     """Log a message to the RAG system log buffer with a timestamp."""
@@ -253,6 +254,223 @@ def index_all_runs_ui_wrapper():
         accumulated_status += update
         log_to_rag(update)
         yield accumulated_status, get_rag_logs()
+
+
+def upload_and_index_markdown(files, case_option, new_case_name):
+    if not files:
+        yield "⚠️ No files uploaded.\n"
+        return
+
+    import os
+    import shutil
+    import datetime
+    import hashlib
+    import re
+    from settings_manager import WORKSPACE_DIR, load_settings
+    from rag.db import register_run, register_document, insert_chunks, mark_run_indexed, mark_document_indexed, get_runs_with_stats, get_connection
+    from rag.chunker import chunk_document
+    from rag.embedding import upsert_chunks
+    from rag.storage import upload_markdown
+    from rag.cache import invalidate_query_cache
+
+    global LAST_CREATED_RUN_ID
+    if case_option == "new":
+        if not new_case_name or not new_case_name.strip():
+            yield "❌ Error: New case name is required.\n"
+            return
+        
+        # Create a new run/case directory
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        clean_name = re.sub(r'[^a-zA-Z0-9_-]', '_', new_case_name.strip())
+        run_name = f"run_{clean_name}_{timestamp}"
+        run_dir = os.path.join(WORKSPACE_DIR, run_name)
+        run_id = hashlib.sha256(run_dir.encode()).hexdigest()[:16]
+        LAST_CREATED_RUN_ID = run_id
+        
+        yield f"📁 Creating new case: **{new_case_name}**...\n"
+    else:
+        # Find existing run details
+        run_id = case_option
+        LAST_CREATED_RUN_ID = run_id
+        run_dir = None
+        try:
+            runs = get_runs_with_stats()
+            for r in runs:
+                if r.get("run_id") == run_id:
+                    run_dir = r.get("run_dir")
+                    break
+        except Exception as e:
+            yield f"❌ Failed to fetch case information: {e}\n"
+            return
+        
+        if not run_dir:
+            # Fallback if get_runs_with_stats fails or doesn't have it (maybe it's not status='indexed' yet, or exists in ocr_runs)
+            # Let's query ocr_runs directly
+            try:
+                with get_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT run_dir FROM ocr_runs WHERE run_id = %s", (run_id,))
+                        row = cur.fetchone()
+                        if row:
+                            run_dir = row[0]
+            except Exception as e:
+                yield f"❌ Failed to retrieve run directory: {e}\n"
+                return
+        
+        if not run_dir:
+            yield "❌ Error: Could not locate existing case directory.\n"
+            return
+        
+        run_name = os.path.basename(run_dir)
+        yield f"📁 Adding to existing case: **{run_name}**...\n"
+
+    # Set up directory paths
+    markdown_inputs_dir = os.path.join(run_dir, "markdown", "inputs")
+    try:
+        os.makedirs(markdown_inputs_dir, exist_ok=True)
+    except Exception as e:
+        yield f"❌ Failed to create directories: {e}\n"
+        return
+
+    # Step 1: Copy uploaded files to the case directory
+    copied_files = []
+    for file_info in files:
+        # Gradio files can be Tempfile objects or strings
+        file_path = file_info.name if hasattr(file_info, "name") else str(file_info)
+        if not os.path.exists(file_path):
+            continue
+        filename = os.path.basename(file_path)
+        dest_path = os.path.join(markdown_inputs_dir, filename)
+        try:
+            shutil.copy(file_path, dest_path)
+            copied_files.append((filename, dest_path))
+            yield f"📄 Copied **{filename}** to case storage.\n"
+        except Exception as e:
+            yield f"⚠️ Warning: Could not copy {filename}: {e}\n"
+
+    if not copied_files:
+        yield "❌ Error: No files were successfully copied.\n"
+        return
+
+    # Step 2: Register/update run in PostgreSQL
+    yield "💾 Registering case metadata in database...\n"
+    try:
+        # Determine total documents currently in DB for this run_id
+        current_docs_count = 0
+        if case_option != "new":
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT COUNT(*) FROM documents WHERE run_id = %s", (run_id,))
+                    current_docs_count = cur.fetchone()[0]
+        
+        new_total_docs = current_docs_count + len(copied_files)
+        register_run(run_id, run_dir, total_documents=new_total_docs)
+    except Exception as e:
+        yield f"❌ Database run registration failed: {e}\n"
+        return
+
+    # Step 3: Process each file (chunk, register document, embed, upsert)
+    settings = load_settings()
+    max_chunk_size = settings.get("chunk_size", 800)
+    chunk_overlap = settings.get("chunk_overlap", 100)
+    
+    all_new_chunks = []
+
+    for filename, md_path in copied_files:
+        yield f"⚙️ Processing **{filename}**...\n"
+        
+        # Read contents
+        try:
+            with open(md_path, "r", encoding="utf-8") as f:
+                markdown_text = f.read()
+        except Exception as e:
+            yield f"⚠️ Error reading {filename}: {e}. Skipping.\n"
+            continue
+
+        # Generate deterministic doc_id
+        doc_id = hashlib.sha256(f"{run_id}:{filename}".encode()).hexdigest()[:24]
+
+        # Register document
+        try:
+            register_document(
+                doc_id=doc_id,
+                run_id=run_id,
+                original_filename=filename,
+                pdf_total_pages=0,
+                markdown_path=md_path,
+            )
+        except Exception as e:
+            yield f"⚠️ Database document registration failed for {filename}: {e}. Skipping.\n"
+            continue
+
+        # Upload to MinIO
+        try:
+            upload_markdown(run_id, doc_id, md_path)
+            yield f"☁️ Uploaded **{filename}** to object storage.\n"
+        except Exception as e:
+            yield f"⚠️ Storage upload warning for {filename}: {e}\n"
+
+        # Chunk document
+        try:
+            chunks = chunk_document(
+                markdown_text=markdown_text,
+                doc_id=doc_id,
+                run_id=run_id,
+                page_ranges=[],
+                max_chunk_size=max_chunk_size,
+                chunk_overlap=chunk_overlap,
+            )
+            all_new_chunks.extend(chunks)
+            yield f"🧩 Created **{len(chunks)}** chunk(s) for {filename}.\n"
+        except Exception as e:
+            yield f"⚠️ Chunking failed for {filename}: {e}. Skipping.\n"
+            continue
+
+    if not all_new_chunks:
+        yield "❌ Error: No chunks generated from the uploaded files.\n"
+        return
+
+    # Step 4: Embed and upsert into Qdrant & Postgres
+    yield f"🧠 Embedding {len(all_new_chunks)} chunks and indexing in vector store...\n"
+    try:
+        updated_chunks = upsert_chunks(all_new_chunks, batch_size=32)
+        insert_chunks(updated_chunks)
+        
+        # Mark all documents as indexed
+        for filename, md_path in copied_files:
+            doc_id = hashlib.sha256(f"{run_id}:{filename}".encode()).hexdigest()[:24]
+            mark_document_indexed(doc_id)
+            
+        # Get total chunks for the run to mark run indexed
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM chunks WHERE run_id = %s", (run_id,))
+                total_chunks_in_run = cur.fetchone()[0]
+                
+        mark_run_indexed(run_id, total_chunks=total_chunks_in_run)
+        
+    except Exception as e:
+        yield f"❌ Embedding/indexing failed: {e}\n"
+        return
+
+    # Step 5: Invalidate query cache
+    try:
+        invalidate_query_cache()
+    except Exception:
+        pass
+
+    yield f"\n✅ Successfully uploaded and indexed **{len(copied_files)}** markdown file(s) into case **{run_name}**!\n"
+
+
+def upload_and_index_markdown_ui_wrapper(files, case_option, new_case_name):
+    accumulated_status = ""
+    log_to_rag("Initiated external markdown upload and indexing")
+    for update in upload_and_index_markdown(files, case_option, new_case_name):
+        accumulated_status += update
+        log_to_rag(update)
+        yield accumulated_status, get_rag_logs()
+
+
 
 
 def extract_text_content(content) -> str:
@@ -513,6 +731,13 @@ def _get_indexed_run_choices():
     return choices
 
 
+def _refresh_active_case_after_upload():
+    global LAST_CREATED_RUN_ID
+    choices = _get_indexed_run_choices()
+    val = LAST_CREATED_RUN_ID if LAST_CREATED_RUN_ID else ""
+    return gr.update(choices=choices, value=val)
+
+
 def _get_case_banner_html(active_case_label):
     """Generate the active case indicator banner HTML."""
     if not active_case_label or "All Cases" in str(active_case_label):
@@ -660,6 +885,28 @@ def build_rag_chat_ui():
                 index_all_btn = gr.Button("📥 Index All Runs", variant="secondary", size="sm")
                 index_status = gr.Markdown("")
 
+            # Upload External Markdown
+            with gr.Accordion("📥 Upload External Markdown", open=False):
+                gr.Markdown("Upload markdown files directly into a new or existing case, bypassing the ingestion pipeline.")
+                external_md_uploader = gr.File(
+                    label="Select Markdown Files (.md)",
+                    file_count="multiple",
+                    file_types=[".md"],
+                )
+                target_case_dropdown = gr.Dropdown(
+                    label="Target Case",
+                    choices=[("🆕 Create New Case", "new")] + [choice for choice in _get_indexed_run_choices() if choice[1] != ""],
+                    value="new",
+                    interactive=True,
+                )
+                new_case_name = gr.Textbox(
+                    label="New Case Name",
+                    placeholder="e.g. My Custom Case",
+                    visible=True,
+                )
+                upload_md_btn = gr.Button("📥 Upload & Index", variant="primary", size="sm")
+                upload_status = gr.Markdown("")
+
             # Analysis settings
             with gr.Accordion("⚙️ Analysis Settings", open=False):
                 analysis_model_url = gr.Textbox(
@@ -692,9 +939,8 @@ def build_rag_chat_ui():
                     step=1,
                     value=settings.get("retrieval_top_k", 8),
                 )
-                current_embedding_model = settings.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2")
+                current_embedding_model = settings.get("embedding_model", "BAAI/bge-large-en-v1.5")
                 embedding_choices = [
-                    "sentence-transformers/all-MiniLM-L6-v2",
                     "BAAI/bge-large-en-v1.5",
                 ]
                 if current_embedding_model not in embedding_choices:
@@ -826,7 +1072,7 @@ def build_rag_chat_ui():
                 language="shell",
                 value="",
                 interactive=False,
-                lines=10,
+                lines=30,
                 elem_classes=["log-console"]
             )
 
@@ -859,9 +1105,26 @@ def build_rag_chat_ui():
         choices = _get_indexed_run_choices()
         return gr.update(choices=choices)
 
+    def _refresh_target_case_choices():
+        choices = [("🆕 Create New Case", "new")] + [choice for choice in _get_indexed_run_choices() if choice[1] != ""]
+        return gr.update(choices=choices, value="new")
+
+    def toggle_new_case_textbox(choice):
+        return gr.update(visible=(choice == "new"))
+
+    target_case_dropdown.change(
+        toggle_new_case_textbox,
+        inputs=[target_case_dropdown],
+        outputs=[new_case_name]
+    )
+
     refresh_corpus_btn.click(
         _refresh_case_selector,
         outputs=[active_case_selector],
+    )
+    refresh_corpus_btn.click(
+        _refresh_target_case_choices,
+        outputs=[target_case_dropdown],
     )
 
     # Index single run
@@ -875,6 +1138,9 @@ def build_rag_chat_ui():
     ).then(
         _refresh_case_selector,
         outputs=[active_case_selector],
+    ).then(
+        _refresh_target_case_choices,
+        outputs=[target_case_dropdown],
     )
 
     # Index all runs
@@ -887,6 +1153,25 @@ def build_rag_chat_ui():
     ).then(
         _refresh_case_selector,
         outputs=[active_case_selector],
+    ).then(
+        _refresh_target_case_choices,
+        outputs=[target_case_dropdown],
+    )
+
+    # Upload external markdown
+    upload_md_btn.click(
+        upload_and_index_markdown_ui_wrapper,
+        inputs=[external_md_uploader, target_case_dropdown, new_case_name],
+        outputs=[upload_status, rag_log_viewer],
+    ).then(
+        refresh_corpus_display,
+        outputs=[corpus_stats],
+    ).then(
+        _refresh_active_case_after_upload,
+        outputs=[active_case_selector],
+    ).then(
+        _refresh_target_case_choices,
+        outputs=[target_case_dropdown],
     )
 
     # ── Active Case Selector → update banner + populate filters ──
@@ -1173,6 +1458,7 @@ def build_rag_chat_ui():
         "corpus_stats": corpus_stats,
         "rag_log_viewer": rag_log_viewer,
         "active_case_selector": active_case_selector,
+        "target_case_dropdown": target_case_dropdown,
         "refresh_corpus_btn": refresh_corpus_btn,
         "refresh_fn": _refresh_case_selector,
         "save_analysis_btn": save_analysis_btn,
@@ -1213,6 +1499,7 @@ def build_analysis_ui():
             corpus_stats = chat["corpus_stats"]
             rag_log_viewer = chat["rag_log_viewer"]
             active_case_selector = chat["active_case_selector"]
+            target_case_dropdown = chat.get("target_case_dropdown")
             _refresh_case_selector = chat["refresh_fn"]
 
     # Automatically refresh dashboard on tab select
@@ -1221,10 +1508,15 @@ def build_analysis_ui():
         outputs=[dashboard_html, dashboard_delete_selector, dashboard_status]
     )
 
+    def _refresh_analysis_tab_selectors():
+        choices = _get_indexed_run_choices()
+        target_choices = [("🆕 Create New Case", "new")] + [choice for choice in choices if choice[1] != ""]
+        return gr.update(choices=choices), gr.update(choices=target_choices, value="new")
+
     # Automatically refresh case choices on tab select
     tab_analysis.select(
-        _refresh_case_selector,
-        outputs=[active_case_selector]
+        _refresh_analysis_tab_selectors,
+        outputs=[active_case_selector, target_case_dropdown]
     )
 
     return {

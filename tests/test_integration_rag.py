@@ -60,7 +60,7 @@ class TestRAGIntegration(unittest.TestCase):
 
         # Register run
         rag_db.register_run(run_id, "/mock/run/dir", total_documents=1)
-        self.assertFalse(rag_db.is_run_indexed(run_id))
+        self.assertFalse(rag_db.is_run_indexed(run_id, check_vector_store=False))
 
         # Register document
         rag_db.register_document(
@@ -98,7 +98,7 @@ class TestRAGIntegration(unittest.TestCase):
         rag_db.mark_document_indexed(doc_id)
         rag_db.mark_run_indexed(run_id, total_chunks=1)
 
-        self.assertTrue(rag_db.is_run_indexed(run_id))
+        self.assertTrue(rag_db.is_run_indexed(run_id, check_vector_store=False))
 
         # Query stats
         stats = rag_db.get_corpus_stats()
@@ -159,7 +159,7 @@ class TestRAGIntegration(unittest.TestCase):
 
         run_id = "int_run_qdrant"
         doc_id = "int_doc_qdrant"
-        model_name = "sentence-transformers/all-MiniLM-L6-v2"
+        model_name = "BAAI/bge-large-en-v1.5"
 
         # Check collection info
         col_info = rag_emb.get_collection_info(model_name)

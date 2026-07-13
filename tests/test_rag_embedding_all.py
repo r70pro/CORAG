@@ -22,7 +22,7 @@ class TestRAGEmbeddingAll(unittest.TestCase):
         # 2. None model name with exception
         with patch("rag.embedding.load_settings", side_effect=Exception("Load failed")):
             name2 = rag_emb.get_collection_name(None)
-            self.assertTrue("sentence-transformers" in name2 or "minilm" in name2)
+            self.assertTrue("sentence-transformers" in name2 or "minilm" in name2 or "baai" in name2 or "bge-large-en" in name2)
 
     @patch("rag.embedding.QdrantClient")
     def test_get_qdrant_client(self, mock_qdrant):

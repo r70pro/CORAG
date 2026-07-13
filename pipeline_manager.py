@@ -70,6 +70,26 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
                 ""
             )
             return
+
+        # Check if the requested model is actually loaded on the server
+        try:
+            res_json = preflight.json()
+            if isinstance(res_json, dict) and "data" in res_json:
+                models_data = res_json["data"]
+                if isinstance(models_data, list):
+                    loaded_models = [m.get("id") for m in models_data if isinstance(m, dict) and m.get("id")]
+                    if loaded_models and model_name not in loaded_models:
+                        yield _make_empty_yield(
+                            f"Pre-flight check failed: The requested model '{model_name}' is not loaded on the server at {server_url}.\n"
+                            f"Currently loaded model(s): {', '.join(loaded_models)}.\n\n"
+                            "Please switch the model in the Settings or recreate the Docker container with the correct model.",
+                            "<span class='badge-failed'>Model Mismatch</span>",
+                            ""
+                        )
+                        return
+        except Exception as e:
+            # If JSON parsing or field access fails, log it but don't block the run
+            print(f"Error checking loaded models from server: {e}")
     except Exception as e:
         yield _make_empty_yield(
             f"Pre-flight check failed: cannot reach server at {server_url}.\n"

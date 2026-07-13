@@ -130,46 +130,56 @@ class TestAppCallbacks(unittest.TestCase):
     def test_get_service_latency(self, mock_socket, mock_get, mock_redis, mock_postgres):
         # 1. postgres
         mock_conn = mock_postgres.return_value
-        ok, lat = app.get_service_latency("postgres")
+        ok, lat, extra = app.get_service_latency("postgres")
         self.assertTrue(ok)
+        self.assertIsNone(extra)
         mock_conn.close.assert_called()
 
         # 2. redis
         mock_r = mock_redis.return_value
-        ok, lat = app.get_service_latency("redis")
+        ok, lat, extra = app.get_service_latency("redis")
         self.assertTrue(ok)
+        self.assertIsNone(extra)
         mock_r.ping.assert_called()
 
         # 3. minio (healthy)
         mock_get.return_value = MagicMock(status_code=200)
-        ok, lat = app.get_service_latency("minio")
+        ok, lat, extra = app.get_service_latency("minio")
         self.assertTrue(ok)
+        self.assertIsNone(extra)
 
         # minio (unhealthy)
         mock_get.return_value = MagicMock(status_code=500)
-        ok, lat = app.get_service_latency("minio")
+        ok, lat, extra = app.get_service_latency("minio")
         self.assertFalse(ok)
+        self.assertIsNone(extra)
 
         # 4. qdrant (healthy)
         mock_get.return_value = MagicMock(status_code=200)
-        ok, lat = app.get_service_latency("qdrant")
+        ok, lat, extra = app.get_service_latency("qdrant")
         self.assertTrue(ok)
+        self.assertIsNone(extra)
 
         # 5. vllm (healthy)
-        mock_get.return_value = MagicMock(status_code=200)
-        ok, lat = app.get_service_latency("vllm")
+        mock_response = MagicMock(status_code=200)
+        mock_response.json.return_value = {"data": [{"id": "allenai/olmOCR-2-7B-1025-FP8"}]}
+        mock_get.return_value = mock_response
+        ok, lat, extra = app.get_service_latency("vllm")
         self.assertTrue(ok)
+        self.assertEqual(extra, "allenai/olmOCR-2-7B-1025-FP8")
 
         # 6. other (socket check)
         mock_s = mock_socket.return_value
-        ok, lat = app.get_service_latency("other_service", port=1234)
+        ok, lat, extra = app.get_service_latency("other_service", port=1234)
         self.assertTrue(ok)
+        self.assertIsNone(extra)
         mock_s.connect.assert_called_with(("127.0.0.1", 1234))
 
         # 7. exception flow
         mock_get.side_effect = Exception("HTTP error")
-        ok, lat = app.get_service_latency("minio")
+        ok, lat, extra = app.get_service_latency("minio")
         self.assertFalse(ok)
+        self.assertIsNone(extra)
 
     def test_get_simulated_sparkline(self):
         # 1. is_up=False
@@ -187,16 +197,28 @@ class TestAppCallbacks(unittest.TestCase):
 
     @patch("app.get_service_latency")
     def test_check_backing_services(self, mock_latency):
-        # All healthy
-        mock_latency.return_value = (True, 5.0)
+        # All healthy - general model (suited for RAG)
+        mock_latency.return_value = (True, 5.0, "nvidia/Llama-3.3-70B-Instruct-NVFP4")
         html, badge = app.check_backing_services()
         self.assertTrue("✓ System Healthy" in badge)
+        self.assertTrue("nvidia/Llama-3.3-70B-Instruct-NVFP4" in badge)
+        self.assertTrue("Best suited for RAG processing" in badge)
         self.assertTrue("PostgreSQL" in html)
+        self.assertTrue("nvidia/Llama-3.3-70B-Instruct-NVFP4" in html)
+
+        # All healthy - OCR model (suited for PDF conversion)
+        mock_latency.return_value = (True, 5.0, "allenai/olmOCR-2-7B-1025-FP8")
+        html, badge = app.check_backing_services()
+        self.assertTrue("✓ System Healthy" in badge)
+        self.assertTrue("allenai/olmOCR-2-7B-1025-FP8" in badge)
+        self.assertTrue("Best suited for PDF conversion" in badge)
 
         # Some unhealthy
-        mock_latency.return_value = (False, 0.0)
+        mock_latency.return_value = (False, 0.0, None)
         html, badge = app.check_backing_services()
         self.assertTrue("✗ System Degraded" in badge)
+        self.assertTrue("PostgreSQL" in badge)
+        self.assertTrue("Start PostgreSQL service/container." in badge)
 
     @patch("subprocess.run")
     @patch("torch.cuda.is_available")
@@ -234,6 +256,40 @@ class TestAppCallbacks(unittest.TestCase):
         html = app.get_gpu_metrics()
         self.assertTrue("CUDA Unavailable" in html)
         self.assertTrue("Running on Host CPU" in html)
+
+    @patch("subprocess.run")
+    def test_get_vllm_loading_progress(self, mock_run):
+        from unittest.mock import MagicMock
+        
+        # Case 1: Docker logs show loading progress with ETA
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="Loading safetensors checkpoint shards:  18% Completed | 3/17 [01:21<06:22, 27.31s/it]\n"
+        )
+        progress = app.get_vllm_loading_progress()
+        self.assertIsNotNone(progress)
+        self.assertEqual(progress["pct"], 18)
+        self.assertEqual(progress["shards_loaded"], 3)
+        self.assertEqual(progress["shards_total"], 17)
+        self.assertEqual(progress["eta"], "6m 22s")
+        
+        # Case 2: Docker logs show initial state with "?" ETA
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="Loading safetensors checkpoint shards:   0% Completed | 0/17 [00:00<?, ?it/s]\n"
+        )
+        progress = app.get_vllm_loading_progress()
+        self.assertIsNotNone(progress)
+        self.assertEqual(progress["pct"], 0)
+        self.assertEqual(progress["eta"], "Calculating...")
+
+        # Case 3: Docker logs don't have progress
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="Starting model runner...\n"
+        )
+        progress = app.get_vllm_loading_progress()
+        self.assertIsNone(progress)
 
     def test_select_view(self):
         self.assertTrue(hasattr(app, "select_view"))

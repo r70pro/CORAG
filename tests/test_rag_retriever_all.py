@@ -220,6 +220,16 @@ class TestRAGRetrieverAll(unittest.TestCase):
         res_none = rag_ret.format_context_for_llm(results_none)
         self.assertEqual(res_none.strip(), "[Source 1]\nsample text")
 
+    @patch("rag.retriever.encode_query")
+    @patch("rag.retriever.get_qdrant_client")
+    def test_search_similar_with_date_strings(self, mock_get_client, mock_encode):
+        mock_encode.return_value = [0.1, 0.2]
+        mock_client = mock_get_client.return_value
+        mock_client.search.return_value = []
+        
+        res = rag_ret.search_similar("query", date_from="1971-11-28", date_to="2020-08-27")
+        self.assertEqual(res, [])
+
 
 if __name__ == "__main__":
     unittest.main()

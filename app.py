@@ -74,6 +74,7 @@ def get_service_latency(service_name, host="127.0.0.1", port=None):
         port = ports.get(service_name)
         
     start_time = time.time()
+    extra_info = None
     try:
         if service_name == "postgres":
             import psycopg2
@@ -102,6 +103,15 @@ def get_service_latency(service_name, host="127.0.0.1", port=None):
             res = requests.get(f"http://{host}:{port}/v1/models", timeout=1)
             if res.status_code != 200:
                 raise Exception()
+            try:
+                data = res.json()
+                models = data.get("data", [])
+                if models:
+                    extra_info = models[0].get("id")
+                else:
+                    extra_info = "None Loaded"
+            except Exception:
+                extra_info = "Unknown"
         else:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(1)
@@ -109,9 +119,9 @@ def get_service_latency(service_name, host="127.0.0.1", port=None):
             s.close()
         
         latency = (time.time() - start_time) * 1000.0
-        return True, latency
+        return True, latency, extra_info
     except Exception:
-        return False, 0.0
+        return False, 0.0, None
 
 def get_simulated_sparkline(is_up=True, latency_history=None):
     if not is_up:
@@ -128,9 +138,59 @@ def get_simulated_sparkline(is_up=True, latency_history=None):
     points_str = " ".join(f"{i*8},{v}" for i, v in enumerate(points))
     return f"""<svg class='sparkline-svg' viewBox='0 0 60 20'><polyline points='{points_str}'/></svg>"""
 
-def check_backing_services():
+def get_vllm_loading_progress():
+    import re
+    import subprocess
+    try:
+        res = subprocess.run(
+            ["docker", "logs", "--tail", "50", "olmocr"],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        if res.returncode == 0 and res.stdout:
+            lines = res.stdout.splitlines()
+            for line in reversed(lines):
+                if "Loading safetensors checkpoint shards:" in line:
+                    match = re.search(
+                        r"Loading safetensors checkpoint shards:\s*(\d+)%\s*Completed\s*\|\s*(\d+)/(\d+)\s*\[([^\]]+)\]",
+                        line
+                    )
+                    if match:
+                        pct = int(match.group(1))
+                        shards_loaded = int(match.group(2))
+                        shards_total = int(match.group(3))
+                        time_info = match.group(4)
+                        
+                        eta = "Unknown"
+                        if "<" in time_info:
+                            remaining = time_info.split("<")[1].split(",")[0].strip()
+                            if remaining == "?":
+                                eta = "Calculating..."
+                            elif ":" in remaining:
+                                parts = remaining.split(":")
+                                if len(parts) == 2:
+                                    eta = f"{int(parts[0])}m {int(parts[1])}s"
+                                elif len(parts) == 3:
+                                    eta = f"{int(parts[0])}h {int(parts[1])}m {int(parts[2])}s"
+                            else:
+                                eta = remaining
+                        
+                        return {
+                            "pct": pct,
+                            "shards_loaded": shards_loaded,
+                            "shards_total": shards_total,
+                            "eta": eta
+                        }
+    except Exception:
+        pass
+    return None
+
+def check_backing_services(vllm_port=8000):
     html_parts = []
     all_healthy = True
+    failed_services = []
+    vllm_model = None
     
     services = ["postgres", "redis", "minio", "qdrant", "vllm"]
     service_names = {
@@ -141,8 +201,22 @@ def check_backing_services():
         "vllm": "vLLM"
     }
     
+    fixes = {
+        "postgres": "Start PostgreSQL service/container.",
+        "redis": "Start Redis service/container.",
+        "minio": "Start MinIO service/container.",
+        "qdrant": "Start Qdrant service/container.",
+        "vllm": "Start vLLM service/container."
+    }
+    
     for s in services:
-        is_up, latency = get_service_latency(s)
+        if s == "vllm":
+            is_up, latency, extra_info = get_service_latency(s, port=vllm_port)
+        else:
+            is_up, latency, extra_info = get_service_latency(s)
+            
+        model_badge = ""
+        extra_badge = ""
         if is_up:
             if s not in service_history:
                 service_history[s] = []
@@ -153,29 +227,119 @@ def check_backing_services():
             sparkline = get_simulated_sparkline(True, service_history[s])
             badge = "<span class='badge-success' style='font-size:0.75rem; padding: 2px 6px;'>UP</span>"
             latency_str = f"{latency:.1f} ms"
+            if s == "vllm":
+                vllm_model = extra_info
+                if extra_info:
+                    model_badge = f"<span style='font-size:0.75rem; color:#94a3b8; font-weight: normal; font-family: monospace; background: rgba(255, 255, 255, 0.05); padding: 2px 6px; border-radius: 4px; margin-left: 8px;'>{extra_info}</span>"
         else:
             all_healthy = False
+            failed_services.append(s)
             sparkline = get_simulated_sparkline(False)
             badge = "<span class='badge-stopped' style='font-size:0.75rem; padding: 2px 6px;'>DOWN</span>"
             latency_str = "N/A"
+            if s == "vllm":
+                progress = get_vllm_loading_progress()
+                if progress:
+                    badge = "<span class='badge-running' style='font-size:0.75rem; padding: 2px 6px; animation: pulse 2s infinite;'>LOADING</span>"
+                    latency_str = f"Progress: {progress['pct']}%"
+                    extra_badge = f"""
+                    <div style='margin-top: 10px; width: 100%; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.2); border-radius: 8px; padding: 10px; box-sizing: border-box;'>
+                        <div style='display:flex; justify-content:space-between; font-size:0.75rem; font-weight:600; color:#60a5fa; margin-bottom: 4px;'>
+                            <span>Model Loading...</span>
+                            <span>{progress['shards_loaded']}/{progress['shards_total']} shards</span>
+                        </div>
+                        <div style='display:flex; justify-content:space-between; font-size:0.7rem; color:#94a3b8; margin-top:2px;'>
+                            <span>ETA: {progress['eta']}</span>
+                            <span>{progress['pct']}%</span>
+                        </div>
+                        <div style='background: rgba(255,255,255,0.05); height: 6px; border-radius: 3px; overflow: hidden; margin-top: 6px;'>
+                            <div style='width: {progress['pct']}%; height: 100%; background: linear-gradient(90deg, #60a5fa, #3b82f6); transition: width 0.5s ease;'></div>
+                        </div>
+                    </div>
+                    """
             
         html_parts.append(f"""
-        <div class='diag-service-row'>
-            <div class='diag-service-name'>
-                <span>{service_names[s]}</span>
-                {badge}
+        <div class='diag-service-row' style='display: block;'>
+            <div style='display: flex; align-items: center; justify-content: space-between; width: 100%;'>
+                <div class='diag-service-name'>
+                    <span>{service_names[s]}</span>
+                    {badge}
+                    {model_badge}
+                </div>
+                <div class='diag-service-latency'>
+                    <span>{latency_str}</span>
+                    {sparkline}
+                </div>
             </div>
-            <div class='diag-service-latency'>
-                <span>{latency_str}</span>
-                {sparkline}
-            </div>
+            {extra_badge}
         </div>
         """)
         
-    system_status_badge = "<span class='badge-success' style='padding: 6px 12px; font-weight: 700;'>✓ System Healthy</span>" if all_healthy else "<span class='badge-failed' style='padding: 6px 12px; font-weight: 700;'>✗ System Degraded</span>"
+    if all_healthy:
+        if not vllm_model or vllm_model in ["None Loaded", "Unknown"]:
+            suitability = "No model loaded"
+            suit_color = "#94a3b8"
+        elif "olmocr" in vllm_model.lower():
+            suitability = "Best suited for PDF conversion"
+            suit_color = "#34d399"
+        else:
+            suitability = "Best suited for RAG processing"
+            suit_color = "#60a5fa"
+            
+        display_model = vllm_model if vllm_model else "None Loaded"
+        system_status_badge = f"""
+        <div style='display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;'>
+            <span class='badge-success' style='padding: 6px 12px; font-weight: 700;'>✓ System Healthy</span>
+            <div style='font-size: 0.75rem; color: #94a3b8; line-height: 1.2;'>
+                Model: <span style='font-family: monospace; color: #e2e8f0; font-weight: 600;'>{display_model}</span><br>
+                <span style='color: {suit_color}; font-weight: 600;'>● {suitability}</span>
+            </div>
+        </div>
+        """
+    else:
+        degraded_names = [service_names[s] for s in failed_services]
+        degraded_str = ", ".join(degraded_names)
+        fix_instructions = [fixes[s] for s in failed_services]
+        fix_str = " ".join(fix_instructions)
+        
+        # Check if vllm is the only failed service and is loading
+        if failed_services == ["vllm"]:
+            progress = get_vllm_loading_progress()
+            if progress:
+                system_status_badge = f"""
+                <div style='display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;'>
+                    <span class='badge-running' style='padding: 6px 12px; font-weight: 700; animation: pulse 2s infinite;'>⚡ Model Loading</span>
+                    <div style='font-size: 0.75rem; color: #93c5fd; line-height: 1.2;'>
+                        Progress: <span style='font-weight:600; color:#e2e8f0;'>{progress['pct']}%</span> ({progress['shards_loaded']}/{progress['shards_total']})<br>
+                        <span style='color: #93c5fd;'>ETA: {progress['eta']}</span>
+                    </div>
+                </div>
+                """
+            else:
+                system_status_badge = f"""
+                <div style='display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;'>
+                    <span class='badge-failed' style='padding: 6px 12px; font-weight: 700;'>✗ System Degraded</span>
+                    <div style='font-size: 0.75rem; color: #fca5a5; line-height: 1.2;'>
+                        <span style='font-weight: 600;'>Offline:</span> {degraded_str}<br>
+                        <span style='color: #e2e8f0;'>Fix: {fix_str}</span>
+                    </div>
+                </div>
+                """
+        else:
+            system_status_badge = f"""
+            <div style='display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;'>
+                <span class='badge-failed' style='padding: 6px 12px; font-weight: 700;'>✗ System Degraded</span>
+                <div style='font-size: 0.75rem; color: #fca5a5; line-height: 1.2;'>
+                    <span style='font-weight: 600;'>Offline:</span> {degraded_str}<br>
+                    <span style='color: #e2e8f0;'>Fix: {fix_str}</span>
+                </div>
+            </div>
+            """
     return "".join(html_parts), system_status_badge
 
 def get_gpu_metrics():
+    import re
+    import os
     cuda_available = False
     gpu_name = "N/A"
     vram_used = 0
@@ -211,21 +375,239 @@ def get_gpu_metrics():
         
     if cuda_available and vram_total > 0:
         vram_pct = (vram_used / vram_total) * 100.0
+        
+        # Helper to get docker container mapping
+        def get_docker_containers():
+            containers = {}
+            try:
+                res = subprocess.run(
+                    ["docker", "ps", "-a", "--format", "{{.ID}}|{{.Names}}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2
+                )
+                if res.returncode == 0:
+                    for line in res.stdout.strip().split("\n"):
+                        if "|" in line:
+                            cid, name = line.split("|", 1)
+                            containers[cid] = name
+            except Exception:
+                pass
+            return containers
+
+        # Helper to resolve process details
+        def resolve_process_details(pid, name_from_smi):
+            cmdline = ""
+            is_docker = False
+            container_name = ""
+            try:
+                with open(f"/proc/{pid}/cmdline", "r") as f:
+                    raw = f.read()
+                    parts = [p for p in raw.split("\x00") if p]
+                    if parts:
+                        cmdline = " ".join(parts)
+            except Exception:
+                pass
+            if not cmdline:
+                cmdline = name_from_smi
+            try:
+                with open(f"/proc/{pid}/cgroup", "r") as f:
+                    cgroup_content = f.read()
+                    if "docker" in cgroup_content or "containerd" in cgroup_content:
+                        is_docker = True
+                        for line in cgroup_content.splitlines():
+                            if "docker-" in line:
+                                parts = line.split("docker-")
+                                if len(parts) > 1:
+                                    container_name = parts[1].split(".")[0][:12]
+                                    break
+                            elif "docker/" in line:
+                                parts = line.split("docker/")
+                                if len(parts) > 1:
+                                    container_name = parts[1].split("/")[0][:12]
+                                    break
+            except Exception:
+                pass
+            return cmdline, is_docker, container_name
+
+        def get_display_name(cmdline, default_name):
+            if not cmdline:
+                return default_name
+            parts = cmdline.split(" ")
+            first = parts[0]
+            basename = os.path.basename(first)
+            if basename:
+                if basename.startswith("python") and len(parts) > 1:
+                    script_name = os.path.basename(parts[1])
+                    return f"python: {script_name}"
+                return basename
+            return default_name
+
+        # Parse active GPU processes
+        processes = []
+        try:
+            res_proc = subprocess.run(
+                ["nvidia-smi"],
+                capture_output=True,
+                text=True,
+                timeout=3
+            )
+            if res_proc.returncode == 0 and res_proc.stdout:
+                lines = res_proc.stdout.splitlines()
+                in_process_section = False
+                for line in lines:
+                    if "Processes:" in line:
+                        in_process_section = True
+                        continue
+                    if in_process_section:
+                        if "=====" in line:
+                            continue
+                        if "+-----" in line:
+                            if len(processes) > 0:
+                                break
+                            continue
+                        match = re.search(r'\|\s+(\d+)\s+(?:N/A|\d+)\s+(?:N/A|\d+)\s+(\d+)\s+([CG]|[C\+G])\s+(.+?)\s+(\d+)\s*MiB\s*\|', line)
+                        if match:
+                            gpu_id = int(match.group(1))
+                            pid = int(match.group(2))
+                            proc_type = match.group(3)
+                            proc_name = match.group(4).strip()
+                            vram_used_proc = int(match.group(5))
+                            processes.append({
+                                "gpu_id": gpu_id,
+                                "pid": pid,
+                                "type": proc_type,
+                                "name": proc_name,
+                                "vram": vram_used_proc
+                            })
+        except Exception:
+            pass
+
+        docker_map = get_docker_containers()
+        essential_keywords = ["xorg", "gnome-shell", "gdm", "kwin", "wayland", "systemd", "lightdm"]
+        
+        resolved_procs = []
+        vram_reclaimable = 0.0
+        
+        for p in processes:
+            cmdline, is_docker, container_id = resolve_process_details(p["pid"], p["name"])
+            container_name = docker_map.get(container_id, container_id) if container_id else ""
+            
+            is_essential = any(k in cmdline.lower() or k in p["name"].lower() for k in essential_keywords)
+            reclaimable = not is_essential
+            
+            display_name = get_display_name(cmdline, p["name"])
+            
+            if is_docker:
+                type_text = f"Docker: {container_name}" if container_name else "Docker"
+                type_badge_style = "background: rgba(245, 158, 11, 0.15); color: #f59e0b;"
+                action_text = f"Stop container '{container_name}'" if container_name else "Stop container"
+                action_color = "#f59e0b"
+            elif is_essential:
+                type_text = "System Graphics"
+                type_badge_style = "background: rgba(148, 163, 184, 0.15); color: #94a3b8;"
+                action_text = "System process (essential)"
+                action_color = "#94a3b8"
+            else:
+                type_text = "Application"
+                type_badge_style = "background: rgba(59, 130, 246, 0.15); color: #60a5fa;"
+                action_text = "Close application / process"
+                action_color = "#60a5fa"
+                
+            if reclaimable:
+                vram_reclaimable += p["vram"]
+                
+            resolved_procs.append({
+                "display_name": display_name,
+                "cmdline": cmdline,
+                "pid": p["pid"],
+                "vram": p["vram"],
+                "type_text": type_text,
+                "type_badge_style": type_badge_style,
+                "action_text": action_text,
+                "action_color": action_color
+            })
+            
+        vram_free = max(0.0, vram_total - vram_used)
+        vram_potential_free = vram_free + vram_reclaimable
+        
+        rows_html = ""
+        if not resolved_procs:
+            rows_html = """
+            <tr>
+                <td colspan='3' style='padding: 12px; text-align: center; color: #94a3b8;'>No active GPU processes detected.</td>
+            </tr>
+            """
+        else:
+            for rp in resolved_procs:
+                rows_html += f"""
+                <tr style='border-bottom: 1px solid rgba(255,255,255,0.05);'>
+                    <td style='padding: 8px 10px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;'>
+                        <span style='color: #e2e8f0; font-weight: 600;' title="{rp['cmdline']}">{rp['display_name']}</span><br>
+                        <span style='color: #64748b; font-size: 0.7rem;'>PID: {rp['pid']}</span>
+                    </td>
+                    <td style='padding: 8px 10px; font-family: "JetBrains Mono", monospace; color: #e2e8f0;'>
+                        {rp['vram']:,.0f} MB
+                    </td>
+                    <td style='padding: 8px 10px;'>
+                        <span style='padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; display: inline-block; {rp['type_badge_style']}'>
+                            {rp['type_text']}
+                        </span>
+                        <div style='font-size: 0.65rem; color: {rp['action_color']}; margin-top: 2px;'>{rp['action_text']}</div>
+                    </td>
+                </tr>
+                """
+
         vram_html = f"""
-        <div style='background: rgba(17, 24, 39, 0.5); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 10px; padding: 18px; margin-top: 10px;'>
+        <div style='background: rgba(17, 24, 39, 0.5); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 12px; padding: 18px; margin-top: 10px;'>
             <div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;'>
                 <span class='badge-success' style='padding:4px 10px;'>✓ CUDA Available - 1 GPU</span>
             </div>
             <div style='font-weight:600; font-size:1.05rem; color:#e2e8f0;'>GPU 0: {gpu_name}</div>
-            <div style='color:#94a3b8; font-size:0.85rem; margin-top:4px;'>VRAM Usage</div>
             
+            <div style='color:#94a3b8; font-size:0.85rem; margin-top:12px; margin-bottom:4px;'>Overall VRAM Usage</div>
             <div class='vram-progress-container'>
                 <div style='display:flex; justify-content:space-between; font-size:0.85rem; font-family:"JetBrains Mono", monospace; color:#34d399; margin-bottom:4px;'>
                     <span>{vram_pct:.1f}%</span>
                     <span>{vram_used:,.0f} MB / {vram_total:,.0f} MB</span>
                 </div>
-                <div class='vram-bar-outer'>
-                    <div class='vram-bar-inner' style='width: {vram_pct:.1f}%;'></div>
+                <div class='vram-bar-outer' style='background: rgba(255,255,255,0.05); height: 8px; border-radius: 4px; overflow: hidden;'>
+                    <div class='vram-bar-inner' style='width: {vram_pct:.1f}%; height: 100%; background: linear-gradient(90deg, #34d399, #10b981); transition: width 0.5s ease;'></div>
+                </div>
+            </div>
+            
+            <div style='display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 16px; margin-bottom: 16px;'>
+                <div style='background: rgba(30, 41, 59, 0.4); border: 1px solid rgba(255,255,255,0.05); border-radius: 8px; padding: 10px; text-align: center;'>
+                    <div style='font-size: 0.75rem; color: #94a3b8; text-transform: uppercase;'>Free VRAM</div>
+                    <div style='font-size: 1.15rem; font-weight: 700; color: #34d399; margin-top: 4px;'>{vram_free:,.0f} MB</div>
+                </div>
+                <div style='background: rgba(30, 41, 59, 0.4); border: 1px solid rgba(255,255,255,0.05); border-radius: 8px; padding: 10px; text-align: center;'>
+                    <div style='font-size: 0.75rem; color: #94a3b8; text-transform: uppercase;'>Reclaimable</div>
+                    <div style='font-size: 1.15rem; font-weight: 700; color: #fbbf24; margin-top: 4px;'>{vram_reclaimable:,.0f} MB</div>
+                </div>
+                <div style='grid-column: span 2; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 8px; padding: 10px; text-align: center;'>
+                    <div style='font-size: 0.75rem; color: #a7f3d0; text-transform: uppercase;'>Max Potential Free VRAM</div>
+                    <div style='font-size: 1.25rem; font-weight: 800; color: #34d399; margin-top: 4px;'>{vram_potential_free:,.0f} MB</div>
+                    <div style='font-size: 0.7rem; color: #6ee7b7; margin-top: 2px;'>If non-essential apps & containers are stopped</div>
+                </div>
+            </div>
+            
+            <div style='margin-top: 16px;'>
+                <div style='font-size: 0.9rem; font-weight: 600; color: #c7d2fe; margin-bottom: 8px;'>Active GPU Processes</div>
+                
+                <div style='max-height: 250px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.05); border-radius: 8px;'>
+                    <table style='width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: left; background: rgba(15, 23, 42, 0.3);'>
+                        <thead>
+                            <tr style='border-bottom: 1px solid rgba(255,255,255,0.1); background: rgba(15, 23, 42, 0.6); color: #94a3b8;'>
+                                <th style='padding: 8px 10px;'>Process / PID</th>
+                                <th style='padding: 8px 10px;'>VRAM</th>
+                                <th style='padding: 8px 10px;'>Type / Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {rows_html}
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
@@ -256,6 +638,17 @@ def get_gpu_metrics():
 
 settings = load_settings()
 
+current_model = settings.get("model_name", "allenai/olmOCR-2-7B-1025-FP8")
+model_choices = [
+    "allenai/olmOCR-2-7B-1025-FP8",
+    "nvidia/Qwen3.6-35B-A3B-NVFP4",
+    "nvidia/Phi-4-reasoning-plus-NVFP4",
+    "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
+    "nvidia/Llama-3.3-70B-Instruct-NVFP4"
+]
+if current_model not in model_choices:
+    model_choices.append(current_model)
+
 with gr.Blocks(title="OLMOCR PDF Suite") as demo:
     # State tracking
     active_run_id = gr.State("")
@@ -267,7 +660,7 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
     # ── Main Content with Sidebar ───────────────────────────────────
     with gr.Row():
         # Left sidebar
-        with gr.Column(scale=1, elem_classes=["sidebar-panel"]):
+        with gr.Column(scale=1, elem_classes=["sidebar-panel", "main-sidebar"]):
             gr.HTML(
                 "<div class='sidebar-logo-container'>"
                 "<div class='sidebar-logo-title'>IQ-RAG Client</div>"
@@ -281,6 +674,43 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
             rag_dashboard_btn = gr.Button("📊 Case Dashboard", variant="secondary", elem_classes=["nav-btn"])
             rag_chat_btn = gr.Button("💬 RAG Processing", variant="secondary", elem_classes=["nav-btn"])
             diagnostics_btn = gr.Button("🖥️ System Diagnostics", variant="secondary", elem_classes=["nav-btn"])
+            
+            with gr.Accordion("🐳 Inference Server (Docker)", open=True, elem_classes=["glass-panel"]):
+                docker_status_info = gr.Markdown("Manage the local GPU inference container.")
+                
+                hf_token_input = gr.Textbox(
+                    label="Hugging Face Token", 
+                    value=settings["hf_token"], 
+                    type="password"
+                )
+                docker_model_name_input = gr.Dropdown(
+                    label="Model Name",
+                    choices=model_choices,
+                    value=current_model,
+                    interactive=True
+                )
+                docker_port_input = gr.Number(
+                    label="Docker Host Port", 
+                    value=settings["docker_port"], 
+                    precision=0
+                )
+                docker_gpu_mem_input = gr.Slider(
+                    label="GPU Memory Utilization", 
+                    minimum=0.1, maximum=1.0, step=0.05, 
+                    value=settings["docker_gpu_mem"]
+                )
+                docker_max_model_len_input = gr.Slider(
+                    label="Max Model Length", 
+                    minimum=2048, maximum=32768, step=1024, 
+                    value=settings["docker_max_model_len"]
+                )
+                
+                with gr.Row():
+                    docker_start_btn = gr.Button("▶️ Start", variant="secondary")
+                    docker_stop_btn = gr.Button("⏹️ Stop", variant="secondary")
+                
+                docker_recreate_btn = gr.Button("🔄 Recreate & Run", variant="primary")
+                docker_action_status = gr.Markdown()
             
             # Sidebar Footer
             with gr.Column(elem_classes=["sidebar-footer-container"]):
@@ -321,17 +751,6 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                                 value=settings["server_url"], 
                                 placeholder="http://localhost:8000/v1"
                             )
-                            current_model = settings.get("model_name", "allenai/olmOCR-2-7B-1025-FP8")
-                            model_choices = [
-                                "allenai/olmOCR-2-7B-1025-FP8",
-                                "nvidia/Qwen3.6-35B-A3B-NVFP4",
-                                "nvidia/Phi-4-reasoning-plus-NVFP4",
-                                "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
-                                "nvidia/Llama-3.3-70B-Instruct-NVFP4"
-                            ]
-                            if current_model not in model_choices:
-                                model_choices.append(current_model)
-
                             model_name_input = gr.Dropdown(
                                 label="Model Name",
                                 choices=model_choices,
@@ -419,7 +838,7 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                                     language="shell",
                                     value="",
                                     interactive=False,
-                                    lines=10,
+                                    lines=30,
                                     elem_classes=["log-console"]
                                 )
 
@@ -491,9 +910,12 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                         )
                         
                     # Column 3: Rendered Preview
-                    with gr.Column(scale=1, elem_id="preview-scroll-container", elem_classes=["glass-panel"]):
+                    with gr.Column(scale=1, elem_classes=["glass-panel"]):
                         gr.Markdown("## 👁️ Rendered Preview")
-                        rendered_markdown = gr.Markdown(value="Select a processed document to preview.")
+                        rendered_markdown = gr.Markdown(
+                            value="Select a processed document to preview.",
+                            elem_id="preview-scroll-container"
+                        )
 
             # ────────────────────────────────────────────────────────
             # PANEL 3: Case Dashboard
@@ -512,39 +934,8 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
             # ────────────────────────────────────────────────────────
             with gr.Column(visible=False) as diagnostics_panel:
                 with gr.Row():
-                    # Left Column: Inference server docker manager controls
+                    # Left Column: diagnostics controls
                     with gr.Column(scale=1, elem_classes=["sidebar-panel"]):
-                        with gr.Accordion("🐳 Inference Server (Docker)", open=True, elem_classes=["glass-panel"]):
-                            docker_status_info = gr.Markdown("Manage the local GPU inference container.")
-                            
-                            hf_token_input = gr.Textbox(
-                                label="Hugging Face Token", 
-                                value=settings["hf_token"], 
-                                type="password"
-                            )
-                            docker_port_input = gr.Number(
-                                label="Docker Host Port", 
-                                value=settings["docker_port"], 
-                                precision=0
-                            )
-                            docker_gpu_mem_input = gr.Slider(
-                                label="GPU Memory Utilization", 
-                                minimum=0.1, maximum=1.0, step=0.05, 
-                                value=settings["docker_gpu_mem"]
-                            )
-                            docker_max_model_len_input = gr.Slider(
-                                label="Max Model Length", 
-                                minimum=2048, maximum=32768, step=1024, 
-                                value=settings["docker_max_model_len"]
-                            )
-                            
-                            with gr.Row():
-                                docker_start_btn = gr.Button("▶️ Start", variant="secondary")
-                                docker_stop_btn = gr.Button("⏹️ Stop", variant="secondary")
-                            
-                            docker_recreate_btn = gr.Button("🔄 Recreate & Run", variant="primary")
-                            docker_action_status = gr.Markdown()
-
                         with gr.Accordion("🧹 Reset & Cleanup", open=False, elem_classes=["glass-panel"]):
                             gr.Markdown("Select components to clean up and reclaim disk space:")
                             clean_runs_chk = gr.Checkbox(label="Obsolete run directories (workspace/run_*)", value=True)
@@ -818,11 +1209,14 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
     docker_recreate_btn.click(
         ui_recreate_container,
         inputs=[
-            hf_token_input, docker_port_input, model_name_input,
+            hf_token_input, docker_port_input, docker_model_name_input,
             docker_gpu_mem_input, docker_max_model_len_input
         ],
         outputs=[docker_action_status, backend_status_badge, server_url_input]
     )
+
+    model_name_input.change(lambda x: x, inputs=[model_name_input], outputs=[docker_model_name_input])
+    docker_model_name_input.change(lambda x: x, inputs=[docker_model_name_input], outputs=[model_name_input])
 
     reset_cleanup_btn.click(
         perform_reset_cleanup,
@@ -865,7 +1259,7 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
     def periodic_diagnostics_check(port_val):
         if port_val is None:
             port_val = 8000
-        backing_services, header_health_badge = check_backing_services()
+        backing_services, header_health_badge = check_backing_services(vllm_port=int(port_val))
         gpu_stats = get_gpu_metrics()
         return backing_services, gpu_stats, header_health_badge
 

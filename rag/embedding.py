@@ -32,7 +32,7 @@ DEFAULT_QDRANT_CONFIG = {
     "grpc_port": 6334,
 }
 
-DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+DEFAULT_EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"
 
 def get_collection_name(model_name=None) -> str:
     """Get the Qdrant collection name based on the embedding model name.
@@ -88,7 +88,7 @@ def load_embedding_model(model_name=None):
     Uses lazy loading with singleton pattern.
 
     Args:
-        model_name: HuggingFace model name. Defaults to all-MiniLM-L6-v2.
+        model_name: HuggingFace model name. Defaults to BAAI/bge-large-en-v1.5.
 
     Returns:
         The loaded SentenceTransformer model.

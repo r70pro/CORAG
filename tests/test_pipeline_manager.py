@@ -630,6 +630,34 @@ class TestPipelineManager(unittest.TestCase):
         mock_proc_finished.terminate.assert_not_called()
         state.active_runs.clear()
 
+    @patch("httpx.get")
+    def test_process_pdfs_preflight_model_mismatch(self, mock_get):
+        mock_response = MagicMock(status_code=200)
+        mock_response.json.return_value = {
+            "data": [
+                {"id": "nvidia/Phi-4-reasoning-plus-NVFP4"}
+            ]
+        }
+        mock_get.return_value = mock_response
+        
+        mock_file = MagicMock()
+        mock_file.name = "test.pdf"
+        
+        gen = pipeline_manager.process_pdfs(
+            files=[mock_file],
+            server_url="http://localhost:8000/v1",
+            model_name="allenai/olmOCR-2-7B-1025-FP8",
+            workers=4,
+            max_concurrent=20,
+            max_retries=8,
+            target_dim=1288,
+            guided_decoding=True
+        )
+        res = list(gen)
+        self.assertEqual(len(res), 1)
+        self.assertTrue("Model Mismatch" in res[0][1]["value"])
+        self.assertTrue("The requested model 'allenai/olmOCR-2-7B-1025-FP8' is not loaded" in res[0][0])
+
 
 if __name__ == "__main__":
     unittest.main()

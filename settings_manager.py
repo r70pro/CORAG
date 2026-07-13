@@ -24,7 +24,7 @@ def load_settings():
         # RAG Analysis settings
         "analysis_model_name": "nvidia/Phi-4-reasoning-plus-NVFP4",
         "analysis_server_url": "http://localhost:8000/v1",
-        "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+        "embedding_model": "BAAI/bge-large-en-v1.5",
         "embedding_device": "cpu",
         "chunk_size": 800,
         "chunk_overlap": 100,

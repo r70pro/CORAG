@@ -174,7 +174,7 @@ def get_all_runs():
             return cur.fetchall()
 
 
-def is_run_indexed(run_id):
+def is_run_indexed(run_id, check_vector_store=True):
     """Check if a run has already been indexed."""
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -183,7 +183,40 @@ def is_run_indexed(run_id):
                 (run_id,)
             )
             row = cur.fetchone()
-            return row is not None and row[0] == 'indexed'
+            db_indexed = row is not None and row[0] == 'indexed'
+            if not db_indexed:
+                return False
+
+            if check_vector_store:
+                try:
+                    from rag.embedding import get_qdrant_client, get_collection_name, Filter, FieldCondition, MatchValue
+                    client = get_qdrant_client()
+                    collection_name = get_collection_name()
+                    
+                    # Check if collection exists
+                    collections = client.get_collections().collections
+                    if collection_name not in [c.name for c in collections]:
+                        return False
+                    
+                    # Count matching points in Qdrant
+                    count_res = client.count(
+                        collection_name=collection_name,
+                        count_filter=Filter(
+                            must=[
+                                FieldCondition(
+                                    key="run_id",
+                                    match=MatchValue(value=run_id),
+                                )
+                            ]
+                        )
+                    )
+                    if count_res.count == 0:
+                        return False
+                except Exception as e:
+                    # Fallback to postgres database status if Qdrant check fails
+                    print(f"Warning: Qdrant check in is_run_indexed failed: {e}")
+
+            return True
 
 
 # ── Document operations ────────────────────────────────────────
