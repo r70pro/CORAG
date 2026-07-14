@@ -30,6 +30,9 @@ def load_settings():
         "chunk_overlap": 100,
         "retrieval_top_k": 8,
         "rag_auto_start_infra": False,
+        "use_reranker": True,
+        "reranker_model": "BAAI/bge-reranker-large",
+        "reranker_device": "cuda",
     }
     if os.path.exists(SETTINGS_FILE):
         try:

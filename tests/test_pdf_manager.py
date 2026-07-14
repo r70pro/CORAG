@@ -12,7 +12,7 @@ from PIL import Image
 os.environ["TESTING"] = "true"
 
 import pdf_manager
-import state
+import process_state
 
 
 class TestPdfManager(unittest.TestCase):
@@ -65,7 +65,7 @@ class TestPdfManager(unittest.TestCase):
         mock_reader_instance.pages = [1, 2] # 2 pages
         
         # Mock active_runs
-        state.active_runs["run1"] = {"run_dir": "/tmp/run"}
+        process_state.active_runs["run1"] = {"run_dir": "/tmp/run"}
         
         # Path-aware open mock
         def open_mock(filename, mode="r", *args, **kwargs):
@@ -81,7 +81,7 @@ class TestPdfManager(unittest.TestCase):
             self.assertEqual(total_pages, 2)
             self.assertEqual(page_ranges, [[0, 100, 1]])
         
-        state.active_runs.clear()
+        process_state.active_runs.clear()
 
     def test_get_markdown_for_page(self):
         # Case 1: no markdown
@@ -104,7 +104,7 @@ class TestPdfManager(unittest.TestCase):
         mock_mapping.return_value = ("/tmp/doc.pdf", 2, [[0, 10, 1]])
         mock_exists.return_value = True
         
-        state.active_runs["run1"] = {"run_dir": "/tmp/run"}
+        process_state.active_runs["run1"] = {"run_dir": "/tmp/run"}
         
         res = pdf_manager.on_file_selected("doc.md", "run1")
         # Returns (pdf_path, total_pages, page_ranges, full_markdown, gr.update(...), pdf_path)
@@ -114,7 +114,7 @@ class TestPdfManager(unittest.TestCase):
         self.assertEqual(res[3], "hello markdown text")
         self.assertEqual(res[5], "/tmp/doc.pdf")
         
-        state.active_runs.clear()
+        process_state.active_runs.clear()
 
     @patch("pdf_manager.render_pdf_page")
     @patch("pdf_manager.pil_to_base64")

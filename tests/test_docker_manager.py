@@ -7,7 +7,6 @@ import subprocess
 import unittest
 from unittest.mock import patch, MagicMock
 
-import sys
 
 # Prevent system operations during import
 os.environ["TESTING"] = "true"
@@ -17,17 +16,7 @@ import docker_manager
 
 class TestDockerManager(unittest.TestCase):
 
-    @classmethod
-    def setUpClass(cls):
-        # Hide app module to let state.get_fn resolve to locally imported versions
-        cls.saved_app = sys.modules.get('app')
-        if 'app' in sys.modules:
-            del sys.modules['app']
 
-    @classmethod
-    def tearDownClass(cls):
-        if cls.saved_app:
-            sys.modules['app'] = cls.saved_app
 
     @patch("subprocess.run")
     def test_get_docker_status_running(self, mock_run):

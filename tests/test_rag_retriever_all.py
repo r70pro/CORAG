@@ -230,6 +230,54 @@ class TestRAGRetrieverAll(unittest.TestCase):
         res = rag_ret.search_similar("query", date_from="1971-11-28", date_to="2020-08-27")
         self.assertEqual(res, [])
 
+    @patch("sentence_transformers.CrossEncoder")
+    @patch("rag.retriever.encode_query")
+    @patch("rag.retriever.get_qdrant_client")
+    @patch("rag.db.get_chunks_by_qdrant_ids")
+    def test_search_similar_with_reranker(self, mock_get_chunks, mock_qdrant_client, mock_encode, mock_cross_encoder_class):
+        mock_encode.return_value = [0.1, 0.2]
+        
+        # Configure DB chunks return
+        mock_get_chunks.return_value = [
+            {"qdrant_point_id": "point1", "chunk_id": "c1", "text": "shoulder pain acute"},
+            {"qdrant_point_id": "point2", "chunk_id": "c2", "text": "knee replacement surgery"}
+        ]
+        
+        # Configure Qdrant query response
+        mock_client = mock_qdrant_client.return_value
+        mock_res1 = MagicMock()
+        mock_res1.id = "point1"
+        mock_res1.score = 0.9
+        mock_res1.payload = {"chunk_id": "c1", "text_preview": "shoulder pain acute"}
+        
+        mock_res2 = MagicMock()
+        mock_res2.id = "point2"
+        mock_res2.score = 0.8
+        mock_res2.payload = {"chunk_id": "c2", "text_preview": "knee replacement surgery"}
+        
+        mock_client.search.return_value = [mock_res1, mock_res2]
+        
+        # Configure CrossEncoder predict returning raw logits
+        mock_encoder = mock_cross_encoder_class.return_value
+        mock_encoder.predict.return_value = [0.0, 2.0]
+        
+        # Reset cached reranker model references
+        import rag.embedding as rag_emb
+        rag_emb._reranker_model = None
+        rag_emb._reranker_model_name = None
+        
+        # Run search similar with use_reranker=True
+        res = rag_ret.search_similar(
+            query="knee surgery",
+            top_k=2,
+            use_reranker=True,
+            reranker_device="cpu"
+        )
+        # Should rerank and return knee surgery first due to higher logit score
+        self.assertEqual(len(res), 2)
+        self.assertEqual(res[0]["chunk_id"], "c2")
+        self.assertEqual(res[1]["chunk_id"], "c1")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,7 +6,7 @@ from io import BytesIO
 import pypdfium2 as pdfium
 from pypdf import PdfReader
 import gradio as gr
-import state
+import process_state
 
 def is_safe_filename(filename):
     if not filename:
@@ -29,8 +29,8 @@ def load_markdown_content(selected_file, run_id_state):
     if not is_safe_filename(selected_file):
         return "Invalid file path.", "Invalid file path.", None
 
-    with state.active_runs_lock:
-        run_info = state.active_runs.get(run_id_state)
+    with process_state.active_runs_lock:
+        run_info = process_state.active_runs.get(run_id_state)
         if not run_info:
             return "Run info not found.", "Run info not found.", None
         run_dir = run_info["run_dir"]
@@ -74,8 +74,8 @@ def get_page_mapping_and_pdf_path(selected_file, run_id_state):
     if not is_safe_filename(selected_file):
         return None, 0, []
 
-    with state.active_runs_lock:
-        run_info = state.active_runs.get(run_id_state)
+    with process_state.active_runs_lock:
+        run_info = process_state.active_runs.get(run_id_state)
         if not run_info:
             return None, 0, []
         run_dir = run_info["run_dir"]
@@ -142,8 +142,8 @@ def on_file_selected(selected_file, run_id_state):
     pdf_path, total_pages, page_ranges = get_page_mapping_and_pdf_path(selected_file, run_id_state)
     
     full_markdown = ""
-    with state.active_runs_lock:
-        run_info = state.active_runs.get(run_id_state)
+    with process_state.active_runs_lock:
+        run_info = process_state.active_runs.get(run_id_state)
         if run_info:
             run_dir = run_info["run_dir"]
             file_path = os.path.join(run_dir, "markdown", "inputs", selected_file)

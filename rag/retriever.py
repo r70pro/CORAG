@@ -33,6 +33,9 @@ def search_similar(
     run_id_filter: Optional[str] = None,
     doc_id_filter: Optional[str] = None,
     score_threshold: float = 0.25,
+    use_reranker: Optional[bool] = None,
+    reranker_model: Optional[str] = None,
+    reranker_device: Optional[str] = None,
 ) -> List[Dict]:
     """Search for chunks similar to the query with optional metadata filters.
 
@@ -46,10 +49,28 @@ def search_similar(
         run_id_filter: Filter by specific OCR run.
         doc_id_filter: Filter by specific document.
         score_threshold: Minimum similarity score to include.
+        use_reranker: Enable or disable Cross-Encoder reranking.
+        reranker_model: HuggingFace model name for Cross-Encoder.
+        reranker_device: Device to run the Cross-Encoder on ('cuda' or 'cpu').
 
     Returns:
         List of result dicts with chunk data, metadata, and similarity score.
     """
+    from settings_manager import load_settings
+    settings = load_settings()
+
+    if use_reranker is None:
+        use_reranker = settings.get("use_reranker", True)
+    if reranker_model is None:
+        reranker_model = settings.get("reranker_model", "BAAI/bge-reranker-large")
+    if reranker_device is None:
+        reranker_device = settings.get("reranker_device", "cuda")
+
+    # Fetch extra candidates if we are reranking to give the reranker a larger pool
+    search_limit = top_k * 3 if use_reranker else top_k * 2
+    if search_limit < 20 and use_reranker:
+        search_limit = 20
+
     # Encode the query
     query_vector = encode_query(query)
 
@@ -93,7 +114,7 @@ def search_similar(
             collection_name=get_collection_name(),
             query_vector=query_vector,
             query_filter=query_filter,
-            limit=top_k * 2,  # Fetch extra for MMR re-ranking
+            limit=search_limit,
             score_threshold=score_threshold,
             with_payload=True,
         )
@@ -106,7 +127,7 @@ def search_similar(
                     collection_name=get_collection_name(),
                     query_vector=query_vector,
                     query_filter=query_filter,
-                    limit=top_k * 2,
+                    limit=search_limit,
                     score_threshold=score_threshold,
                     with_payload=True,
                 )
@@ -154,6 +175,27 @@ def search_similar(
             "patient_name": payload.get("patient_name") or db_data.get("patient_name"),
             "original_filename": db_data.get("original_filename", ""),
         })
+
+    # Apply Reranker if enabled
+    if use_reranker and enriched_results:
+        try:
+            import math
+            from rag.embedding import load_reranker_model
+            reranker = load_reranker_model(reranker_model, reranker_device)
+
+            # Prepare query-chunk pairs
+            pairs = [[query, res["text"]] for res in enriched_results]
+            scores = reranker.predict(pairs)
+
+            # Map logits to probability range [0, 1] using sigmoid
+            for res, score in zip(enriched_results, scores):
+                res["score"] = float(1 / (1 + math.exp(-score)))
+
+            # Sort by new scores descending
+            enriched_results.sort(key=lambda x: x["score"], reverse=True)
+            print(f"Reranking completed successfully for {len(enriched_results)} chunks using {reranker_model}.")
+        except Exception as e:
+            print(f"Error during reranking: {e}. Falling back to default retrieval.")
 
     # Apply MMR re-ranking for diversity
     if len(enriched_results) > top_k:

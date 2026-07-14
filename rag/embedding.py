@@ -55,6 +55,8 @@ def get_collection_name(model_name=None) -> str:
 # Singleton model holder
 _embedding_model = None
 _embedding_model_name = None
+_reranker_model = None
+_reranker_model_name = None
 
 
 def get_qdrant_config():
@@ -330,3 +332,35 @@ def delete_run_vectors(run_id: str, model_name=None):
         print(f"Deleted vectors for run {run_id} from Qdrant.")
     except Exception as e:
         print(f"Error deleting run vectors: {e}")
+
+
+def load_reranker_model(model_name=None, device=None):
+    """Load the sentence-transformer cross-encoder reranker model.
+
+    Uses lazy loading with singleton pattern.
+    """
+    global _reranker_model, _reranker_model_name
+
+    if model_name is None:
+        try:
+            model_name = load_settings().get("reranker_model", "BAAI/bge-reranker-large")
+        except Exception:
+            model_name = "BAAI/bge-reranker-large"
+
+    if device is None:
+        try:
+            device = load_settings().get("reranker_device", "cuda")
+        except Exception:
+            device = "cuda"
+
+    if _reranker_model is not None and _reranker_model_name == model_name:
+        return _reranker_model
+
+    from sentence_transformers import CrossEncoder
+
+    print(f"Loading reranker model '{model_name}' on {device}...")
+    _reranker_model = CrossEncoder(model_name, device=device)
+    _reranker_model_name = model_name
+    print("Reranker model loaded successfully.")
+    return _reranker_model
+

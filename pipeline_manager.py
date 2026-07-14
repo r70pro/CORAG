@@ -10,7 +10,7 @@ import datetime
 import subprocess
 import httpx
 import gradio as gr
-import state
+import process_state
 
 from settings_manager import WORKSPACE_DIR
 from html_utils import make_progress_bar_html, make_file_status_html, make_upload_manifest_html
@@ -121,12 +121,10 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
             file_page_counts[idx] = 1
             total_pages += 1
 
-    # Dynamic getter for HTML helper
-    manifest_fn = state.get_fn('make_upload_manifest_html', make_upload_manifest_html)
-    manifest_html = manifest_fn(file_mapping, file_page_counts, file_sizes)
+    manifest_html = make_upload_manifest_html(file_mapping, file_page_counts, file_sizes)
 
     # Dynamic workspace dir lookup
-    workspace_dir = state.get_val('WORKSPACE_DIR', WORKSPACE_DIR)
+    workspace_dir = WORKSPACE_DIR
 
     run_id = str(uuid.uuid4())
     run_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -142,8 +140,8 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
         shutil.copy(path, dest)
         copied_relative_paths.append(os.path.join("inputs", safe_name))
 
-    with state.active_runs_lock:
-        state.active_runs[run_id] = {
+    with process_state.active_runs_lock:
+        process_state.active_runs[run_id] = {
             "stop": False,
             "proc": None,
             "run_dir": run_dir,
@@ -178,9 +176,9 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
             text=True,
             bufsize=1
         )
-        with state.active_runs_lock:
-            if run_id in state.active_runs:
-                state.active_runs[run_id]["proc"] = proc
+        with process_state.active_runs_lock:
+            if run_id in process_state.active_runs:
+                process_state.active_runs[run_id]["proc"] = proc
     except Exception as e:
         yield (
             f"Failed to start pipeline process: {e}",
@@ -218,10 +216,9 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
     pattern_vllm_queue = re.compile(r"vllm running req:\s*(\d+)\s+queue req:\s*(\d+)")
     pattern_vllm_standalone_queue = re.compile(r"Running:\s*(\d+).*?(?:Waiting|Pending):\s*(\d+)")
 
-    status_table_fn = state.get_fn('make_file_status_html', make_file_status_html)
-    file_status_html = status_table_fn(file_mapping, file_page_counts, completed_file_indices, failed_file_indices)
+    file_status_html = make_file_status_html(file_mapping, file_page_counts, completed_file_indices, failed_file_indices)
 
-    progress_bar_fn = state.get_fn('make_progress_bar_html', make_progress_bar_html)
+    progress_bar_fn = make_progress_bar_html
     yield (
         "Initializing pipeline...",
         gr.update(value="<span class='badge-running'>Running</span>"),
@@ -243,8 +240,8 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
 
     try:
         while t.is_alive() or not q.empty():
-            with state.active_runs_lock:
-                if run_id in state.active_runs and state.active_runs[run_id]["stop"]:
+            with process_state.active_runs_lock:
+                if run_id in process_state.active_runs and process_state.active_runs[run_id]["stop"]:
                     proc.terminate()
                     try:
                         proc.wait(timeout=3)
@@ -267,7 +264,7 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
                         None,
                         gr.update(interactive=True),
                         "",
-                        status_table_fn(file_mapping, file_page_counts, completed_file_indices, failed_file_indices),
+                        make_file_status_html(file_mapping, file_page_counts, completed_file_indices, failed_file_indices),
                         manifest_html,
                     )
                     return
@@ -352,7 +349,7 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
                 elapsed = now - start_time
                 status_html = f"<div class='stat-card'><div class='stat-value'>{completed_pages}</div><div class='stat-label'>Completed Pages</div></div>"
                 failed_html = f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"
-                file_status_html = status_table_fn(file_mapping, file_page_counts, completed_file_indices, failed_file_indices)
+                file_status_html = make_file_status_html(file_mapping, file_page_counts, completed_file_indices, failed_file_indices)
                 
                 if not dropdown_value_set and streaming_choices:
                     dropdown_val_update = gr.update(choices=streaming_choices, value=streaming_choices[0][1])
@@ -399,7 +396,7 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
                 
             zip_file_path = os.path.join(run_dir, "all_markdown_results.zip")
             try:
-                state.get_fn('make_zip', make_zip)(md_inputs_dir, zip_file_path)
+                make_zip(md_inputs_dir, zip_file_path)
             except Exception as e:
                 print(f"Error creating ZIP archive: {e}")
 
@@ -413,7 +410,7 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
         else:
             status_text = "<span class='badge-failed'>Failed</span>"
 
-        file_status_html = status_table_fn(file_mapping, file_page_counts, completed_file_indices, failed_file_indices)
+        file_status_html = make_file_status_html(file_mapping, file_page_counts, completed_file_indices, failed_file_indices)
 
         if not dropdown_value_set and choices:
             dropdown_val_update = gr.update(choices=choices, value=dropdown_value)
@@ -453,17 +450,17 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
             manifest_html,
         )
     finally:
-        with state.active_runs_lock:
-            if run_id in state.active_runs:
-                state.active_runs[run_id]["completed"] = True
+        with process_state.active_runs_lock:
+            if run_id in process_state.active_runs:
+                process_state.active_runs[run_id]["completed"] = True
 
 def stop_processing(run_id):
     if not run_id:
         return "<span class='badge-idle'>No active process to stop.</span>"
-    with state.active_runs_lock:
-        if run_id in state.active_runs:
-            state.active_runs[run_id]["stop"] = True
-            proc = state.active_runs[run_id]["proc"]
+    with process_state.active_runs_lock:
+        if run_id in process_state.active_runs:
+            process_state.active_runs[run_id]["stop"] = True
+            proc = process_state.active_runs[run_id]["proc"]
             if proc:
                 proc.terminate()
             return f"<span class='badge-stopped'>Stop request sent for run {run_id[:8]}.</span>"
@@ -472,8 +469,8 @@ def stop_processing(run_id):
 def cleanup_active_runs():
     if os.environ.get("TESTING") == "true":
         return
-    with state.active_runs_lock:
-        for run_id, run_info in state.active_runs.items():
+    with process_state.active_runs_lock:
+        for run_id, run_info in process_state.active_runs.items():
             proc = run_info.get("proc")
             if proc and proc.poll() is None:
                 print(f"Terminating running pipeline process for run {run_id[:8]}...")

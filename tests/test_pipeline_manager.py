@@ -3,7 +3,6 @@ Unit tests for pipeline_manager.py.
 """
 
 import os
-import sys
 import queue
 import unittest
 import subprocess
@@ -13,14 +12,14 @@ from unittest.mock import patch, MagicMock
 os.environ["TESTING"] = "true"
 
 import pipeline_manager
-import state
+import process_state
 
 
 class TestPipelineManager(unittest.TestCase):
 
     def setUp(self):
-        with state.active_runs_lock:
-            state.active_runs.clear()
+        with process_state.active_runs_lock:
+            process_state.active_runs.clear()
 
     def test_enqueue_output_success(self):
         mock_out = MagicMock()
@@ -133,8 +132,8 @@ class TestPipelineManager(unittest.TestCase):
 
     def test_stop_processing_active(self):
         mock_proc = MagicMock()
-        with state.active_runs_lock:
-            state.active_runs["run123"] = {
+        with process_state.active_runs_lock:
+            process_state.active_runs["run123"] = {
                 "proc": mock_proc,
                 "stop": False,
                 "run_dir": "/tmp/run"
@@ -147,7 +146,7 @@ class TestPipelineManager(unittest.TestCase):
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None # Running
         
-        active_runs_dict = state.active_runs
+        active_runs_dict = process_state.active_runs
         active_runs_dict["run123"] = {
             "proc": mock_proc,
             "stop": False
@@ -262,9 +261,9 @@ class TestPipelineManager(unittest.TestCase):
             if "markdown" in path:
                 rid = run_id_ref[0]
                 if rid:
-                    with state.active_runs_lock:
-                        if rid in state.active_runs:
-                            state.active_runs[rid]["stop"] = True
+                    with process_state.active_runs_lock:
+                        if rid in process_state.active_runs:
+                            process_state.active_runs[rid]["stop"] = True
                 return ["0_test.md"]
             return []
 
@@ -338,9 +337,9 @@ class TestPipelineManager(unittest.TestCase):
             res.append(step_1)
             run_id = step_1[9]
             if run_id:
-                with state.active_runs_lock:
-                    if run_id in state.active_runs:
-                        state.active_runs[run_id]["stop"] = True
+                with process_state.active_runs_lock:
+                    if run_id in process_state.active_runs:
+                        process_state.active_runs[run_id]["stop"] = True
 
             res.extend(list(gen))
 
@@ -455,10 +454,10 @@ class TestPipelineManager(unittest.TestCase):
         res1 = list(gen1)
         self.assertTrue(len(res1) > 0)
 
-        # 2. Test run_id missing in state.active_runs when popen starts (160->179 branch)
+        # 2. Test run_id missing in process_state.active_runs when popen starts (160->179 branch)
         def popen_side_effect(*args, **kwargs):
-            with state.active_runs_lock:
-                state.active_runs.clear()
+            with process_state.active_runs_lock:
+                process_state.active_runs.clear()
             return mock_proc_inst1
 
         mock_popen.side_effect = popen_side_effect
@@ -527,30 +526,25 @@ class TestPipelineManager(unittest.TestCase):
                 return ["0_test.md", "invalid.md"]
             return []
 
-        app_module = sys.modules.pop('app', None)
-        try:
-            with local_patch("os.path.exists", side_effect=exists_side_effect), \
-                 local_patch("os.listdir", side_effect=listdir_side_effect), \
-                 patch("time.monotonic", side_effect=[100.0 + i * 0.25 for i in range(100)]), \
-                 patch("pipeline_manager.make_zip", side_effect=Exception("zip crash")): # 396-397: make_zip exception
-                
-                gen3 = pipeline_manager.process_pdfs(
-                    files=[mock_file],
-                    server_url="http://localhost:8000/v1",
-                    model_name="test-model",
-                    workers=2,
-                    max_concurrent=10,
-                    max_retries=3,
-                    target_dim=1024,
-                    guided_decoding=True
-                )
-                res3 = list(gen3)
-                self.assertTrue(len(res3) > 0)
-        finally:
-            if app_module:
-                sys.modules['app'] = app_module
+        with local_patch("os.path.exists", side_effect=exists_side_effect), \
+             local_patch("os.listdir", side_effect=listdir_side_effect), \
+             patch("time.monotonic", side_effect=[100.0 + i * 0.25 for i in range(100)]), \
+             patch("pipeline_manager.make_zip", side_effect=Exception("zip crash")): # 396-397: make_zip exception
             
-        state.active_runs.clear()
+            gen3 = pipeline_manager.process_pdfs(
+                files=[mock_file],
+                server_url="http://localhost:8000/v1",
+                model_name="test-model",
+                workers=2,
+                max_concurrent=10,
+                max_retries=3,
+                target_dim=1024,
+                guided_decoding=True
+            )
+            res3 = list(gen3)
+            self.assertTrue(len(res3) > 0)
+            
+        process_state.active_runs.clear()
 
         # 4. Test generic generator exception (432-434)
         def exists_crash_side_effect(path):
@@ -583,25 +577,25 @@ class TestPipelineManager(unittest.TestCase):
         mock_proc.poll.return_value = None
         mock_proc.terminate.side_effect = Exception("Terminate failed")
         
-        state.active_runs["run_exc"] = {
+        process_state.active_runs["run_exc"] = {
             "proc": mock_proc,
             "stop": False
         }
         with patch.dict(os.environ, {"TESTING": "false"}):
             pipeline_manager.cleanup_active_runs()
         mock_proc.terminate.assert_called_once()
-        state.active_runs.clear()
+        process_state.active_runs.clear()
 
     def test_stop_processing_no_proc(self):
         # 460->462 branch (stop_processing when proc is None)
-        state.active_runs["run_no_proc"] = {
+        process_state.active_runs["run_no_proc"] = {
             "proc": None,
             "stop": False
         }
         res = pipeline_manager.stop_processing("run_no_proc")
         self.assertIn("Stop request sent", res)
-        self.assertTrue(state.active_runs["run_no_proc"]["stop"])
-        state.active_runs.clear()
+        self.assertTrue(process_state.active_runs["run_no_proc"]["stop"])
+        process_state.active_runs.clear()
 
         # stop_processing when run_id is empty
         res2 = pipeline_manager.stop_processing("")
@@ -616,11 +610,11 @@ class TestPipelineManager(unittest.TestCase):
         mock_proc_finished = MagicMock()
         mock_proc_finished.poll.return_value = 0 # process finished
 
-        state.active_runs["run_finished"] = {
+        process_state.active_runs["run_finished"] = {
             "proc": mock_proc_finished,
             "stop": False
         }
-        state.active_runs["run_none_proc"] = {
+        process_state.active_runs["run_none_proc"] = {
             "proc": None,
             "stop": False
         }
@@ -628,7 +622,7 @@ class TestPipelineManager(unittest.TestCase):
             pipeline_manager.cleanup_active_runs()
         
         mock_proc_finished.terminate.assert_not_called()
-        state.active_runs.clear()
+        process_state.active_runs.clear()
 
     @patch("httpx.get")
     def test_process_pdfs_preflight_model_mismatch(self, mock_get):

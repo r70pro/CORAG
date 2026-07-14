@@ -195,7 +195,7 @@ class TestAppCallbacks(unittest.TestCase):
         res = app.get_simulated_sparkline(is_up=True, latency_history=[10.0, 20.0, 15.0])
         self.assertTrue("sparkline-svg" in res)
 
-    @patch("app.get_service_latency")
+    @patch("system_diagnostics.get_service_latency")
     def test_check_backing_services(self, mock_latency):
         # All healthy - general model (suited for RAG)
         mock_latency.return_value = (True, 5.0, "nvidia/Llama-3.3-70B-Instruct-NVFP4")
@@ -346,8 +346,8 @@ class TestAppCallbacks(unittest.TestCase):
         mock_run.side_effect = Exception("Docker logs failed")
         self.assertIsNone(app.get_vllm_loading_progress())
 
-    @patch("app.get_service_latency")
-    @patch("app.get_vllm_loading_progress")
+    @patch("system_diagnostics.get_service_latency")
+    @patch("system_diagnostics.get_vllm_loading_progress")
     def test_check_backing_services_loading(self, mock_progress, mock_latency):
         # Scenario: vllm is the only failed service and is loading
         def latency_side_effect(service, **kwargs):

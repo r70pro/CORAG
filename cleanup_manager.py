@@ -1,6 +1,6 @@
 import os
 import shutil
-import state
+import process_state
 from settings_manager import WORKSPACE_DIR
 
 def get_dir_size(start_path):
@@ -29,13 +29,13 @@ def format_size(size_bytes):
     else:
         return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
 
-def perform_reset_cleanup(clean_runs, clean_gradio, clean_pycache, clean_hf):
+def perform_reset_cleanup(clean_runs, clean_gradio, clean_pycache, clean_hf, workspace_dir=None):
     freed_space = 0
     deleted_items = []
     errors = []
 
-    # Get Workspace directory dynamically in case it's overridden by mocks
-    workspace_dir = state.get_val('WORKSPACE_DIR', WORKSPACE_DIR)
+    if workspace_dir is None:
+        workspace_dir = WORKSPACE_DIR
 
     # 1. Clean obsolete runs
     if clean_runs:
@@ -45,8 +45,8 @@ def perform_reset_cleanup(clean_runs, clean_gradio, clean_pycache, clean_hf):
                 if os.path.isdir(dir_path) and name.startswith("run_"):
                     # Check if active
                     is_active = False
-                    with state.active_runs_lock:
-                        for run_id, run_info in state.active_runs.items():
+                    with process_state.active_runs_lock:
+                        for run_id, run_info in process_state.active_runs.items():
                             proc = run_info.get("proc")
                             if run_info.get("run_dir") == dir_path:
                                 if proc and proc.poll() is None:

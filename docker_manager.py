@@ -1,7 +1,7 @@
 import os
 import subprocess
 import httpx
-from state import get_fn
+
 
 def get_docker_status():
     try:
@@ -28,13 +28,13 @@ def check_server_ready(port):
         return False
 
 def get_docker_status_str(port):
-    status = get_fn('get_docker_status', get_docker_status)()
+    status = get_docker_status()
     if status == "not_found":
         return "not_found", "<span class='badge-idle'>Docker: Not Created</span>"
     elif status == "exited":
         return "stopped", "<span class='badge-stopped'>Docker: Stopped</span>"
     elif status == "running":
-        if get_fn('check_server_ready', check_server_ready)(port):
+        if check_server_ready(port):
             return "ready", "<span class='badge-success'>Inference Server: Ready</span>"
         else:
             return "starting", "<span class='badge-running'>Server: Starting / Loading Model</span>"
@@ -42,7 +42,7 @@ def get_docker_status_str(port):
         return "error", "<span class='badge-failed'>Docker: Error</span>"
 
 def start_docker_container():
-    status = get_fn('get_docker_status', get_docker_status)()
+    status = get_docker_status()
     if status == "exited":
         try:
             subprocess.run(["docker", "start", "olmocr"], check=True, capture_output=True)
@@ -56,7 +56,7 @@ def start_docker_container():
     return False, f"Container status is {status}, cannot start."
 
 def stop_docker_container():
-    status = get_fn('get_docker_status', get_docker_status)()
+    status = get_docker_status()
     if status == "running":
         try:
             subprocess.run(["docker", "stop", "olmocr"], check=True, capture_output=True)
@@ -66,7 +66,7 @@ def stop_docker_container():
     return True, "Container is not running."
 
 def create_docker_container(hf_token, port, model, gpu_mem, max_model_len):
-    status = get_fn('get_docker_status', get_docker_status)()
+    status = get_docker_status()
     if status in ["running", "exited"]:
         try:
             if status == "running":

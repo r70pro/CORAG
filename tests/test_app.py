@@ -10,13 +10,14 @@ import shutil
 os.environ["TESTING"] = "true"
 
 import app
+import process_state
 
 class TestOLMOCRApp(unittest.TestCase):
 
     def setUp(self):
         # Reset active runs between tests
-        with app.active_runs_lock:
-            app.active_runs.clear()
+        with process_state.active_runs_lock:
+            process_state.active_runs.clear()
 
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open, read_data='{"server_url": "http://test-server:8000/v1"}')
@@ -80,8 +81,8 @@ class TestOLMOCRApp(unittest.TestCase):
         mock_get.side_effect = Exception("Conn refused")
         self.assertFalse(app.check_server_ready(8000))
 
-    @patch("app.check_server_ready")
-    @patch("app.get_docker_status")
+    @patch("docker_manager.check_server_ready")
+    @patch("docker_manager.get_docker_status")
     def test_get_docker_status_str(self, mock_status, mock_ready):
         mock_status.return_value = "not_found"
         state, html = app.get_docker_status_str(8000)
@@ -105,7 +106,7 @@ class TestOLMOCRApp(unittest.TestCase):
         self.assertTrue("Inference Server: Ready" in html)
 
     @patch("subprocess.run")
-    @patch("app.get_docker_status")
+    @patch("docker_manager.get_docker_status")
     def test_start_docker_container(self, mock_status, mock_run):
         # Exited -> Success
         mock_status.return_value = "exited"
@@ -129,7 +130,7 @@ class TestOLMOCRApp(unittest.TestCase):
         self.assertEqual(msg, "Container is already running.")
 
     @patch("subprocess.run")
-    @patch("app.get_docker_status")
+    @patch("docker_manager.get_docker_status")
     def test_stop_docker_container(self, mock_status, mock_run):
         mock_status.return_value = "running"
         mock_run.return_value = MagicMock(returncode=0)
@@ -138,7 +139,7 @@ class TestOLMOCRApp(unittest.TestCase):
         self.assertEqual(msg, "Container stopped successfully.")
 
     @patch("subprocess.run")
-    @patch("app.get_docker_status")
+    @patch("docker_manager.get_docker_status")
     def test_create_docker_container(self, mock_status, mock_run):
         mock_status.return_value = "running"
         mock_run.return_value = MagicMock(returncode=0)
@@ -175,8 +176,8 @@ class TestOLMOCRApp(unittest.TestCase):
         self.assertEqual(content_r, "Run info not found.")
 
         # File not found
-        with app.active_runs_lock:
-            app.active_runs["test_run"] = {"run_dir": "/tmp/nonexistent_dir"}
+        with process_state.active_runs_lock:
+            process_state.active_runs["test_run"] = {"run_dir": "/tmp/nonexistent_dir"}
         content_r, content_h, file_p = app.load_markdown_content("0_doc.md", "test_run")
         self.assertEqual(content_r, "File not found.")
 
@@ -189,8 +190,8 @@ class TestOLMOCRApp(unittest.TestCase):
             with open(doc_path, "w") as f:
                 f.write("hello markdown")
             
-            with app.active_runs_lock:
-                app.active_runs["test_run"] = {"run_dir": temp_dir}
+            with process_state.active_runs_lock:
+                process_state.active_runs["test_run"] = {"run_dir": temp_dir}
             
             content_r, content_h, file_p = app.load_markdown_content("0_doc.md", "test_run")
             self.assertEqual(content_r, "hello markdown")
@@ -198,19 +199,20 @@ class TestOLMOCRApp(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir)
 
-    @patch("app.active_runs", {})
     def test_stop_processing(self):
+        process_state.active_runs.clear()
         # Empty
         self.assertTrue("No active process to stop" in app.stop_processing(""))
         # Missing
         self.assertTrue("Process not found" in app.stop_processing("missing_run"))
         # Active
         mock_proc = MagicMock()
-        with app.active_runs_lock:
-            app.active_runs["run1"] = {"proc": mock_proc, "stop": False}
+        with process_state.active_runs_lock:
+            process_state.active_runs["run1"] = {"proc": mock_proc, "stop": False}
         res = app.stop_processing("run1")
         self.assertTrue("Stop request sent" in res)
         mock_proc.terminate.assert_called_once()
+        process_state.active_runs.clear()
 
     @patch("httpx.get")
     @patch("pypdf.PdfReader")
@@ -402,14 +404,14 @@ class TestOLMOCRApp(unittest.TestCase):
         mock_listdir.side_effect = listdir_side_effect
 
         # Mock active_runs
-        with app.active_runs_lock:
-            app.active_runs.clear()
-            app.active_runs["active_id"] = {
+        with process_state.active_runs_lock:
+            process_state.active_runs.clear()
+            process_state.active_runs["active_id"] = {
                 "proc": MagicMock(),
                 "completed": False,
                 "run_dir": "/mock/workspace/run_1"
             }
-            app.active_runs["active_id"]["proc"].poll.return_value = None
+            process_state.active_runs["active_id"]["proc"].poll.return_value = None
 
         # Mock os.walk for bytecode cache test
         mock_walk.return_value = [
@@ -419,7 +421,7 @@ class TestOLMOCRApp(unittest.TestCase):
 
         try:
             # Call perform_reset_cleanup with all true
-            res = app.perform_reset_cleanup(clean_runs=True, clean_gradio=True, clean_pycache=True, clean_hf=True)
+            res = app.perform_reset_cleanup(clean_runs=True, clean_gradio=True, clean_pycache=True, clean_hf=True, workspace_dir="/mock/workspace")
         finally:
             # Restore original workspace dir
             app.WORKSPACE_DIR = orig_workspace

@@ -163,7 +163,7 @@ class TestUICallbacks(unittest.TestCase):
         self.assertTrue("Embedding/indexing failed" in "".join(updates))
 
     @patch("rag_ui.get_available_runs")
-    @patch("rag_ui.index_run")
+    @patch("indexing_service.CorpusIndexingService.index_run")
     def test_index_all_runs(self, mock_index_run, mock_runs):
         mock_runs.return_value = [("run1", "/mock/run1")]
         mock_index_run.return_value = ["processing run1"]
@@ -685,7 +685,7 @@ class TestUICallbacks(unittest.TestCase):
         self.assertIsNotNone(do_export_txt)
         self.assertIsNotNone(do_export_csv)
 
-        with patch("rag_export.export_chat_markdown", return_value="/tmp/file.md") as mock_exp:
+        with patch("rag_export.export_chat_markdown", return_value="/tmp/file.md"):
             res = do_export_md([], "mode", "run123")
             self.assertEqual(res.get("value"), "/tmp/file.md")
         
@@ -693,7 +693,7 @@ class TestUICallbacks(unittest.TestCase):
             res = do_export_md([], "mode", "run123")
             self.assertFalse(res.get("visible", True))
 
-        with patch("rag_export.export_chat_text", return_value="/tmp/file.txt") as mock_exp:
+        with patch("rag_export.export_chat_text", return_value="/tmp/file.txt"):
             res = do_export_txt([], "mode", "run123")
             self.assertEqual(res.get("value"), "/tmp/file.txt")
 
@@ -701,7 +701,7 @@ class TestUICallbacks(unittest.TestCase):
             res = do_export_txt([], "mode", "run123")
             self.assertFalse(res.get("visible", True))
 
-        with patch("rag_export.export_timeline_csv", return_value="/tmp/file.csv") as mock_exp:
+        with patch("rag_export.export_timeline_csv", return_value="/tmp/file.csv"):
             res = do_export_csv([], "run123")
             self.assertEqual(res.get("value"), "/tmp/file.csv")
 

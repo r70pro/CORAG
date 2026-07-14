@@ -376,6 +376,58 @@ A/Prof. Eugene T. Ek
         html = rag_infra_manager.get_rag_status_html()
         self.assertTrue("PostgreSQL" in html)
 
+    @patch("sentence_transformers.CrossEncoder")
+    @patch("rag.retriever.get_qdrant_client")
+    @patch("rag.db.get_chunks_by_qdrant_ids")
+    def test_search_similar_with_reranker(self, mock_get_chunks, mock_qdrant_client, mock_cross_encoder_class):
+        # Mock database chunks enrichment
+        mock_get_chunks.return_value = [
+            {"qdrant_point_id": "p1", "chunk_id": "c1", "text": "acute shoulder pain"},
+            {"qdrant_point_id": "p2", "chunk_id": "c2", "text": "patient underwent knee surgery"}
+        ]
+        
+        # Mock Qdrant client search results
+        mock_client = mock_qdrant_client.return_value
+        mock_result1 = MagicMock()
+        mock_result1.id = "p1"
+        mock_result1.score = 0.9
+        mock_result1.payload = {"chunk_id": "c1", "text_preview": "acute shoulder pain"}
+        
+        mock_result2 = MagicMock()
+        mock_result2.id = "p2"
+        mock_result2.score = 0.8
+        mock_result2.payload = {"chunk_id": "c2", "text_preview": "patient underwent knee surgery"}
+        
+        mock_client.search.return_value = [mock_result1, mock_result2]
+        
+        # Mock CrossEncoder predict returning raw logits: p1 -> 0.0, p2 -> 2.0 (so p2 gets higher sigmoid score)
+        mock_encoder = mock_cross_encoder_class.return_value
+        mock_encoder.predict.return_value = [0.0, 2.0]
+        
+        # Reset any cached reranker model
+        rag_emb._reranker_model = None
+        rag_emb._reranker_model_name = None
+        
+        # Execute search_similar with use_reranker=True
+        with patch("rag.embedding.load_settings") as mock_load_settings:
+            mock_load_settings.return_value = {
+                "use_reranker": True,
+                "reranker_model": "BAAI/bge-reranker-large",
+                "reranker_device": "cpu"
+            }
+            
+            results = rag_ret.search_similar(
+                query="knee surgery",
+                top_k=2,
+                use_reranker=True,
+                reranker_device="cpu"
+            )
+            
+            # Verify results order changed based on reranker score (p2 comes first because score = sigmoid(2.0) ~ 0.88, p1 is sigmoid(0.0) ~ 0.5)
+            self.assertEqual(len(results), 2)
+            self.assertEqual(results[0]["chunk_id"], "c2")
+            self.assertEqual(results[1]["chunk_id"], "c1")
+
 
 if __name__ == "__main__":
     unittest.main()

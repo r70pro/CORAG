@@ -10,7 +10,7 @@ from unittest.mock import patch, MagicMock
 os.environ["TESTING"] = "true"
 
 import cleanup_manager
-import state
+import process_state
 
 
 class TestCleanupManager(unittest.TestCase):
@@ -64,28 +64,28 @@ class TestCleanupManager(unittest.TestCase):
         mock_listdir.return_value = ["run_active", "run_incomplete"]
         
         from settings_manager import WORKSPACE_DIR
-        workspace_dir = state.get_val('WORKSPACE_DIR', WORKSPACE_DIR)
+        workspace_dir = WORKSPACE_DIR
 
-        # Configure state.active_runs
+        # Configure process_state.active_runs
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None # Process running
-        state.active_runs["run_active"] = {
+        process_state.active_runs["run_active"] = {
             "run_dir": os.path.join(workspace_dir, "run_active"),
             "proc": mock_proc,
             "completed": False
         }
-        state.active_runs["run_incomplete"] = {
+        process_state.active_runs["run_incomplete"] = {
             "run_dir": os.path.join(workspace_dir, "run_incomplete"),
             "proc": None,
             "completed": False
         }
 
-        res = cleanup_manager.perform_reset_cleanup(clean_runs=True, clean_gradio=False, clean_pycache=False, clean_hf=False)
+        res = cleanup_manager.perform_reset_cleanup(clean_runs=True, clean_gradio=False, clean_pycache=False, clean_hf=False, workspace_dir=workspace_dir)
         # Verify rmtree was not called since they are active/incomplete
         mock_rmtree.assert_not_called()
         self.assertEqual(res, "### No files selected or found to clean up.")
 
-        state.active_runs.clear()
+        process_state.active_runs.clear()
 
     @patch("os.path.exists")
     @patch("os.listdir")
@@ -142,16 +142,16 @@ class TestCleanupManager(unittest.TestCase):
         # Normal runs cleanup where run is completed = True, so loop continues (line 55->49 branch)
         mock_listdir.return_value = ["run_completed"]
         from settings_manager import WORKSPACE_DIR
-        workspace_dir = state.get_val('WORKSPACE_DIR', WORKSPACE_DIR)
-        state.active_runs["run_completed"] = {
+        workspace_dir = WORKSPACE_DIR
+        process_state.active_runs["run_completed"] = {
             "run_dir": os.path.join(workspace_dir, "run_completed"),
             "proc": None,
             "completed": True
         }
-        res = cleanup_manager.perform_reset_cleanup(clean_runs=True, clean_gradio=False, clean_pycache=False, clean_hf=False)
+        res = cleanup_manager.perform_reset_cleanup(clean_runs=True, clean_gradio=False, clean_pycache=False, clean_hf=False, workspace_dir=workspace_dir)
         self.assertTrue("Obsolete run directory: `run_completed`" in res)
         mock_rmtree.assert_called_once()
-        state.active_runs.clear()
+        process_state.active_runs.clear()
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ from PIL import Image
 # Prevent system operations during import
 os.environ["TESTING"] = "true"
 
-import state
+import process_state
 import pdf_manager as pm
 
 
@@ -21,11 +21,11 @@ class TestPDFManagerAll(unittest.TestCase):
 
     def setUp(self):
         self.tmp_dir = tempfile.mkdtemp()
-        state.active_runs.clear()
+        process_state.active_runs.clear()
 
     def tearDown(self):
         shutil.rmtree(self.tmp_dir)
-        state.active_runs.clear()
+        process_state.active_runs.clear()
 
     def test_make_zip(self):
         # Create dummy MD files
@@ -53,7 +53,7 @@ class TestPDFManagerAll(unittest.TestCase):
         self.assertEqual(pm.load_markdown_content("doc.md", "run1")[0], "Run info not found.")
 
         # 3. File not found
-        state.active_runs["run1"] = {"run_dir": self.tmp_dir}
+        process_state.active_runs["run1"] = {"run_dir": self.tmp_dir}
         self.assertEqual(pm.load_markdown_content("missing.md", "run1")[0], "File not found.")
 
         # 4. File read exception
@@ -123,7 +123,7 @@ class TestPDFManagerAll(unittest.TestCase):
         self.assertEqual(pm.get_page_mapping_and_pdf_path("doc.md", "run1"), (None, 0, []))
 
         # 3. PDF file not found
-        state.active_runs["run1"] = {"run_dir": self.tmp_dir}
+        process_state.active_runs["run1"] = {"run_dir": self.tmp_dir}
         self.assertEqual(pm.get_page_mapping_and_pdf_path("doc.md", "run1"), (None, 0, []))
 
         # Create dummy PDF file
@@ -180,7 +180,7 @@ class TestPDFManagerAll(unittest.TestCase):
 
         # 2. Success path
         mock_mapping.return_value = ("pdf_path", 5, [[0, 10, 1]])
-        state.active_runs["run1"] = {"run_dir": self.tmp_dir}
+        process_state.active_runs["run1"] = {"run_dir": self.tmp_dir}
         
         # Create dummy MD file
         inputs_dir = os.path.join(self.tmp_dir, "markdown", "inputs")
@@ -240,7 +240,7 @@ class TestPDFManagerAll(unittest.TestCase):
         mock_reader_inst.pages = [MagicMock()]
         mock_reader.return_value = mock_reader_inst
 
-        state.active_runs["run_edge"] = {"run_dir": self.tmp_dir}
+        process_state.active_runs["run_edge"] = {"run_dir": self.tmp_dir}
         inputs_dir = os.path.join(self.tmp_dir, "inputs")
         os.makedirs(inputs_dir, exist_ok=True)
         pdf_path = os.path.join(inputs_dir, "doc.pdf")
@@ -276,7 +276,7 @@ class TestPDFManagerAll(unittest.TestCase):
 
         _, _, ranges4 = pm.get_page_mapping_and_pdf_path("doc.md", "run_edge")
         self.assertEqual(ranges4, [])
-        state.active_runs.clear()
+        process_state.active_runs.clear()
 
     def test_get_markdown_for_page_edge(self):
         # range_info has length < 3 (line 117->116 branch)
@@ -291,10 +291,10 @@ class TestPDFManagerAll(unittest.TestCase):
         self.assertEqual(res1[3], "")
 
         # 2. active run dir exists but markdown file does not exist (136->144 branch)
-        state.active_runs["run_missing_file"] = {"run_dir": self.tmp_dir}
+        process_state.active_runs["run_missing_file"] = {"run_dir": self.tmp_dir}
         res2 = pm.on_file_selected("doc.md", "run_missing_file")
         self.assertEqual(res2[3], "")
-        state.active_runs.clear()
+        process_state.active_runs.clear()
 
 
 if __name__ == "__main__":
