@@ -105,6 +105,44 @@ class TestRAGDBErrors(unittest.TestCase):
         res = rag_db.get_chunk_by_qdrant_id("point123")
         self.assertEqual(res["chunk_id"], "chunk1")
 
+    @patch("rag.db.get_connection")
+    @patch("rag.embedding.get_qdrant_client")
+    @patch("rag.embedding.get_collection_name")
+    def test_is_run_indexed_qdrant_check(self, mock_get_col_name, mock_get_qdrant, mock_get_conn):
+        mock_conn = mock_get_conn.return_value.__enter__.return_value
+        mock_cur = mock_conn.cursor.return_value.__enter__.return_value
+        mock_cur.fetchone.return_value = ("indexed",)
+
+        mock_get_col_name.return_value = "my_collection"
+        mock_client = MagicMock()
+        mock_get_qdrant.return_value = mock_client
+        
+        # Scenario 1: Collection doesn't exist
+        mock_c = MagicMock()
+        mock_c.name = "other_collection"
+        mock_client.get_collections.return_value.collections = [mock_c]
+        res = rag_db.is_run_indexed("r1", check_vector_store=True)
+        self.assertFalse(res)
+
+        # Scenario 2: Collection exists, count is 0
+        mock_c.name = "my_collection"
+        mock_client.get_collections.return_value.collections = [mock_c]
+        mock_count_res = MagicMock()
+        mock_count_res.count = 0
+        mock_client.count.return_value = mock_count_res
+        res = rag_db.is_run_indexed("r1", check_vector_store=True)
+        self.assertFalse(res)
+
+        # Scenario 3: Collection exists, count > 0
+        mock_count_res.count = 5
+        res = rag_db.is_run_indexed("r1", check_vector_store=True)
+        self.assertTrue(res)
+
+        # Scenario 4: Exception raised
+        mock_client.get_collections.side_effect = Exception("Qdrant error")
+        res = rag_db.is_run_indexed("r1", check_vector_store=True)
+        self.assertTrue(res)
+
 
 if __name__ == "__main__":
     unittest.main()

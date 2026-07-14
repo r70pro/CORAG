@@ -64,8 +64,8 @@ Before processing any case, the RAG infrastructure services must be running. Thi
 
 **Routine:**
 1. Open the OLMOCR web application at `http://127.0.0.1:7860`.
-2. Scroll to the **🧠 Document Analysis (RAG)** section.
-3. Expand the **🔧 RAG Infrastructure** accordion.
+2. Click **💬 RAG Processing** in the left navigation sidebar to open the RAG panel.
+3. Expand the **🔧 RAG Infrastructure** accordion in the RAG sidebar.
 4. Click **▶️ Start**. The [rag_infra_manager.py](file:///home/owner/OLMOCR/rag_infra_manager.py) orchestrator runs `docker compose up -d --wait` and then sequentially initialises:
     * PostgreSQL schema ([rag/db.py → init_schema()](file:///home/owner/OLMOCR/rag/db.py#L53-L110)): Creates the `ocr_runs`, `documents`, and `chunks` tables with cascading foreign keys and indexes on `page_number`, `date_extracted`, `author`, and `document_type`.
     * MinIO buckets ([rag/storage.py → init_buckets()](file:///home/owner/OLMOCR/rag/storage.py#L49-L54)): Creates `olmocr-pdfs` and `olmocr-markdown` buckets.
@@ -87,12 +87,12 @@ In medicolegal work, missing a single sentence in a specialist report, or misint
 *   **Default OCR Model**: `allenai/olmOCR-2-7B-1025-FP8` — a vision-language model trained specifically to read PDFs and output pristine, layout-aware GitHub-flavored Markdown.
 
 **Routine:**
-1. In the header bar, check the **🐳 Inference Status** badge.
-2. If not running, expand the **🐳 Local Inference Server (Docker)** accordion in the left sidebar.
+1. Check the **System Health** badge in the top-right of the current panel.
+2. If the vLLM service is not running, expand the **🐳 Inference Server (Docker)** accordion in the global left navigation sidebar.
 3. Enter your Hugging Face token (required for gated models).
 4. Set the OCR model to `allenai/olmOCR-2-7B-1025-FP8`.
 5. Click **🔄 Recreate & Run** to pull and start the inference container.
-6. Wait for the header badge to show ✓ Ready (the system polls every 5 seconds via [app.py → periodic_status_check()](file:///home/owner/OLMOCR/app.py#L526-L536)).
+6. Wait for the System Health badge to show ✓ Ready (the system polls every 5 seconds via [app.py → periodic_status_check()](file:///home/owner/OLMOCR/app.py#L1253-L1257)).
 
 #### 1.2 Upload and Process Case PDFs
 
@@ -158,11 +158,12 @@ Before indexing, the Markdown content must be converted into numerical vectors f
 *   **Embedding Client**: Powered by HuggingFace `sentence-transformers` ([rag/embedding.py](file:///home/owner/OLMOCR/rag/embedding.py)).
 *   **Singleton Pattern**: The model is loaded once and cached in memory via [load_embedding_model()](file:///home/owner/OLMOCR/rag/embedding.py#L85-L116). Switching models triggers a reload.
 *   **Device Control**: Runs on CPU by default (`OLMOCR_EMBEDDING_DEVICE=cpu`) to avoid competing with the vLLM GPU inference engine.
+*   **Default Model**: `BAAI/bge-large-en-v1.5` (1024 dimensions) — selected for its superior accuracy with complex medical and legal terminology.
 
 | Model | Dimensions | Speed | Accuracy | Best For |
 |:---|:---:|:---:|:---:|:---|
-| `sentence-transformers/all-MiniLM-L6-v2` | 384 | ⚡ Fast | Good | Quick prototyping, short documents |
-| `BAAI/bge-large-en-v1.5` | 1024 | 🐢 Slower | **Excellent** | **Recommended**: Complex medical jargon, legal arguments, multi-clinician records |
+| `BAAI/bge-large-en-v1.5` | 1024 | 🐢 Slower | **Excellent** | **Default & Recommended**: Complex medical jargon, legal arguments, multi-clinician records |
+| `sentence-transformers/all-MiniLM-L6-v2` | 384 | ⚡ Fast | Good | Quick prototyping, short documents (can be added manually via custom value) |
 
 **Collision Prevention**: Different embedding models produce vectors of different dimensionality. The system automatically isolates collections using [get_collection_name(model_name)](file:///home/owner/OLMOCR/rag/embedding.py#L37-L53). For example:
 * `all-MiniLM-L6-v2` → collection `olmocr_documents_all-minilm-l6-v2`
@@ -261,7 +262,7 @@ The [analyzer.py → query_llm_streaming()](file:///home/owner/OLMOCR/rag/analyz
 1. Expand **⚙️ Analysis Settings**.
 2. Select the model from the **Analysis Model Name** dropdown.
 3. Set the **Analysis LLM Server URL** (default: `http://localhost:8000/v1`).
-4. Adjust **Retrieval Top-K** (default: 8 — the number of chunks retrieved per query).
+4. Adjust **Retrieval Top-K** (default: 5 — the number of chunks retrieved per query).
 5. Click **💾 Save Analysis Configuration**.
 
 > [!TIP]
@@ -314,22 +315,35 @@ All modes enforce:
 #### 6.3 Using the Chat Interface
 
 **Routine:**
-1. Select the desired **Analysis Mode** from the dropdown.
-2. Type your question in the chat input field.
-3. Click **🚀 Ask** or press Enter.
-4. The response streams in real-time with full source citations.
-5. Use the **📋 Copy** button on any response to copy it to clipboard.
-6. Switch analysis modes between queries to generate different report types from the same indexed documents.
-7. Click **🗑️ Clear Chat** to reset the conversation when moving to a new line of enquiry.
+1. In the **🔍 Search Filters** accordion (RAG sidebar), select the **Active Case** to isolate queries to a single case. The "All Cases" option queries the entire corpus.
+2. (Optional) Apply additional metadata filters:
+    * **Document Type**: Filter by `specialist_letter`, `clinical_notes`, `radiology_report`, `physiotherapy_report`, `medicolegal_report`, or `referral_letter`.
+    * **Author**: Dynamically populated checklist of unique authors from the selected case.
+    * **Date From / Date To**: ISO date range fields to narrow the search window (e.g., post-accident treatment only).
+3. Select the desired **Analysis Mode** from the dropdown above the chat window.
+4. Type your question in the chat input field.
+5. Click **🚀 Ask** or press `Ctrl+Enter`.
+6. The response streams in real-time with full source citations.
+7. Use the **📋 Copy** button on any response, or press `Ctrl+Shift+C` to copy the last response to clipboard.
+8. Switch analysis modes between queries to generate different report types from the same indexed documents.
+9. Click **🗑️ Clear Chat** (or press `Ctrl+Shift+N`) to reset the conversation when moving to a new line of enquiry.
 
 The chat supports multi-turn conversation. The system retains the last 6 messages of chat history ([build_prompt()](file:///home/owner/OLMOCR/rag/analyzer.py#L91-L129)) to manage context window limits while allowing follow-up questions.
 
+> [!TIP]
+> **Case isolation is critical for medicolegal work.** Always select the specific case from the Active Case dropdown before querying. The system applies the corresponding `run_id` as a filter in [search_similar()](file:///home/owner/OLMOCR/rag/retriever.py#L26-L36), restricting semantic lookups strictly to that case’s vectors. Use "All Cases" only for deliberate cross-case research.
+
 #### 6.4 Exporting & Saving Outputs
 
-*   **Copy to Clipboard**: Every chat response has a built-in copy button for pasting into Word, Outlook, or your case management system.
-*   **Markdown Downloads**: The original extracted Markdown files are available as individual downloads or ZIP archives from the document viewer section.
+*   **In-Chat Export Buttons**: Three export buttons below the chat window enable one-click downloads ([rag_export.py](file:///home/owner/OLMOCR/rag_export.py)):
+    * **📝 Export .md**: Full chat session as a Markdown file with mode, case name, and timestamp metadata.
+    * **📄 Export .txt**: Plain text version with Markdown formatting stripped — suitable for pasting into Word or email.
+    * **📊 Export .csv**: Extracts Markdown tables from Timeline Generator responses into a CSV spreadsheet.
+*   **Copy to Clipboard**: Every chat response has a built-in copy button. The `Ctrl+Shift+C` keyboard shortcut copies the last bot response.
+*   **Markdown Downloads**: The original extracted Markdown files are available as individual downloads or ZIP archives from the Layout Inspector panel.
 *   **Redis Cache**: All queries and responses are cached in Redis for 1 hour ([rag/cache.py → QUERY_CACHE_TTL](file:///home/owner/OLMOCR/rag/cache.py#L24)), so repeated queries return instantly.
 *   **Chat Session Persistence**: Chat history is stored in Redis for 2 hours per session ([CHAT_HISTORY_TTL](file:///home/owner/OLMOCR/rag/cache.py#L26)).
+*   **Export Directory**: All exported files are saved to `workspace/exports/` with timestamped filenames (e.g., `analysis_case_name_20260714_091500.md`).
 
 ---
 
@@ -337,7 +351,26 @@ The chat supports multi-turn conversation. The system retains the last 6 message
 
 If you have already processed PDF documents into Markdown — either through prior OLMOCR runs, another layout-preserving OCR tool (e.g., Azure Document Intelligence, Mathpix, Nougat), or manual clinical note transcription — you can integrate these files into the RAG system as a separate case **without re-running OCR**.
 
-### Step 1: Prepare the Case Directory Structure
+There are two methods: the **UI-based upload** (recommended) and the **manual directory method** (for advanced users).
+
+### Method A: Upload via the UI (Recommended)
+
+1. Click **💬 RAG Processing** in the left navigation sidebar.
+2. Expand the **📥 Upload External Markdown** accordion in the RAG sidebar.
+3. Click **Select Markdown Files (.md)** to upload one or more `.md` files.
+4. Choose a **Target Case**:
+    * **🆕 Create New Case**: Enter a descriptive case name (e.g., `Smith v Jones 2024`). The system creates a `workspace/run_uploaded_YYYYMMDD_HHMMSS_[name]/` directory automatically.
+    * **Existing Case**: Select a previously indexed case to append documents to it.
+5. Click **📥 Upload & Index**. The system will:
+    * Copy all markdown files into the case’s `markdown/inputs/` directory.
+    * Chunk, embed, and index them into Qdrant, PostgreSQL, and MinIO.
+    * Auto-select the new case in the Active Case Selector.
+6. Monitor progress in the **📜 RAG System Log**.
+
+> [!TIP]
+> The UI upload method handles all directory creation, chunking, embedding, and registration automatically. Use the manual method below only if you need precise control over directory structure or page-range JSONL metadata.
+
+### Method B: Manual Directory Structure (Advanced)
 
 Create a folder inside the `workspace/` directory that mimics the OLMOCR run output. The folder name **must** start with the prefix `run_` to be detected by the [get_available_runs()](file:///home/owner/OLMOCR/rag_ui.py#L22-L45) scanner.
 
@@ -381,10 +414,10 @@ The JSONL format should match the OLMOCR output:
 
 Each triple `[char_start, char_end, page_number]` maps character ranges in the markdown to PDF page numbers. Without this, page citations in RAG responses will show `null`.
 
-### Step 3: Register and Index the Case
+### Step 3: Register and Index the Case (Manual Method)
 
 1. Open the OLMOCR Web Application.
-2. Navigate to the **🧠 Document Analysis (RAG)** section.
+2. Click **💬 RAG Processing** in the left navigation sidebar.
 3. Expand the **📦 Document Indexing** accordion.
 4. Click **🔄 Refresh Stats** — this calls [get_available_runs()](file:///home/owner/OLMOCR/rag_ui.py#L22-L45) which rescans `workspace/` for any `run_*` directory containing `.md` files under `markdown/inputs/`.
 5. Select `run_CaseXYZ_Smith_v_Jones_2024` from the **Select OCR Run** dropdown.
@@ -482,167 +515,182 @@ The [delete_run_objects(run_id)](file:///home/owner/OLMOCR/rag/storage.py#L206-L
 
 When wrapping up a case and transitioning to the next, experts should clean up intermediate caches and temp files:
 
-1. Expand the **🧹 Reset & Cleanup** accordion in the left sidebar.
-2. Select components to clean:
+1. Click **🖥️ System Diagnostics** in the left navigation sidebar.
+2. Expand the **🧹 Reset & Cleanup** accordion.
+3. Select components to clean:
     * **Obsolete run directories** (`workspace/run_*`): Removes local workspace files for completed cases.
     * **Gradio upload temp files** (`/tmp/gradio`): These accumulate quickly with multi-hundred-page PDFs.
     * **Python bytecode cache** (`__pycache__`): Minor disk recovery.
     * ⚠️ **Hugging Face model cache** (`~/.cache/huggingface`): Only if switching models permanently — requires re-downloading 10–30GB of model weights.
-3. Click **🧹 Clean & Reset**.
+4. Click **🧹 Clean & Reset**.
 
 > [!CAUTION]
 > Cleaning obsolete run directories deletes the local Markdown files permanently. Ensure the case has been fully indexed (archived in MinIO + PostgreSQL + Qdrant) before removing local files, or that you have exported all needed outputs.
 
+Alternatively, individual cases can be deleted from the **📊 Case Dashboard** panel using the **🗑️ Delete Case** button, which removes all associated data from PostgreSQL, Qdrant, and MinIO in one action.
+
 ---
 
-## 🚀 Crucial UX/UI Elements to Optimise Workflow & Increase Project Value
+## 🚀 UX/UI Implementation Status & Remaining Roadmap
 
-The following UI/UX enhancements are critical to scaling the RAG pipeline for high-throughput daily medicolegal workflows. They are prioritised by their impact on lawyer productivity and case accuracy.
+The following table tracks the status of all planned UI/UX enhancements. Features marked ✅ are fully implemented and available in the current release.
 
 ```mermaid
 mindmap
   root(("UI/UX Value<br/>Optimisations"))
     Case Isolation
-      Active Case Selector Dropdown
-      Per-Case Chat History Separation
-      Case Dashboard with Status Overview
+      Active Case Selector Dropdown ✅
+      Case Dashboard with Card Grid ✅
+      Per-Case Delete & Cleanup ✅
     Granular Search Filtering
-      Author Multi-Select Checklist
-      Document Type Filter Checkboxes
-      Date Range Timeline Slider
-      Keyword + Metadata Combined Search
-    Interactive Timelines
-      Visual Chronological Plot
-      Clickable Events → PDF Page Navigation
-      Conflict Highlighting on Timeline
+      Author Filter Dropdown ✅
+      Document Type Filter Dropdown ✅
+      Date Range Text Fields ✅
     Symmetrical Workspace
       Side-by-Side PDF & Markdown View ✅
       Synchronized Scroll Toggle ✅
       Text Annotation & Highlighting
       "Disputed" / "Critical" Labels
-    Structured Report Export
+    Chat Export
+      Markdown Export (.md) ✅
+      Plain Text Export (.txt) ✅
+      CSV Timeline Export (.csv) ✅
       Direct DOCX Export with Firm Letterhead
-      Excel Timeline / CSV Export
       PDF Report with Embedded Citations
+    Interactive Timelines
+      Visual Chronological Plot
+      Clickable Events → PDF Page Navigation
+      Conflict Highlighting on Timeline
     Productivity Accelerators
-      Keyboard Shortcuts for Mode Switching
+      Keyboard Shortcuts ✅
       Saved Query Templates per Case Type
       Batch Query Execution
 ```
 
 ---
 
-### 1. Active Case Selector in RAG Chat ⭐ (Highest Priority)
+### ✅ 1. Active Case Selector — IMPLEMENTED
 
 | | |
 |:---|:---|
-| **Current State** | The chat interface queries the entire indexed corpus across all cases. |
-| **Problem** | Clinical details from Client A can contaminate a summary generated for Client B — a severe confidentiality breach. |
-| **UX Optimisation** | Add an **"Active Case"** dropdown directly above the chat window. When a case is selected, the frontend automatically applies the corresponding `run_id` as a `run_id_filter` in [search_similar()](file:///home/owner/OLMOCR/rag/retriever.py#L32). An "All Cases" option allows cross-case analysis when explicitly needed. |
-| **Implementation** | The `run_id_filter` parameter already exists in the retriever and is fully functional — this requires only a Gradio dropdown widget wired to the `analyze()` call in [rag_ui.py](file:///home/owner/OLMOCR/rag_ui.py). |
-| **Value** | Prevents cross-case data leakage. Essential for professional ethics and legal privilege compliance. |
+| **Status** | ✅ Fully implemented in [rag_ui.py:L960-L967](file:///home/owner/OLMOCR/rag_ui.py#L960-L967). |
+| **Location** | **🔍 Search Filters** accordion in the RAG Processing sidebar. |
+| **Behaviour** | An **Active Case** dropdown lists all indexed cases (populated from [_get_indexed_run_choices()](file:///home/owner/OLMOCR/rag_ui.py#L711-L731)). Selecting a case applies the corresponding `run_id` as a `run_id_filter` to [search_similar()](file:///home/owner/OLMOCR/rag/retriever.py#L26-L36), isolating semantic lookups to that case's vectors. An **"🌐 All Cases (no filter)"** option allows deliberate cross-case analysis. |
+| **Active Case Banner** | A prominent banner above the chat window ([_get_case_banner_html()](file:///home/owner/OLMOCR/rag_ui.py#L741-L759)) displays the currently active case name, providing visual confirmation of query scope. |
+| **Auto-Population** | When a case is selected, the Author filter and Date Range fields are automatically populated from the case's metadata via [on_case_selected()](file:///home/owner/OLMOCR/rag_ui.py#L1179-L1221). |
 
-### 2. Interactive Filter Controls (Date, Author, Doc Type)
-
-| | |
-|:---|:---|
-| **Current State** | Advanced metadata filtering is fully implemented in the retriever ([retriever.py:L25-L48](file:///home/owner/OLMOCR/rag/retriever.py#L25-L48)) including `doc_type_filter`, `author_filter`, `date_from`, and `date_to` parameters, but **not yet exposed in the UI**. |
-| **UX Optimisation** | Add a collapsible **"🔍 Search Filters"** panel to the chat interface: |
-
-*   **Author Checklist**: A multi-select checklist dynamically populated from unique `author` values in the selected case's chunks (available via [get_corpus_stats()](file:///home/owner/OLMOCR/rag/db.py#L345-L358) or a new per-run query).
-*   **Document Type Checklist**: Filter for `specialist_letter`, `clinical_notes`, `radiology_report`, `physiotherapy_report`, `medicolegal_report`, `referral_letter`.
-*   **Date Range Slider**: A double-ended slider showing the full date range of the case, allowing you to isolate queries to specific time windows (e.g., post-accident treatment only, pre-existing history only).
-
-**Value**: Dramatically increases RAG precision by excluding irrelevant records. For example, when analysing post-accident treatment, filtering out pre-existing GP notes reduces noise and hallucination risk.
-
-### 3. Symmetrical, Synchronized Annotation Workspace
+### ✅ 2. Interactive Filter Controls — IMPLEMENTED
 
 | | |
 |:---|:---|
-| **Current State** | The three-panel symmetrical view (PDF / Raw Markdown / Rendered Preview) with synchronized scrolling is **already implemented** ([app.py:L617-L675](file:///home/owner/OLMOCR/app.py#L617-L675)). |
-| **UX Optimisation** | Extend with in-document annotation capabilities: |
+| **Status** | ✅ Fully implemented in [rag_ui.py:L959-L1006](file:///home/owner/OLMOCR/rag_ui.py#L959-L1006). |
+| **Location** | **🔍 Search Filters** accordion, below the Active Case Selector. |
+| **Components** | |
+
+*   **Document Type Dropdown**: Filter by `specialist_letter`, `clinical_notes`, `radiology_report`, `physiotherapy_report`, `medicolegal_report`, `referral_letter`, or "All Types".
+*   **Author Dropdown**: Dynamically populated from unique `author` values in the selected case's chunks via [get_authors_for_run()](file:///home/owner/OLMOCR/rag/db.py).
+*   **Date From / Date To**: ISO date text fields (`YYYY-MM-DD`) for time-window isolation. Auto-populated with the case's earliest and latest dates when a case is selected.
+
+All filters are passed through the [analyze()](file:///home/owner/OLMOCR/rag/analyzer.py#L262-L310) function to the underlying [search_similar()](file:///home/owner/OLMOCR/rag/retriever.py#L26-L85) call.
+
+### ✅ 3. Chat Session Export — IMPLEMENTED
+
+| | |
+|:---|:---|
+| **Status** | ✅ Implemented via [rag_export.py](file:///home/owner/OLMOCR/rag_export.py) with three export buttons below the chat window. |
+| **Location** | Below the chat input row in the RAG Processing panel. |
+| **Export Formats** | |
+
+*   **📝 Export .md**: Full chat session as a Markdown file with mode, case name, and timestamp metadata ([export_chat_markdown()](file:///home/owner/OLMOCR/rag_export.py#L57-L107)).
+*   **📄 Export .txt**: Plain text version with Markdown formatting stripped for pasting into Word or email ([export_chat_text()](file:///home/owner/OLMOCR/rag_export.py#L110-L167)).
+*   **📊 Export .csv**: Extracts Markdown tables from Timeline Generator responses into a CSV spreadsheet ([export_timeline_csv()](file:///home/owner/OLMOCR/rag_export.py#L170-L229)).
+
+Exported files are saved to `workspace/exports/` with timestamped filenames and offered as browser downloads.
+
+### ✅ 4. Case Dashboard — IMPLEMENTED
+
+| | |
+|:---|:---|
+| **Status** | ✅ Implemented as a dedicated **📊 Case Dashboard** panel (Panel 3) accessible from the left navigation sidebar. |
+| **Location** | [build_case_dashboard_ui()](file:///home/owner/OLMOCR/rag_ui.py#L762-L845). |
+| **Features** | |
+
+*   All indexed cases displayed in a **card grid layout** ([_build_dashboard_html()](file:///home/owner/OLMOCR/rag_ui.py#L643-L708)).
+*   Per-case metrics: document count, chunk count, unique authors, date range, indexed timestamp.
+*   Status indicator: ✅ Indexed badge on each card.
+*   **🔄 Refresh Dashboard** button to reload case data.
+*   **🗑️ Delete Case** button with case selector — removes all data from PostgreSQL, Qdrant, and MinIO in one action.
+
+### ✅ 5. Keyboard Shortcuts — IMPLEMENTED
+
+| Shortcut | Action | Status |
+|:---|:---|:---:|
+| `Ctrl+Enter` | Submit chat query | ✅ |
+| `Ctrl+Shift+C` | Copy last bot response to clipboard | ✅ |
+| `Ctrl+Shift+N` | Clear chat and start new analysis session | ✅ |
+
+Shortcut hints are displayed below the chat input row. Implementation is in the runtime JavaScript block at [app.py:L1357-L1390](file:///home/owner/OLMOCR/app.py#L1357-L1390).
+
+---
+
+### Remaining Roadmap Items
+
+The following features remain as future enhancements:
+
+#### 🔲 Annotation Workspace
+
+| | |
+|:---|:---|
+| **Current State** | The three-panel symmetrical view (PDF / Raw Markdown / Rendered Preview) with synchronized scrolling is implemented in the Layout Inspector panel ([app.py:L1392-L1449](file:///home/owner/OLMOCR/app.py#L1392-L1449)). |
+| **Proposed Enhancement** | Extend with in-document annotation capabilities: |
 
 *   Allow users to **highlight text** directly on the rendered Markdown or PDF panel.
 *   Highlights can be tagged with labels: `Disputed`, `Critical`, `Prior Condition`, `Key Evidence`, `Inconsistency`.
 *   Tagged highlights are saved as annotated metadata and become searchable/filterable in RAG queries.
 *   Export annotations as a summary report for inclusion in legal submissions.
 
-**Value**: Enables legal teams to flag key evidence directly within the case records during review, creating a permanent audit trail that integrates with the RAG analysis pipeline.
-
-### 4. Interactive Clinical Timeline Visualisation
+#### 🔲 Interactive Clinical Timeline Visualisation
 
 | | |
 |:---|:---|
-| **Current State** | The Timeline Generator (📅 mode) outputs a static Markdown table. |
-| **UX Optimisation** | Display the generated timeline as an **interactive graphical flow**: |
+| **Current State** | The Timeline Generator (📅 mode) outputs a static Markdown table (now exportable to CSV via the Export .csv button). |
+| **Proposed Enhancement** | Render events as interactive nodes on a visual timeline; clicking an event scrolls the PDF viewer to the cited source page; overlay conflict markers for inconsistencies. |
 
-*   Render clinical events as nodes on a horizontal or vertical timeline.
-*   Colour-code by provider/author or document type.
-*   Clicking an event on the timeline should:
-    1. Highlight the corresponding source citation.
-    2. Automatically scroll the side-by-side PDF viewer to the exact page where the event was documented.
-*   Overlay conflict markers where inconsistencies exist between sources.
-
-**Value**: Saves hours of manual cross-referencing. Makes the RAG system an auditable, visual source of truth for litigation timelines.
-
-### 5. Single-Click Structured Report Export
+#### 🔲 Advanced Structured Report Export (DOCX / PDF)
 
 | | |
 |:---|:---|
-| **Current State** | Output is plain text in the Gradio chat window with copy-to-clipboard functionality. |
-| **UX Optimisation** | Add direct download buttons below the chat window: |
+| **Current State** | Chat sessions can be exported as `.md`, `.txt`, and `.csv`. |
+| **Proposed Enhancement** | Add Word/DOCX export with firm letterhead template and embedded citations. Add PDF report compilation for court submission. |
 
-*   **📅 Export Medical Chronology (Excel/CSV)**: Converts Timeline Generator output into a formatted spreadsheet.
-*   **🏥 Export IME Injury Summary (Word/DOCX)**: Generates a formatted Word document with firm letterhead template, numbered headings, and embedded source citations.
-*   **📋 Export Full Analysis (PDF)**: Compiles the complete chat session into a formatted PDF report suitable for court submission.
+#### 🔲 Additional Productivity Accelerators
 
-**Value**: Converts raw RAG outputs into finalised legal deliverables instantly, eliminating hours of copy-pasting and manual formatting.
-
-### 6. Case Dashboard & Status Overview
-
-| | |
-|:---|:---|
-| **Current State** | Corpus statistics are shown as a single aggregate table. |
-| **UX Optimisation** | Add a **Case Dashboard** view showing: |
-
-*   All indexed cases in a card/grid layout.
-*   Per-case metrics: document count, chunk count, date range, unique authors.
-*   Status indicators: Indexed ✅, Pending ⏳, Error ❌.
-*   Quick-action buttons: "Analyse This Case", "Delete Case", "Export All".
-
-**Value**: Gives the practitioner a bird's-eye view of their daily caseload, enabling rapid case switching and progress tracking.
-
-### 7. Keyboard Shortcuts & Productivity Accelerators
-
-| Shortcut | Action |
-|:---|:---|
-| `Ctrl+Enter` | Submit chat query |
-| `Ctrl+1` through `Ctrl+5` | Switch analysis mode (Q&A, Timeline, Summary, Inconsistencies, Medications) |
-| `Ctrl+Shift+C` | Copy last response to clipboard |
-| `Ctrl+Shift+N` | Clear chat and start new analysis session |
-| `Ctrl+Shift+F` | Toggle search filter panel |
-
-**Value**: Reduces mouse-clicking overhead for practitioners processing 3–5 cases daily, aligning with professional workflow expectations.
+*   `Ctrl+1` through `Ctrl+5` mode switching shortcuts.
+*   Saved query templates per case type.
+*   Batch query execution across multiple analysis modes.
 
 ---
 
 ## ⚖️ Best Practices for Medicolegal Experts & Lawyers
 
 ### Document Verification
-1. **Always verify OCR output** against the original PDF using the synchronised side-by-side viewer before indexing. Pay particular attention to handwritten notes, low-contrast scans, and multi-column layouts.
+1. **Always verify OCR output** against the original PDF using the synchronised side-by-side viewer (Layout Inspector panel) before indexing. Pay particular attention to handwritten notes, low-contrast scans, and multi-column layouts.
 2. **Cross-reference citations**: Every RAG answer includes `[Source N]` references with filename, page, and date. Always verify critical claims by navigating to the cited page.
 
 ### Case Management
-3. **One case = one run**: Upload each client's documents as a separate batch. Name imported runs descriptively: `run_imported_Smith_v_Jones_2024`.
-4. **Enable case filtering**: When the Active Case Selector is available, always select the specific case before querying. Never analyse with "All Cases" selected unless performing deliberate cross-case research.
-5. **Clean up after each case**: Purge temporary files between cases to prevent accidental data mixing.
+3. **One case = one run**: Upload each client's documents as a separate batch. Name imported runs descriptively: `run_imported_Smith_v_Jones_2024`. Alternatively, use the **📥 Upload External Markdown** accordion to create named cases directly.
+4. **Always select the active case**: Before querying, select the specific case from the **Active Case** dropdown in the **🔍 Search Filters** accordion. Never analyse with "All Cases" selected unless performing deliberate cross-case research.
+5. **Use metadata filters**: Apply document type, author, and date range filters to narrow queries and reduce noise, especially in large multi-clinician cases.
+6. **Clean up after each case**: Use the **🗑️ Delete Case** button on the Case Dashboard, or use the **🧹 Reset & Cleanup** tool in the System Diagnostics panel to purge temporary files.
 
 ### Analysis Strategy
-6. **Use the right model for the task**: Use Instruct models for structured reports and timelines; use Reasoning models for inconsistency detection and complex analysis.
-7. **Start broad, then narrow**: Begin with Free Q&A to explore the records, then use specialised modes for structured output.
-8. **Adjust Top-K for case size**: Small cases (2–3 documents) may work well with Top-K = 5; large cases (10+ documents) benefit from Top-K = 12–15.
+7. **Use the right model for the task**: Use Instruct models for structured reports and timelines; use Reasoning models for inconsistency detection and complex analysis.
+8. **Start broad, then narrow**: Begin with Free Q&A to explore the records, then use specialised modes for structured output.
+9. **Adjust Top-K for case size**: Small cases (2–3 documents) may work well with Top-K = 5; large cases (10+ documents) benefit from Top-K = 12–15.
+10. **Export your work**: Use the `.md`, `.txt`, or `.csv` export buttons to save analysis sessions for your case file before clearing the chat.
 
 ### Security & Compliance
-9. **Local deployment for PHI**: The entire application runs on local hardware. No documents, vectors, or queries traverse the network. This guarantees compliance with HIPAA, the Australian Privacy Act, and professional legal privilege.
-10. **Audit trail**: PostgreSQL maintains a complete registry of all indexed documents, chunks, and their metadata. This provides a defensible chain of custody for litigation purposes.
-11. **Data retention**: Configure Redis TTLs and MinIO lifecycle policies according to your firm's data retention policies. The default Redis query cache TTL is 1 hour; chat history TTL is 2 hours.
+11. **Local deployment for PHI**: The entire application runs on local hardware. No documents, vectors, or queries traverse the network. This guarantees compliance with HIPAA, the Australian Privacy Act, and professional legal privilege.
+12. **Audit trail**: PostgreSQL maintains a complete registry of all indexed documents, chunks, and their metadata. This provides a defensible chain of custody for litigation purposes.
+13. **Data retention**: Configure Redis TTLs and MinIO lifecycle policies according to your firm's data retention policies. The default Redis query cache TTL is 1 hour; chat history TTL is 2 hours.
+

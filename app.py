@@ -595,7 +595,7 @@ def get_gpu_metrics():
             <div style='margin-top: 16px;'>
                 <div style='font-size: 0.9rem; font-weight: 600; color: #c7d2fe; margin-bottom: 8px;'>Active GPU Processes</div>
                 
-                <div style='max-height: 250px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.05); border-radius: 8px;'>
+                <div style='max-height: 500px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.05); border-radius: 8px;'>
                     <table style='width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: left; background: rgba(15, 23, 42, 0.3);'>
                         <thead>
                             <tr style='border-bottom: 1px solid rgba(255,255,255,0.1); background: rgba(15, 23, 42, 0.6); color: #94a3b8;'>

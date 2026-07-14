@@ -145,3 +145,53 @@ class TestExternalMDUpload(unittest.TestCase):
         res = rag_ui._refresh_active_case_after_upload()
         self.assertEqual(res.get("value"), "run1")
         self.assertEqual(res.get("choices"), [("run_display", "run1")])
+
+    @patch("rag.db.get_runs_with_stats")
+    def test_upload_existing_case_fetch_stats_exception(self, mock_get_runs):
+        mock_get_runs.side_effect = Exception("DB error")
+        updates = list(upload_and_index_markdown([MagicMock()], "r123", ""))
+        self.assertIn("Failed to fetch case information", "".join(updates))
+
+    @patch("rag.db.get_runs_with_stats", return_value=[])
+    @patch("rag.db.get_connection")
+    def test_upload_existing_case_query_db_fallback_success(self, mock_conn, mock_get_runs):
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = ["/mock/existing/dir"]
+        mock_conn.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+        
+        with patch("os.makedirs", side_effect=Exception("Perm error")):
+            updates = list(upload_and_index_markdown([MagicMock()], "r123", ""))
+            self.assertIn("Failed to create directories", "".join(updates))
+
+    @patch("rag.db.get_runs_with_stats", return_value=[])
+    @patch("rag.db.get_connection")
+    def test_upload_existing_case_query_db_fallback_exception(self, mock_conn, mock_get_runs):
+        mock_conn.side_effect = Exception("Conn error")
+        updates = list(upload_and_index_markdown([MagicMock()], "r123", ""))
+        self.assertIn("Failed to retrieve run directory", "".join(updates))
+
+    @patch("rag.db.get_runs_with_stats", return_value=[])
+    @patch("rag.db.get_connection")
+    def test_upload_existing_case_not_found(self, mock_conn, mock_get_runs):
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = None
+        mock_conn.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+        
+        updates = list(upload_and_index_markdown([MagicMock()], "r123", ""))
+        self.assertIn("Could not locate existing case directory", "".join(updates))
+
+    @patch("rag_ui.WORKSPACE_DIR", "/mock")
+    @patch("os.path.exists", return_value=True)
+    @patch("shutil.copy")
+    @patch("os.makedirs")
+    def test_upload_copy_exception(self, mock_makedirs, mock_copy, mock_exists):
+        mock_copy.side_effect = Exception("Copy failed")
+        mock_file = MagicMock()
+        mock_file.name = "test.md"
+        updates = list(upload_and_index_markdown([mock_file], "new", "MyCase"))
+        self.assertIn("Could not copy test.md", "".join(updates))
+        self.assertIn("No files were successfully copied", "".join(updates))
+
+
+if __name__ == "__main__":
+    unittest.main()

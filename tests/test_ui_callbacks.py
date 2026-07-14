@@ -533,6 +533,214 @@ class TestUICallbacks(unittest.TestCase):
         html_err = rag_ui._build_dashboard_html()
         self.assertTrue("Cannot load cases" in html_err)
 
+    def test_log_to_rag_overflow_and_empty(self):
+        # Clear log buffer first
+        rag_ui.RAG_LOG_BUFFER.clear()
+        
+        # Scenario 1: empty message
+        rag_ui.log_to_rag("")
+        self.assertEqual(len(rag_ui.RAG_LOG_BUFFER), 0)
+        
+        # Scenario 2: buffer overflow (500 limit)
+        for i in range(505):
+            rag_ui.log_to_rag(f"message {i}")
+        self.assertEqual(len(rag_ui.RAG_LOG_BUFFER), 500)
+        self.assertTrue("message 504" in rag_ui.RAG_LOG_BUFFER[-1])
+        self.assertTrue("message 0" not in rag_ui.RAG_LOG_BUFFER[0])
+
+    def test_rag_ui_reload_with_custom_choices(self):
+        import importlib
+        with patch("rag_ui.load_settings", return_value={"analysis_model_name": "custom-analysis-model", "embedding_model": "custom-emb-model"}):
+            importlib.reload(rag_ui)
+
+    @patch("rag.db.get_runs_with_stats")
+    def test_build_dashboard_html_single_bounds(self, mock_stats):
+        import datetime
+        # Scenario 1: earliest set, latest None
+        mock_stats.return_value = [
+            {
+                "run_id": "run_1",
+                "run_dir": "/workspace/run_1",
+                "total_documents": 1,
+                "total_chunks": 1,
+                "unique_authors": 1,
+                "earliest_date": "2026-01-01",
+                "latest_date": None,
+                "indexed_at": datetime.datetime(2026, 7, 12, 12, 0, 0)
+            }
+        ]
+        html1 = rag_ui._build_dashboard_html()
+        self.assertTrue("2026-01-01" in html1)
+
+        # Scenario 2: earliest None, latest set
+        mock_stats.return_value = [
+            {
+                "run_id": "run_2",
+                "run_dir": "/workspace/run_2",
+                "total_documents": 1,
+                "total_chunks": 1,
+                "unique_authors": 1,
+                "earliest_date": None,
+                "latest_date": "2026-01-10",
+                "indexed_at": "invalid_date_format_string"
+            }
+        ]
+        html2 = rag_ui._build_dashboard_html()
+        self.assertTrue("2026-01-10" in html2)
+        self.assertTrue("invalid_date_for" in html2)
+
+    def test_refresh_dashboard_callback(self):
+        with gr.Blocks() as demo:
+            rag_ui.build_analysis_ui()
+        callbacks = {}
+        for block_fn in demo.fns.values():
+            fn = block_fn.fn
+            if fn:
+                callbacks[getattr(fn, "__name__", "")] = fn
+
+        refresh_db_fn = callbacks.get("_refresh_dashboard")
+        self.assertIsNotNone(refresh_db_fn)
+        
+        with patch("rag_ui._build_dashboard_html", return_value="html_val"):
+            with patch("rag_ui._get_indexed_run_choices", return_value=[("lbl1", "r1"), ("lbl2", "r2")]):
+                html, update, status = refresh_db_fn()
+                self.assertEqual(html, "html_val")
+                self.assertEqual(status, "")
+
+    def test_delete_case_callback(self):
+        with gr.Blocks() as demo:
+            rag_ui.build_analysis_ui()
+        callbacks = {}
+        for block_fn in demo.fns.values():
+            fn = block_fn.fn
+            if fn:
+                callbacks[getattr(fn, "__name__", "")] = fn
+
+        delete_case_fn = callbacks.get("_delete_case")
+        self.assertIsNotNone(delete_case_fn)
+
+        html, update, status = delete_case_fn(None)
+        self.assertTrue("No case selected" in status)
+
+        with patch("rag.db.delete_run_data") as mock_db, \
+             patch("rag.embedding.delete_run_vectors") as mock_emb, \
+             patch("rag.storage.delete_run_objects") as mock_storage, \
+             patch("rag.cache.invalidate_query_cache") as mock_cache:
+            html, update, status = delete_case_fn("run123")
+            self.assertTrue("deleted successfully" in status)
+            mock_db.assert_called_once_with("run123")
+            mock_emb.assert_called_once_with("run123")
+            mock_storage.assert_called_once_with("run123")
+            mock_cache.assert_called_once()
+
+        with patch("rag.db.delete_run_data", side_effect=Exception("DB error")), \
+             patch("rag.embedding.delete_run_vectors", side_effect=Exception("Vector error")), \
+             patch("rag.storage.delete_run_objects", side_effect=Exception("Storage error")), \
+             patch("rag.cache.invalidate_query_cache", side_effect=Exception("Cache error")):
+            html, update, status = delete_case_fn("run123")
+            self.assertTrue("deleted successfully" in status)
+
+    def test_on_case_selected_callback(self):
+        with gr.Blocks() as demo:
+            rag_ui.build_analysis_ui()
+        callbacks = {}
+        for block_fn in demo.fns.values():
+            fn = block_fn.fn
+            if fn:
+                callbacks[getattr(fn, "__name__", "")] = fn
+
+        on_case_selected = callbacks.get("on_case_selected")
+        self.assertIsNotNone(on_case_selected)
+
+        banner, update_author, update_from, update_to = on_case_selected("")
+        self.assertTrue("All Cases" in banner)
+
+        with patch("rag_ui._get_indexed_run_choices", return_value=[("lbl1", "run123")]), \
+             patch("rag.db.get_authors_for_run", return_value=["Author X"]), \
+             patch("rag.db.get_date_range_for_run", return_value={"earliest": "2026-01-01", "latest": "2026-01-10"}):
+            banner, update_author, update_from, update_to = on_case_selected("run123")
+            self.assertTrue("lbl1" in banner)
+            self.assertEqual(update_author.get("choices"), [("All Authors", ""), ("Author X", "Author X")])
+
+        with patch("rag_ui._get_indexed_run_choices", return_value=[("lbl1", "run123")]), \
+             patch("rag.db.get_authors_for_run", side_effect=Exception("Authors fail")), \
+             patch("rag.db.get_date_range_for_run", side_effect=Exception("Dates fail")):
+            banner, update_author, update_from, update_to = on_case_selected("run123")
+            self.assertEqual(update_author.get("choices"), [("All Authors", "")])
+
+    def test_do_export_handlers(self):
+        with gr.Blocks() as demo:
+            rag_ui.build_analysis_ui()
+        callbacks = {}
+        for block_fn in demo.fns.values():
+            fn = block_fn.fn
+            if fn:
+                callbacks[getattr(fn, "__name__", "")] = fn
+
+        do_export_md = callbacks.get("_do_export_md")
+        do_export_txt = callbacks.get("_do_export_txt")
+        do_export_csv = callbacks.get("_do_export_csv")
+
+        self.assertIsNotNone(do_export_md)
+        self.assertIsNotNone(do_export_txt)
+        self.assertIsNotNone(do_export_csv)
+
+        with patch("rag_export.export_chat_markdown", return_value="/tmp/file.md") as mock_exp:
+            res = do_export_md([], "mode", "run123")
+            self.assertEqual(res.get("value"), "/tmp/file.md")
+        
+        with patch("rag_export.export_chat_markdown", side_effect=Exception("MD export failed")):
+            res = do_export_md([], "mode", "run123")
+            self.assertFalse(res.get("visible", True))
+
+        with patch("rag_export.export_chat_text", return_value="/tmp/file.txt") as mock_exp:
+            res = do_export_txt([], "mode", "run123")
+            self.assertEqual(res.get("value"), "/tmp/file.txt")
+
+        with patch("rag_export.export_chat_text", side_effect=Exception("Txt export failed")):
+            res = do_export_txt([], "mode", "run123")
+            self.assertFalse(res.get("visible", True))
+
+        with patch("rag_export.export_timeline_csv", return_value="/tmp/file.csv") as mock_exp:
+            res = do_export_csv([], "run123")
+            self.assertEqual(res.get("value"), "/tmp/file.csv")
+
+        with patch("rag_export.export_timeline_csv", side_effect=Exception("CSV export failed")):
+            res = do_export_csv([], "run123")
+            self.assertFalse(res.get("visible", True))
+
+    def test_simple_closures(self):
+        with gr.Blocks() as demo:
+            rag_ui.build_analysis_ui()
+        callbacks = {}
+        for block_fn in demo.fns.values():
+            fn = block_fn.fn
+            if fn:
+                callbacks[getattr(fn, "__name__", "")] = fn
+
+        toggle_new_case_textbox = callbacks.get("toggle_new_case_textbox")
+        _refresh_case_selector = callbacks.get("_refresh_case_selector")
+        _refresh_target_case_choices = callbacks.get("_refresh_target_case_choices")
+        _refresh_analysis_tab_selectors = callbacks.get("_refresh_analysis_tab_selectors")
+
+        self.assertIsNotNone(toggle_new_case_textbox)
+        self.assertIsNotNone(_refresh_case_selector)
+        self.assertIsNotNone(_refresh_target_case_choices)
+        self.assertIsNotNone(_refresh_analysis_tab_selectors)
+
+        self.assertTrue(toggle_new_case_textbox("new").get("visible"))
+        self.assertFalse(toggle_new_case_textbox("existing").get("visible"))
+
+        with patch("rag_ui._get_indexed_run_choices", return_value=[("lbl", "r1")]):
+            res_sel = _refresh_case_selector()
+            self.assertEqual(res_sel.get("choices"), [("lbl", "r1")])
+
+            res_target = _refresh_target_case_choices()
+            self.assertEqual(res_target.get("choices"), [("🆕 Create New Case", "new"), ("lbl", "r1")])
+
+            res_tab = _refresh_analysis_tab_selectors()
+            self.assertEqual(res_tab[0].get("choices"), [("lbl", "r1")])
+
 
 if __name__ == "__main__":
     unittest.main()

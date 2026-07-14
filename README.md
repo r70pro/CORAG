@@ -19,8 +19,9 @@ The suite features **built-in Docker lifecycle management** to dynamically run t
   - [pdf_manager.py](file:///home/owner/OLMOCR/pdf_manager.py) - PDF rendering (PDFium), page mapping, and zip operations
   - [pipeline_manager.py](file:///home/owner/OLMOCR/pipeline_manager.py) - Batch OCR pipeline engine & process wrapper
   - [pytest.ini](file:///home/owner/OLMOCR/pytest.ini) - Pytest configuration file to ignore RAG database directories
+  - [rag_export.py](file:///home/owner/OLMOCR/rag_export.py) - Chat session export (Markdown, plain text, CSV timeline)
   - [rag_infra_manager.py](file:///home/owner/OLMOCR/rag_infra_manager.py) - RAG services (PG, Redis, MinIO, Qdrant) lifecycle orchestrator
-  - [rag_ui.py](file:///home/owner/OLMOCR/rag_ui.py) - Gradio layout and callbacks for the RAG Analysis tab
+  - [rag_ui.py](file:///home/owner/OLMOCR/rag_ui.py) - Gradio layout and callbacks for the Case Dashboard and RAG Chat panels
   - [requirements.txt](file:///home/owner/OLMOCR/requirements.txt) - Python packages and third-party dependencies
   - [settings.json](file:///home/owner/OLMOCR/settings.json) - Persistent user configuration settings
   - [settings_manager.py](file:///home/owner/OLMOCR/settings_manager.py) - Loading, saving, and validation utility for configurations
@@ -37,10 +38,10 @@ The suite features **built-in Docker lifecycle management** to dynamically run t
     - [storage.py](file:///home/owner/OLMOCR/rag/storage.py) - MinIO client for PDF and Markdown blob archives
   - tests/ - Extensive unit and integration test suite:
     - [test_app.py](file:///home/owner/OLMOCR/tests/test_app.py), [test_app_callbacks.py](file:///home/owner/OLMOCR/tests/test_app_callbacks.py), [test_cleanup_manager.py](file:///home/owner/OLMOCR/tests/test_cleanup_manager.py), [test_docker_manager.py](file:///home/owner/OLMOCR/tests/test_docker_manager.py)
-    - [test_e2e_app.py](file:///home/owner/OLMOCR/tests/test_e2e_app.py), [test_html_utils_all.py](file:///home/owner/OLMOCR/tests/test_html_utils_all.py), [test_integration_rag.py](file:///home/owner/OLMOCR/tests/test_integration_rag.py)
-    - [test_pdf_manager.py](file:///home/owner/OLMOCR/tests/test_pdf_manager.py), [test_pdf_manager_all.py](file:///home/owner/OLMOCR/tests/test_pdf_manager_all.py), [test_pipeline_manager.py](file:///home/owner/OLMOCR/tests/test_pipeline_manager.py)
+    - [test_download_models.py](file:///home/owner/OLMOCR/tests/test_download_models.py), [test_e2e_app.py](file:///home/owner/OLMOCR/tests/test_e2e_app.py), [test_external_md_upload.py](file:///home/owner/OLMOCR/tests/test_external_md_upload.py), [test_html_utils_all.py](file:///home/owner/OLMOCR/tests/test_html_utils_all.py)
+    - [test_integration_rag.py](file:///home/owner/OLMOCR/tests/test_integration_rag.py), [test_pdf_manager.py](file:///home/owner/OLMOCR/tests/test_pdf_manager.py), [test_pdf_manager_all.py](file:///home/owner/OLMOCR/tests/test_pdf_manager_all.py), [test_pipeline_manager.py](file:///home/owner/OLMOCR/tests/test_pipeline_manager.py)
     - [test_rag.py](file:///home/owner/OLMOCR/tests/test_rag.py), [test_rag_analyzer_all.py](file:///home/owner/OLMOCR/tests/test_rag_analyzer_all.py), [test_rag_cache_all.py](file:///home/owner/OLMOCR/tests/test_rag_cache_all.py), [test_rag_db_errors.py](file:///home/owner/OLMOCR/tests/test_rag_db_errors.py)
-    - [test_rag_embedding_all.py](file:///home/owner/OLMOCR/tests/test_rag_embedding_all.py), [test_rag_extended.py](file:///home/owner/OLMOCR/tests/test_rag_extended.py), [test_rag_infra_manager_all.py](file:///home/owner/OLMOCR/tests/test_rag_infra_manager_all.py)
+    - [test_rag_embedding_all.py](file:///home/owner/OLMOCR/tests/test_rag_embedding_all.py), [test_rag_export.py](file:///home/owner/OLMOCR/tests/test_rag_export.py), [test_rag_extended.py](file:///home/owner/OLMOCR/tests/test_rag_extended.py), [test_rag_infra_manager_all.py](file:///home/owner/OLMOCR/tests/test_rag_infra_manager_all.py)
     - [test_rag_retriever_all.py](file:///home/owner/OLMOCR/tests/test_rag_retriever_all.py), [test_rag_storage_all.py](file:///home/owner/OLMOCR/tests/test_rag_storage_all.py)
     - [test_state.py](file:///home/owner/OLMOCR/tests/test_state.py), [test_ui_callbacks.py](file:///home/owner/OLMOCR/tests/test_ui_callbacks.py)
 
@@ -50,59 +51,76 @@ The suite features **built-in Docker lifecycle management** to dynamically run t
 
 > For the complete practitioner routine and detailed workflow instructions, see [medicolegal_rag_guide.md](file:///home/owner/OLMOCR/medicolegal_rag_guide.md).
 
-The frontend is a single-page Gradio application ([app.py](file:///home/owner/OLMOCR/app.py)) built around a dark-mode glassmorphism design system with four distinct interface zones. The design is optimised for the daily workflow of medicolegal practitioners managing 3–5 separate client cases per day.
+The frontend is a single-page Gradio application ([app.py](file:///home/owner/OLMOCR/app.py)) built around a dark-mode glassmorphism design system with a **5-panel navigation architecture**. A persistent left sidebar provides global navigation and Docker inference controls. The design is optimised for the daily workflow of medicolegal practitioners managing 3–5 separate client cases per day.
 
 ### 🗺️ Full-Page UI Layout Map
 
 ```mermaid
 block-beta
-    columns 4
+    columns 5
 
-    block:header:4
-        columns 4
-        title["OLMOCR PDF-to-Markdown Suite<br/>🐳 Inference Status Badge"]
-        start_stop["▶️ Start / ⏹️ Stop"]
-    end
-
-    block:sidebar:1
+    block:navsidebar:1
         columns 1
-        settings["⚙️ Pipeline Settings<br/>Model Selector<br/>Workers / Concurrency<br/>Image Dimension<br/>Guided Decoding"]
-        docker["🐳 Docker Server<br/>HF Token<br/>GPU Memory / Max Len<br/>▶️ Start / ⏹️ Stop / 🔄 Recreate"]
-        cleanup["🧹 Reset & Cleanup<br/>Run Dirs / Gradio Temp<br/>Pycache / HF Cache"]
+        nav["🧭 Navigation Sidebar<br/>📄 PDF Ingestion<br/>🔍 Layout Inspector<br/>📊 Case Dashboard<br/>💬 RAG Processing<br/>🖥️ System Diagnostics<br/>───────────<br/>🐳 Inference Server<br/>⚙️ Pipeline Settings"]
     end
 
-    block:center:3
-        columns 3
-        upload["📥 Source Documents<br/>PDF Upload Area<br/>🚀 Start / 🛑 Stop"]
-        monitor["📊 Monitoring<br/>Status Badge<br/>Progress Bar<br/>Completed / Failed"]
+    block:contentarea:4
+        columns 4
+        paneltitle["Dynamic Panel Title + System Health Badge"]
+    end
+
+    block:spacer1:1
+        columns 1
+        space1[" "]
+    end
+
+    block:panel1:4
+        columns 4
+        p1["Panel 1: PDF Ingestion<br/>Upload + Batch Processing + Monitoring + Log"]
+    end
+
+    block:spacer2:1
+        columns 1
+        space2[" "]
+    end
+
+    block:panel2:4
+        columns 4
+        p2a["📄 Original PDF"]
+        p2b["✍️ Raw Markdown"]
+        p2c["👁️ Rendered Preview"]
+        p2d[" "]
+    end
+
+    block:spacer3:1
+        columns 1
         space3[" "]
-        manifest["📋 Upload Manifest"]
-        filestatus["📁 Per-File Status"]
+    end
+
+    block:panel3:4
+        columns 4
+        p3["Panel 3: Case Dashboard<br/>Card Grid · Per-Case Metrics · Delete Case"]
+    end
+
+    block:spacer4:1
+        columns 1
         space4[" "]
-        log["📜 System Output Log (full width)"]
     end
 
-    block:viewer:4
+    block:panel4:4
         columns 4
-        viewcontrols["📄 Doc Selector | 👁️ View Mode | ⬅️ Prev / Page Slider / Next ➡️ | Sync Scroll ☑️ | ⬇️ Download MD / ZIP"]
+        p4sidebar["RAG Sidebar<br/>🔧 Infrastructure<br/>📦 Indexing<br/>📥 Upload MD<br/>⚙️ Settings<br/>🔍 Filters"]
+        p4chat["💬 Chat Interface (1000px)<br/>Active Case Banner<br/>Analysis Mode Selector<br/>🚀 Ask / 🗑️ Clear<br/>📝.md 📄.txt 📊.csv Export<br/>📜 RAG System Log"]
     end
 
-    block:panels:4
-        columns 3
-        pdf["📄 Original PDF<br/>(70vh embedded viewer)"]
-        raw["✍️ Raw Markdown<br/>(JetBrains Mono, 📋 Copy)"]
-        preview["👁️ Rendered Preview<br/>(live HTML render)"]
+    block:spacer5:1
+        columns 1
+        space5[" "]
     end
 
-    block:ragsection:4
+    block:panel5:4
         columns 4
-        ragtitle["🧠 Document Analysis — RAG Section"]
-    end
-
-    block:ragmain:4
-        columns 4
-        ragsidebar["🔧 RAG Infrastructure<br/>📦 Document Indexing<br/>⚙️ Analysis Settings"]
-        ragchat["💬 Chat Interface (1000px height)<br/>Analysis Mode Selector<br/>🚀 Ask / 🗑️ Clear Chat<br/>📜 RAG System Log"]
+        p5["Panel 5: System Diagnostics<br/>Backing Services Health · GPU/VRAM Metrics · Reset & Cleanup"]
     end
 ```
 
@@ -163,41 +181,30 @@ Custom WebKit scrollbars for premium feel:
 
 ---
 
-### 🏗️ Interface Zones — Detailed Panel Reference
+### 🏗️ Interface Architecture — 5-Panel Navigation
 
-#### Zone 1: Header Bar ([app.py:L66-L78](file:///home/owner/OLMOCR/app.py#L66-L78))
+The application uses a persistent **left navigation sidebar** with 5 content panels. Only one panel is visible at a time. The sidebar also hosts global controls (Inference Server, Pipeline Settings).
 
-| Element | Component | Description |
+#### Global Navigation Sidebar ([app.py:L66-L233](file:///home/owner/OLMOCR/app.py#L66-L233))
+
+| Section | Contents | Key Features |
 |:---|:---|:---|
-| **Application Title** | `gr.HTML` | Gradient-filled `<h1>` with subtitle: *"High-performance layout-aware PDF OCR pipeline using vision-language models"* |
-| **Inference Status Badge** | `gr.HTML` | Real-time container health indicator. Auto-refreshes every 5 seconds via `gr.Timer` ([app.py:L524-L536](file:///home/owner/OLMOCR/app.py#L524-L536)). States: `Checking Backend...`, `Offline`, `Starting`, `Ready` |
-| **Quick Start/Stop** | `gr.Button` (×2) | Compact ▶️ Start / ⏹️ Stop buttons for one-click inference server control without opening the sidebar |
+| **Panel Navigation** | 5 radio buttons: 📄 PDF Ingestion, 🔍 Layout Inspector, 📊 Case Dashboard, 💬 RAG Processing, 🖥️ System Diagnostics | `gr.Radio` with visibility toggling via `.change()` callbacks |
+| **🐳 Inference Server (Docker)** | HF token, Docker port, GPU memory slider (0.1–1.0), max model length (2048–32768), Start/Stop/Recreate buttons | Creates and manages the `vllm/vllm-openai` Docker container |
+| **⚙️ Pipeline Settings** | Model selector, workers (1–64), concurrency (1–2000), image dimension (512–2048px), retries (1–20), guided decoding | 💾 Save Configuration button persists to `settings.json` |
+| **Active Role** | Dynamic badge showing current panel context | Updates as user navigates between panels |
 
----
-
-#### Zone 2: OCR Pipeline — Left Sidebar + Centre Panel ([app.py:L80-L233](file:///home/owner/OLMOCR/app.py#L80-L233))
-
-**Left Sidebar** (`scale=1`, max-width `320px`, `.sidebar-panel`):
-
-| Accordion | Contents | Key Settings |
-|:---|:---|:---|
-| **⚙️ Pipeline Settings** | Model selector dropdown, advanced parameter sliders, 💾 Save Configuration button | `server_url`, `model_name`, `workers` (1–64), `max_concurrent_requests` (1–2000), `target_longest_image_dim` (512–2048px), `max_page_retries` (1–20), `guided_decoding` (checkbox) |
-| **🐳 Local Inference Server** | HF token field, Docker port, GPU memory slider (0.1–1.0), max model length (2048–32768), Start/Stop/Recreate buttons | Creates and manages the `vllm/vllm-openai` Docker container with `--gpus all` and configurable VRAM allocation |
-| **🧹 Reset & Cleanup** | Four checkboxes: obsolete run dirs, Gradio temp, pycache, HF cache. Warning label for HF cache deletion | Calls [perform_reset_cleanup()](file:///home/owner/OLMOCR/cleanup_manager.py) |
-
-**Centre Panel** (`scale=4`):
+#### Panel 1: PDF Ingestion ([app.py](file:///home/owner/OLMOCR/app.py))
 
 | Component | Layout | Purpose |
 |:---|:---|:---|
-| **📥 Source Documents** | File upload widget (multi-file `.pdf`), 🚀 Start / 🛑 Stop buttons | Drag-and-drop PDF ingestion. Stop button toggles interactivity on run start/stop |
-| **📊 Monitoring** | Status badge, progress bar (animated HTML), Completed/Failed page counter cards | Real-time batch tracking with stat-cards (`1.8rem` bold values) |
+| **📥 Source Documents** | File upload widget (multi-file `.pdf`), 🚀 Start / 🛑 Stop buttons | Drag-and-drop PDF ingestion |
+| **📊 Monitoring** | Status badge, progress bar (animated HTML), Completed/Failed counter cards | Real-time batch tracking with stat-cards |
 | **📋 Upload Manifest** | HTML table (scrollable, max 200px) | Lists uploaded files with sizes |
 | **📁 Per-File Status** | HTML table (scrollable, max 200px) | Per-document processing results |
-| **📜 System Output Log** | `gr.Code` (shell syntax, 10 lines, `.log-console`, max 250px) | Live subprocess stdout/stderr from pipeline execution |
+| **📜 System Output Log** | `gr.Code` (shell syntax, 30 lines, `.log-console`) | Live subprocess stdout/stderr |
 
----
-
-#### Zone 3: Document Viewer — Three-Panel Symmetrical Layout ([app.py:L234-L303](file:///home/owner/OLMOCR/app.py#L234-L303))
+#### Panel 2: Layout Inspector ([app.py](file:///home/owner/OLMOCR/app.py))
 
 **Control Bar:**
 
@@ -211,45 +218,54 @@ Custom WebKit scrollbars for premium feel:
 
 **Three-Panel Viewer** (each panel `scale=1`, height `70vh`):
 
-| Panel | Element ID | Styling | Content |
-|:---|:---|:---|:---|
-| **📄 Original PDF** | `#pdf-scroll-container` | Black background (`#000000`), 70vh scroll container | Embedded `<iframe>` rendering of the source PDF via PDFium |
-| **✍️ Raw Markdown** | `#raw-scroll-container` | `#020617` background, JetBrains Mono (`0.85rem`), sky-400 text (`#38bdf8`) | Syntax-highlighted raw Markdown with **📋 Copy** button (clipboard via JS) |
-| **👁️ Rendered Preview** | `#preview-scroll-container` | Semi-transparent slate background, 20px padding | Live HTML render of the Markdown output via `gr.Markdown` |
+| Panel | Element ID | Content |
+|:---|:---|:---|
+| **📄 Original PDF** | `#pdf-scroll-container` | Embedded `<iframe>` rendering of the source PDF via PDFium |
+| **✍️ Raw Markdown** | `#raw-scroll-container` | Syntax-highlighted raw Markdown with **📋 Copy** button |
+| **👁️ Rendered Preview** | `#preview-scroll-container` | Live HTML render of the Markdown output via `gr.Markdown` |
 
-**Scroll Synchronisation Engine** ([app.py:L617-L675](file:///home/owner/OLMOCR/app.py#L617-L675)):
+**Scroll Synchronisation Engine** ([app.py:L1392-L1449](file:///home/owner/OLMOCR/app.py#L1392-L1449)):
 - Listens for scroll events across all three containers
 - Calculates scroll percentage: `scrollTop / (scrollHeight - clientHeight)`
 - Propagates proportional scroll position to sibling panels
 - Uses a 100ms debounce with `activeScrollSource` locking to prevent feedback loops
-- `findScrollableElement()` recursively walks the DOM to locate the actual scrollable child
 
----
+#### Panel 3: Case Dashboard ([rag_ui.py → build_case_dashboard_ui()](file:///home/owner/OLMOCR/rag_ui.py#L762-L845))
 
-#### Zone 4: RAG Document Analysis — Full-Width Section ([rag_ui.py](file:///home/owner/OLMOCR/rag_ui.py))
+| Component | Description |
+|:---|:---|
+| **Dashboard HTML** | Card grid showing all indexed cases with per-case metrics (document count, chunk count, unique authors, date range, indexed timestamp) |
+| **🔄 Refresh Dashboard** | Reloads case data from PostgreSQL |
+| **🗑️ Delete Case** | Dropdown selector + delete button — removes all associated data from PostgreSQL, Qdrant, and MinIO |
+| **Status** | Markdown output for operation feedback |
 
-This section is injected via [build_analysis_ui()](file:///home/owner/OLMOCR/rag_ui.py#L423-L737) and contains a sidebar + chat layout:
+#### Panel 4: RAG Processing ([rag_ui.py → build_rag_chat_ui()](file:///home/owner/OLMOCR/rag_ui.py#L848-L1533))
 
 **RAG Sidebar** (`scale=1`, `.sidebar-panel`):
 
 | Accordion | Contents | Key Interactions |
 |:---|:---|:---|
-| **🔧 RAG Infrastructure** | Status badges for PostgreSQL, Redis, MinIO, Qdrant (colour-coded: ✓ healthy / ↻ running / ✗ unhealthy / ⏹ stopped / ? unknown). ▶️ Start / ⏹️ Stop buttons | Starts/stops all 4 services via `docker compose -f docker-compose.rag.yml`. Initialises PostgreSQL schema, MinIO buckets, and Qdrant collection on start |
-| **📦 Document Indexing** | Corpus statistics table (Indexed Runs / Documents / Chunks / Vectors / Unique Authors / Date Range). 🔄 Refresh Stats, Run selector dropdown, 📥 Index Selected Run, 📥 Index All Runs. Status markdown output | Triggers the chunking → embedding → upsert pipeline. Displays progress in real-time |
-| **⚙️ Analysis Settings** | Analysis Mode dropdown (5 modes), Analysis LLM Server URL, Analysis Model Name dropdown (5 models with custom value support), Retrieval Top-K slider (3–20), Embedding Model dropdown (`all-MiniLM-L6-v2`, `bge-large-en-v1.5`), 💾 Save Analysis Configuration | All settings persisted to [settings.json](file:///home/owner/OLMOCR/settings.json) via [settings_manager.py](file:///home/owner/OLMOCR/settings_manager.py) |
+| **🔧 RAG Infrastructure** | Status badges for PostgreSQL, Redis, MinIO, Qdrant. ▶️ Start / ⏹️ Stop buttons | Starts/stops all 4 services via `docker compose`. Initialises schemas on start |
+| **📦 Document Indexing** | Corpus statistics, 🔄 Refresh Stats, Run selector dropdown, 📥 Index Selected Run, 📥 Index All Runs | Triggers the chunking → embedding → upsert pipeline |
+| **📥 Upload External Markdown** | File uploader (.md), Target Case dropdown (new/existing), New Case Name textbox, 📥 Upload & Index button | Bypass ingestion pipeline: upload pre-existing Markdown directly into a case |
+| **⚙️ Analysis Settings** | Analysis LLM Server URL, Analysis Model Name (5 models), Retrieval Top-K slider (3–20), Embedding Model dropdown (`BAAI/bge-large-en-v1.5`), 💾 Save | All settings persisted to [settings.json](file:///home/owner/OLMOCR/settings.json) |
+| **🔍 Search Filters** | **Active Case** dropdown (case isolation), **Document Type** dropdown (7 types), **Author** dropdown (dynamic), **Date From / Date To** text fields | Filters apply to the next query; case selection auto-populates author and date fields |
 
 **RAG Chat Interface** (`scale=3`, `.glass-panel`):
 
 | Component | Specification | Details |
 |:---|:---|:---|
-| **Chat Window** | `gr.Chatbot`, height `1000px`, copy buttons enabled, `.analysis-chatbot` styling | Bot messages: `rgba(30, 41, 59, 0.7)` background. User messages: `rgba(99, 102, 241, 0.15)` (indigo tint). Font: `0.95rem`, line-height `1.6` |
+| **Active Case Banner** | `gr.HTML`, dynamic | Displays the currently active case name for visual confirmation of query scope |
+| **Analysis Mode** | `gr.Dropdown` (5 modes) | Free Q&A, Timeline Generator, Injury Summary, Inconsistency Finder, Medication Tracker |
+| **Chat Window** | `gr.Chatbot`, height `1000px`, copy buttons, `.analysis-chatbot` | Bot: `rgba(30, 41, 59, 0.7)`. User: `rgba(99, 102, 241, 0.15)`. Font: `0.95rem` |
 | **Chat Input** | `gr.Textbox`, 2 lines, `scale=4` | Placeholder: *"e.g., What injuries did the patient sustain and when?"* |
-| **🚀 Ask Button** | `gr.Button`, primary variant, `scale=1` | Triggers `user_message_submit()` → `bot_respond()` chain with streaming |
-| **🗑️ Clear Chat** | `gr.Button`, secondary, `size=sm` | Resets chat history to empty list |
-| **Mode Hint** | `gr.Markdown`, `.mode-hint` (italic, `0.85rem`, gray-400) | *"💡 Tip: Switch analysis mode for specialised outputs..."* |
-| **📜 RAG System Log** | `gr.Code`, shell syntax, 10 lines, `.log-console` | Timestamped backend log: indexing progress, retrieval status, LLM streaming events |
+| **🚀 Ask Button** | `gr.Button`, primary, `scale=1` | Triggers `user_message_submit()` → `bot_respond()` with streaming |
+| **🗑️ Clear Chat** | `gr.Button`, secondary, `size=sm` | Resets chat history |
+| **📝 Export .md / 📄 Export .txt / 📊 Export .csv** | `gr.Button` (×3), secondary, `size=sm` | One-click export via [rag_export.py](file:///home/owner/OLMOCR/rag_export.py) to `workspace/exports/` |
+| **Keyboard Shortcut Hints** | `gr.HTML` | `Ctrl+Enter` Send, `Ctrl+Shift+N` Clear, `Ctrl+Shift+C` Copy |
+| **📜 RAG System Log** | `gr.Code`, shell syntax, 30 lines, `.log-console` | Timestamped backend log |
 
-**Five Analysis Modes** (selectable from the sidebar dropdown):
+**Five Analysis Modes** (selectable from the dropdown above the chat):
 
 | Mode | System Prompt Focus | Output Format |
 |:---|:---|:---|
@@ -259,11 +275,19 @@ This section is injected via [build_analysis_ui()](file:///home/owner/OLMOCR/rag
 | 🔍 **Inconsistency Finder** | Cross-reference accounts of the same events; rate severity (Minor/Moderate/Major) | Table: `Issue \| Source A Says \| Source B Says \| Severity` |
 | 💊 **Medication Tracker** | Track prescriptions, dose changes, cessations, allergies | Table: `Medication \| Dose/Freq \| Date Started \| Date Stopped \| Prescriber \| Source` |
 
+#### Panel 5: System Diagnostics ([app.py](file:///home/owner/OLMOCR/app.py))
+
+| Component | Description |
+|:---|:---|
+| **Backing Services Health** | Real-time status cards for vLLM, PostgreSQL, Redis, MinIO, Qdrant — with latency and loaded model display |
+| **Hardware Utilization** | GPU/VRAM metrics (nvidia-smi-based) with usage bars |
+| **🧹 Reset & Cleanup** | Four checkboxes: obsolete run dirs, Gradio temp, pycache, HF cache. Warning label for HF cache deletion |
+
 ---
 
 ### ♿ Accessibility & WCAG Compliance
 
-The frontend implements accessibility features via runtime JavaScript ([app.py:L544-L677](file:///home/owner/OLMOCR/app.py#L544-L677)):
+The frontend implements accessibility features via runtime JavaScript ([app.py:L1291-L1451](file:///home/owner/OLMOCR/app.py#L1291-L1451)):
 
 | Feature | Standard | Implementation |
 |:---|:---|:---|
@@ -273,24 +297,35 @@ The frontend implements accessibility features via runtime JavaScript ([app.py:L
 | **ARIA labels** | WCAG 2.2 SC 1.1.1 | Dynamically applies `aria-label` to all buttons based on emoji/text content |
 | **Decorative SVG hiding** | WCAG 2.2 SC 1.1.1 | Sets `aria-hidden="true"` on SVGs without `<title>` elements |
 | **Dynamic re-application** | — | `MutationObserver` on `document.body` re-applies ARIA labels when Gradio re-renders components |
+| **Keyboard shortcuts** | WCAG 2.2 SC 2.1.1 | `Ctrl+Enter` (submit query), `Ctrl+Shift+N` (clear chat), `Ctrl+Shift+C` (copy last response) |
 
 ---
 
-### 🗓️ UX/UI Optimisation Roadmap
+### 🗓️ UX/UI Implementation Status & Roadmap
 
-The following enhancements are documented in the [Medicolegal RAG Guide](file:///home/owner/OLMOCR/medicolegal_rag_guide.md) and are prioritised for implementation to maximise practitioner productivity:
+The following enhancements are documented in the [Medicolegal RAG Guide](file:///home/owner/OLMOCR/medicolegal_rag_guide.md). Features marked ✅ are fully implemented.
 
 ```mermaid
 mindmap
   root(("Frontend<br/>Roadmap"))
     Case Isolation
-      Active Case Selector Dropdown ⭐
-      Per-Case Chat History Separation
-      Case Dashboard with Card Grid
+      Active Case Selector Dropdown ✅
+      Case Dashboard with Card Grid ✅
+      Per-Case Delete & Cleanup ✅
     Granular Search Filtering
-      Author Multi-Select Checklist
-      Document Type Filter Checkboxes
-      Date Range Double-Ended Slider
+      Author Filter Dropdown ✅
+      Document Type Filter Dropdown ✅
+      Date Range Text Fields ✅
+    Chat Export
+      Markdown Export (.md) ✅
+      Plain Text Export (.txt) ✅
+      CSV Timeline Export (.csv) ✅
+      Direct DOCX Export with Firm Letterhead
+      PDF Report with Embedded Citations
+    Productivity
+      Keyboard Shortcuts ✅
+      Saved Query Templates per Case Type
+      Batch Query Execution
     Interactive Visualisation
       Clickable Clinical Timeline
       Event → PDF Page Auto-Scroll
@@ -299,64 +334,18 @@ mindmap
       Text Highlighting on Markdown/PDF
       Tag Labels: Disputed / Critical / Key Evidence
       Annotation Export for Legal Submissions
-    Structured Export
-      DOCX with Firm Letterhead Template
-      Excel Chronology / CSV
-      PDF Report with Embedded Citations
-    Productivity
-      Keyboard Shortcuts for Mode Switching
-      Saved Query Templates per Case Type
-      Batch Query Execution
 ```
 
-#### Priority 1 — Active Case Selector ⭐
-
-| Aspect | Detail |
-|:---|:---|
-| **Problem** | Chat queries the entire corpus across all indexed cases — risk of cross-case data leakage violating legal privilege |
-| **Solution** | Add an **"Active Case"** dropdown above the chat window that applies `run_id_filter` to [search_similar()](file:///home/owner/OLMOCR/rag/retriever.py#L32). Include an "All Cases" option for deliberate cross-case analysis |
-| **Backend readiness** | The `run_id_filter` parameter is **already fully implemented** in the retriever — requires only a Gradio dropdown wired to the `analyze()` call |
-| **Impact** | Prevents confidential clinical data from Client A appearing in reports generated for Client B |
-
-#### Priority 2 — Interactive Metadata Filters
-
-| Aspect | Detail |
-|:---|:---|
-| **Problem** | Metadata filters (`doc_type_filter`, `author_filter`, `date_from`, `date_to`) are implemented in [retriever.py:L25-L48](file:///home/owner/OLMOCR/rag/retriever.py#L25-L48) but **not exposed in the UI** |
-| **Solution** | Collapsible **"🔍 Search Filters"** panel with: author multi-select checklist, document type checkboxes, date range double-ended slider |
-| **Impact** | Enables targeted queries (e.g., "show only post-accident specialist letters") — dramatically reduces noise and hallucination |
-
-#### Priority 3 — Structured Report Export
-
-| Aspect | Detail |
-|:---|:---|
-| **Problem** | RAG output is plain text in the chat window; practitioners must copy-paste and manually format for legal submissions |
-| **Solution** | Download buttons under chat: **📅 Export Chronology (Excel)**, **🏥 Export Summary (DOCX)**, **📋 Export Full Analysis (PDF)** |
-| **Impact** | Converts RAG answers into court-ready deliverables with one click |
-
-#### Priority 4 — Interactive Clinical Timeline
-
-| Aspect | Detail |
-|:---|:---|
-| **Problem** | Timeline Generator outputs a static Markdown table requiring manual cross-referencing |
-| **Solution** | Render events as interactive nodes on a visual timeline; clicking an event scrolls the PDF viewer to the cited source page; overlay conflict markers for inconsistencies |
-| **Impact** | Transforms static data into an auditable, visual source of truth for litigation |
-
-#### Priority 5 — Annotation Workspace
-
-| Aspect | Detail |
-|:---|:---|
-| **Problem** | The three-panel viewer is read-only — no way to flag evidence during review |
-| **Solution** | Allow text highlighting on the Markdown/PDF panels with labels (`Disputed`, `Critical`, `Prior Condition`, `Key Evidence`); persist annotations as searchable metadata |
-| **Impact** | Creates a permanent evidence audit trail directly within the case workspace |
-
-#### Priority 6 — Case Dashboard & Keyboard Shortcuts
-
-| Aspect | Detail |
-|:---|:---|
-| **Problem** | Corpus statistics are aggregated; no per-case overview; mode switching requires mouse interaction |
-| **Solution** | Card/grid dashboard showing all indexed cases with per-case metrics, status indicators, and quick-action buttons. Keyboard shortcuts: `Ctrl+Enter` (submit), `Ctrl+1–5` (switch mode), `Ctrl+Shift+C` (copy last response), `Ctrl+Shift+N` (clear chat) |
-| **Impact** | Bird's-eye caseload view + reduced mouse overhead for practitioners handling 3–5 cases/day |
+| Priority | Feature | Status | Details |
+|:---:|:---|:---:|:---|
+| 1 | **Active Case Selector** | ✅ Done | Dropdown in 🔍 Search Filters accordion. Applies `run_id_filter` to isolate queries per case |
+| 2 | **Interactive Metadata Filters** | ✅ Done | Document Type, Author, Date From/To fields in Search Filters accordion |
+| 3 | **Chat Session Export** | ✅ Done | Three export buttons (.md, .txt, .csv) via [rag_export.py](file:///home/owner/OLMOCR/rag_export.py) |
+| 4 | **Case Dashboard** | ✅ Done | Dedicated panel with card grid, per-case metrics, and delete functionality |
+| 5 | **Keyboard Shortcuts** | ✅ Done | `Ctrl+Enter`, `Ctrl+Shift+N`, `Ctrl+Shift+C` |
+| 6 | Interactive Clinical Timeline | 🔲 Planned | Visual timeline with clickable events and conflict markers |
+| 7 | Annotation Workspace | 🔲 Planned | Text highlighting with labels (Disputed, Critical, Key Evidence) |
+| 8 | Advanced Structured Export (DOCX/PDF) | 🔲 Planned | Word export with firm letterhead; PDF report with embedded citations |
 
 ---
 
@@ -449,17 +438,21 @@ The application relies on the following key dependencies:
    Open your browser and navigate to `http://localhost:7860/`.
 
 4. **Analyze Documents**:
-   - Run a batch OCR process in the center panel.
-   - Go to the **🧠 Document Analysis (RAG)** tab at the bottom of the page.
-   - Click **🔄 Refresh Stats** to load available indexes.
+   - Run a batch OCR process in the **📄 PDF Ingestion** panel.
+   - Click **🔍 Layout Inspector** to review OCR output against the original PDF.
+   - Click **📊 Case Dashboard** to view all indexed cases.
+   - Click **💬 RAG Processing** to open the analysis chat.
+   - Expand **📦 Document Indexing** and click **🔄 Refresh Stats** to load available indexes.
    - Select your completed OCR run and click **📥 Index Selected Run**.
-   - Type your questions in the Chat input block or select a template analysis mode from the accordion settings.
+   - Select the case from the **Active Case** dropdown in **🔍 Search Filters**.
+   - Type your questions in the Chat input or select a template analysis mode.
+   - Export results using the **📝 .md**, **📄 .txt**, or **📊 .csv** export buttons.
 
 ---
 
 ## 🧪 Verification & Testing
 
-The repository includes a comprehensive testing suite comprising **250+ unit and integration tests** (specifically 258 tests) validating components, lifecycle states, callbacks, and processing operations.
+The repository includes a comprehensive testing suite comprising **299 unit and integration tests** validating components, lifecycle states, callbacks, and processing operations.
 
 To run the test suite, ensure the virtual environment is active, then execute:
 
@@ -474,5 +467,7 @@ pytest
 ### Tested Components:
 - **`tests/test_app*.py` / `tests/test_ui*.py`**: Verification of Docker inference lifecycles, progress bar components, settings manager, and Gradio panel callbacks.
 - **`tests/test_pipeline*.py` / `tests/test_pdf*.py`**: Unit tests for batch pipeline execution, PDF segmentation, file zip packaging, and PDFium image rendering.
-- **`tests/test_rag*.py`**: Validation of the custom medicolegal chunker, PostgreSQL schema registration, MinIO upload pipelines, Redis key cache functions, Qdrant search cosine similarity, and LLM prompt compilers.
+- **`tests/test_rag*.py`**: Validation of the custom medicolegal chunker, PostgreSQL schema registration, MinIO upload pipelines, Redis key cache functions, Qdrant search cosine similarity, LLM prompt compilers, and chat session export.
+- **`tests/test_external_md_upload.py`**: Tests for the external Markdown upload and indexing pipeline.
+- **`tests/test_download_models.py`**: Tests for the NVFP4 model downloader script.
 - **`tests/test_cleanup_manager.py`**: Ensures cache space metrics and reset cleanup routines run safely.

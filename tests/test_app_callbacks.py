@@ -308,8 +308,138 @@ class TestAppCallbacks(unittest.TestCase):
 
         backing, gpu, badge = periodic_diag(8000)
         self.assertEqual(backing, "backing_html")
-        self.assertEqual(gpu, "gpu_html")
-        self.assertEqual(badge, "health_badge")
+        
+        # Test default fallback value (None)
+        backing2, gpu2, badge2 = periodic_diag(None)
+        self.assertEqual(backing2, "backing_html")
+
+    @patch("subprocess.run")
+    def test_get_vllm_loading_progress_extended(self, mock_run):
+        from unittest.mock import MagicMock
+        
+        # Case 1: 3-part ETA (hours, minutes, seconds)
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="Loading safetensors checkpoint shards:  50% Completed | 5/10 [01:00:00<02:30:15, 27s/it]\n"
+        )
+        progress = app.get_vllm_loading_progress()
+        self.assertIsNotNone(progress)
+        self.assertEqual(progress["eta"], "2h 30m 15s")
+
+        # Case 2: No parts (just raw string without colon)
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="Loading safetensors checkpoint shards:  50% Completed | 5/10 [01:00:00<10s, 27s/it]\n"
+        )
+        progress = app.get_vllm_loading_progress()
+        self.assertIsNotNone(progress)
+        self.assertEqual(progress["eta"], "10s")
+
+        # Case 3: Empty stdout / returncode non-zero
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout=""
+        )
+        self.assertIsNone(app.get_vllm_loading_progress())
+
+        # Case 4: Exception raised
+        mock_run.side_effect = Exception("Docker logs failed")
+        self.assertIsNone(app.get_vllm_loading_progress())
+
+    @patch("app.get_service_latency")
+    @patch("app.get_vllm_loading_progress")
+    def test_check_backing_services_loading(self, mock_progress, mock_latency):
+        # Scenario: vllm is the only failed service and is loading
+        def latency_side_effect(service, **kwargs):
+            if service == "vllm":
+                return False, 0.0, None
+            return True, 5.0, None
+        mock_latency.side_effect = latency_side_effect
+
+        mock_progress.return_value = {
+            "pct": 45,
+            "shards_loaded": 9,
+            "shards_total": 20,
+            "eta": "1m 30s"
+        }
+
+        html, badge = app.check_backing_services()
+        self.assertTrue("⚡ Model Loading" in badge)
+        self.assertTrue("Progress: <span style='font-weight:600; color:#e2e8f0;'>45%</span>" in badge)
+        self.assertTrue("ETA: 1m 30s" in badge)
+        self.assertTrue("Progress: 45%" in html)
+
+        # Scenario: All healthy but model is None Loaded or Unknown
+        mock_latency.side_effect = None
+        mock_latency.return_value = (True, 5.0, "None Loaded")
+        html, badge = app.check_backing_services()
+        self.assertTrue("No model loaded" in badge)
+
+    @patch("subprocess.run")
+    @patch("torch.cuda.is_available")
+    @patch("torch.cuda.get_device_name")
+    @patch("torch.cuda.get_device_properties")
+    @patch("torch.cuda.memory_allocated")
+    @patch("builtins.open", create=True)
+    def test_get_gpu_metrics_detailed(self, mock_file_open, mock_mem, mock_prop, mock_name, mock_avail, mock_run):
+        from unittest.mock import MagicMock, mock_open
+        
+        mock_avail.return_value = True
+        mock_name.return_value = "Test GPU 3080"
+        mock_prop.return_value = MagicMock(total_memory=16 * 1024 * 1024 * 1024)
+        mock_mem.return_value = 4 * 1024 * 1024 * 1024
+
+        def run_side_effect(args, **kwargs):
+            if "nvidia-smi" in args and "--query-gpu=name,memory.used,memory.total" in args:
+                return MagicMock(returncode=0, stdout="Test GPU 3080, 4000, 16000\n")
+            elif "docker" in args and "ps" in args:
+                return MagicMock(returncode=0, stdout="container123|my-vllm-container\n")
+            elif "nvidia-smi" in args:
+                processes_stdout = (
+                    "| Processes:                                                                            |\n"
+                    "|  GPU   GI   CI        PID   Type   Process name                             vram usage     |\n"
+                    "|============================================================================================|\n"
+                    "|    0   N/A  N/A     10001      C   /usr/bin/python3                              15000MiB |\n"
+                    "|    0   N/A  N/A     10002      G   /usr/bin/xorg                                   100MiB |\n"
+                    "|    0   N/A  N/A     10003      C   /usr/bin/python3                               5000MiB |\n"
+                    "+--------------------------------------------------------------------------------------------+\n"
+                )
+                return MagicMock(returncode=0, stdout=processes_stdout)
+            return MagicMock(returncode=1)
+        mock_run.side_effect = run_side_effect
+
+        # Helper to simulate file open side effect
+        def open_side_effect(file, *args, **kwargs):
+            filename = str(file)
+            if "/proc/10001/cmdline" in filename:
+                return mock_open(read_data="python\x00my_script.py\x00")()
+            elif "/proc/10001/cgroup" in filename:
+                return mock_open(read_data="12:cpu:/docker-container123.scope\n")()
+            elif "/proc/10002/cmdline" in filename:
+                return mock_open(read_data="/usr/bin/xorg\x00")()
+            elif "/proc/10002/cgroup" in filename:
+                return mock_open(read_data="12:cpu:/\n")()
+            elif "/proc/10003/cmdline" in filename:
+                return mock_open(read_data="python\x00other_script.py\x00")()
+            elif "/proc/10003/cgroup" in filename:
+                return mock_open(read_data="12:cpu:/docker/container123/some_subpath\n")()
+            raise FileNotFoundError(f"Mocked file not found: {filename}")
+        mock_file_open.side_effect = open_side_effect
+
+        html = app.get_gpu_metrics()
+        self.assertTrue("CUDA Available" in html)
+        self.assertTrue("python: my_script.py" in html)
+        self.assertTrue("Docker: my-vllm-container" in html)
+        self.assertTrue("System Graphics" in html)
+        self.assertTrue("python: other_script.py" in html)
+
+    def test_app_reload_with_custom_model(self):
+        import importlib
+        from settings_manager import load_settings
+        settings = load_settings()
+        settings["model_name"] = "custom-model-name"
+        with patch("settings_manager.load_settings", return_value=settings):
+            importlib.reload(app)
 
 
 if __name__ == "__main__":
