@@ -192,7 +192,6 @@ class CorpusIndexingService:
 
         from rag.db import register_run, register_document, insert_chunks, mark_run_indexed, mark_document_indexed, get_runs_with_stats, get_connection
         from rag.chunker import chunk_document
-        from rag.embedding import upsert_chunks
         from rag.storage import upload_markdown
         from rag.cache import invalidate_query_cache
 

@@ -494,6 +494,23 @@ def build_analysis_ui():
         _refresh_dashboard,
         outputs=[dashboard_html, dashboard_delete_selector, dashboard_status]
     )
+    tab_dashboard.select(
+        None,
+        js="""() => {
+            const checkboxes = document.querySelectorAll('.case-select-checkbox');
+            checkboxes.forEach(cb => {
+                cb.checked = false;
+                const card = cb.closest('.case-card');
+                if (card) card.classList.remove('selected');
+            });
+            const txtEl = document.querySelector('#selected-cases-input textarea, #selected-cases-input input');
+            if (txtEl) {
+                txtEl.value = '';
+                txtEl.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+        }"""
+    )
+
 
     def _refresh_analysis_tab_selectors():
         choices = _get_indexed_run_choices()
@@ -525,10 +542,11 @@ def build_rag_chat_ui():
         Dict of component references.
     """
     settings = load_settings()
+    sidebar_visible = gr.State(True)
 
     with gr.Row():
         # ── Left sidebar: Controls ──
-        with gr.Column(scale=1, elem_classes=["sidebar-panel"]):
+        with gr.Column(scale=1, elem_classes=["sidebar-panel"]) as controls_sidebar:
             # Infrastructure
             with gr.Accordion("🔧 RAG Infrastructure", open=False):
                 rag_infra_status = gr.HTML(
@@ -707,7 +725,7 @@ def build_rag_chat_ui():
                 )
 
         # ── Right: Chat interface ──
-        with gr.Column(scale=3, elem_classes=["glass-panel"]):
+        with gr.Column(scale=5, elem_classes=["glass-panel"]):
             # Active case banner
             active_case_banner = gr.HTML(value=_get_case_banner_html(None))
 
@@ -725,6 +743,11 @@ def build_rag_chat_ui():
                     value="💬 Free Q&A",
                     interactive=True,
                     scale=3,
+                )
+                toggle_sidebar_btn = gr.Button(
+                    value="⬅️ Hide Controls",
+                    variant="secondary",
+                    scale=1,
                 )
 
             chatbot = gr.Chatbot(
@@ -984,6 +1007,17 @@ def build_rag_chat_ui():
     clear_chat_btn.click(
         lambda: [],
         outputs=[chatbot],
+    )
+
+    def toggle_sidebar(visible):
+        new_val = not visible
+        new_text = "➡️ Show Controls" if not new_val else "⬅️ Hide Controls"
+        return gr.update(visible=new_val), new_text, new_val
+
+    toggle_sidebar_btn.click(
+        toggle_sidebar,
+        inputs=[sidebar_visible],
+        outputs=[controls_sidebar, toggle_sidebar_btn, sidebar_visible]
     )
 
     # ── Export handlers ──

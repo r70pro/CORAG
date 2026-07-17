@@ -241,6 +241,7 @@ class TestRAGUIHandlers(unittest.TestCase):
             with patch("rag_ui_dashboard._build_dashboard_html", return_value="dashboard"):
                 components = rag_ui_dashboard.build_case_dashboard_ui()
                 self.assertIsNotNone(components["dashboard_html"])
+                self.assertIsNotNone(components["selected_cases_input"])
                 
                 # Trigger refresh function
                 with patch("rag_ui_dashboard._get_indexed_run_choices", return_value=[("lbl", "r1")]):
@@ -248,6 +249,73 @@ class TestRAGUIHandlers(unittest.TestCase):
                     self.assertEqual(html, "dashboard")
                     self.assertEqual(update_choices.get("choices"), [("lbl", "r1")])
 
+    @patch("rag.db.delete_run_data")
+    @patch("rag.embedding.delete_run_vectors")
+    @patch("rag.storage.delete_run_objects")
+    @patch("rag.cache.invalidate_query_cache")
+    @patch("rag.db.get_runs_with_stats")
+    def test_bulk_delete_handling(self, mock_get_runs, mock_invalidate, mock_del_objects, mock_del_vectors, mock_del_db):
+        with gr.Blocks():
+            with patch("rag_ui_dashboard._build_dashboard_html", return_value="dashboard"):
+                with patch("rag_ui_dashboard._get_indexed_run_choices", return_value=[("lbl", "r1")]):
+                    components = rag_ui_dashboard.build_case_dashboard_ui()
+                    delete_selected_fn = components["delete_selected_fn"]
+                    delete_all_fn = components["delete_all_fn"]
+
+                    # 1. Delete selected empty cases
+                    res = delete_selected_fn("")
+                    self.assertEqual(res[3], "⚠️ No case selected.")
+
+                    res = delete_selected_fn(",")
+                    self.assertEqual(res[3], "⚠️ No case selected.")
+
+                    # 2. Delete selected success
+                    res = delete_selected_fn("r1,r2")
+                    self.assertIn("Selected case(s) (2) deleted successfully.", res[3])
+                    self.assertEqual(mock_del_db.call_count, 2)
+
+                    # 3. Delete all no cases
+                    mock_get_runs.return_value = []
+                    res = delete_all_fn()
+                    self.assertEqual(res[3], "⚠️ No cases to delete.")
+
+                    # 4. Delete all success
+                    mock_get_runs.return_value = [{"run_id": "r1"}, {"run_id": "r2"}]
+                    mock_del_db.reset_mock()
+                    res = delete_all_fn()
+                    self.assertIn("All cases (2) deleted successfully.", res[3])
+                    self.assertEqual(mock_del_db.call_count, 2)
+
+                    # 5. Delete all get_runs_with_stats error
+                    mock_get_runs.side_effect = Exception("DB error")
+                    res = delete_all_fn()
+                    self.assertIn("⚠️ Error fetching cases: DB error", res[3])
+
+                    # 6. Delete warnings / exception path testing
+                    mock_get_runs.side_effect = None
+                    mock_get_runs.return_value = [{"run_id": "r1"}]
+                    mock_del_db.side_effect = Exception("db error")
+                    mock_del_vectors.side_effect = Exception("vector error")
+                    mock_del_objects.side_effect = Exception("storage error")
+                    mock_invalidate.side_effect = Exception("cache error")
+
+                    res_sel = delete_selected_fn("r1")
+                    self.assertIn("Selected case(s) (0) deleted successfully.", res_sel[3])
+
+                    res_all = delete_all_fn()
+                    self.assertIn("All cases (0) deleted successfully.", res_all[3])
+
+    def test_update_delete_button_label(self):
+        from rag_ui_dashboard import _update_delete_button_label
+        
+        res1 = _update_delete_button_label("")
+        self.assertEqual(res1.get("value"), "🗑️ Delete Selected")
+
+        res2 = _update_delete_button_label("r1,r2")
+        self.assertEqual(res2.get("value"), "🗑️ Delete Selected (2)")
+
+
 
 if __name__ == "__main__":
     unittest.main()
+

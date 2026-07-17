@@ -66,10 +66,10 @@ Before processing any case, the RAG infrastructure services must be running. Thi
 1. Open the OLMOCR web application at `http://127.0.0.1:7860`.
 2. Click **💬 RAG Processing** in the left navigation sidebar to open the RAG panel.
 3. Expand the **🔧 RAG Infrastructure** accordion in the RAG sidebar.
-4. Click **▶️ Start**. The [rag_infra_manager.py](file:///home/owner/OLMOCR/rag_infra_manager.py) orchestrator runs `docker compose up -d --wait` and then sequentially initialises:
-    * PostgreSQL schema ([rag/db.py → init_schema()](file:///home/owner/OLMOCR/rag/db.py#L53-L110)): Creates the `ocr_runs`, `documents`, and `chunks` tables with cascading foreign keys and indexes on `page_number`, `date_extracted`, `author`, and `document_type`.
-    * MinIO buckets ([rag/storage.py → init_buckets()](file:///home/owner/OLMOCR/rag/storage.py#L49-L54)): Creates `olmocr-pdfs` and `olmocr-markdown` buckets.
-    * Qdrant collection ([rag/embedding.py → init_collection()](file:///home/owner/OLMOCR/rag/embedding.py#L167-L195)): Creates a cosine-similarity collection with auto-detected vector dimensions.
+4. Click **▶️ Start**. The [start_and_init_rag()](file:///home/owner/OLMOCR/rag_infra_manager.py#L261-L293) function in [rag_infra_manager.py](file:///home/owner/OLMOCR/rag_infra_manager.py) runs `docker compose up -d --wait` and then sequentially initialises:
+    * PostgreSQL schema ([rag/db.py → init_schema()](file:///home/owner/OLMOCR/rag/db.py#L81-L130)): Creates the `ocr_runs`, `documents`, and `chunks` tables with cascading foreign keys and indexes on `page_number`, `date_extracted`, `author`, and `document_type`.
+    * MinIO buckets ([rag/storage.py → init_buckets()](file:///home/owner/OLMOCR/rag/storage.py#L49-L56)): Creates `olmocr-pdfs` and `olmocr-markdown` buckets.
+    * Qdrant collection ([rag/embedding.py → init_collection()](file:///home/owner/OLMOCR/rag/embedding.py)): Creates a cosine-similarity collection with auto-detected vector dimensions based on the configured embedding model.
 5. Verify all four badges show ✓ (green/healthy).
 
 > [!TIP]
@@ -92,7 +92,7 @@ In medicolegal work, missing a single sentence in a specialist report, or misint
 3. Enter your Hugging Face token (required for gated models).
 4. Set the OCR model to `allenai/olmOCR-2-7B-1025-FP8`.
 5. Click **🔄 Recreate & Run** to pull and start the inference container.
-6. Wait for the System Health badge to show ✓ Ready (the system polls every 5 seconds via [app.py → periodic_status_check()](file:///home/owner/OLMOCR/app.py#L1253-L1257)).
+6. Wait for the System Health badge to show ✓ Ready (the system polls every 5 seconds via [periodic_status_check()](file:///home/owner/OLMOCR/app_handlers.py) in [app_handlers.py](file:///home/owner/OLMOCR/app_handlers.py)).
 
 #### 1.2 Upload and Process Case PDFs
 
@@ -113,7 +113,7 @@ In medicolegal work, missing a single sentence in a specialist report, or misint
 
 #### 1.3 The OCR Pipeline Internals
 
-The [pipeline_manager.py → process_pdfs()](file:///home/owner/OLMOCR/pipeline_manager.py#L45) function executes the following sequence:
+The [pipeline_manager.py → process_pdfs()](file:///home/owner/OLMOCR/pipeline_manager.py#L128-L137) function executes the following sequence:
 
 1. **Pre-flight check**: Verifies the vLLM server is reachable via `GET /v1/models`.
 2. **Workspace creation**: Creates `workspace/run_YYYYMMDD_HHMMSS_XXXX/` with `inputs/` subdirectory.
@@ -156,7 +156,7 @@ After processing completes, the results are immediately available for review.
 Before indexing, the Markdown content must be converted into numerical vectors for semantic search. The choice of embedding model directly impacts retrieval quality.
 
 *   **Embedding Client**: Powered by HuggingFace `sentence-transformers` ([rag/embedding.py](file:///home/owner/OLMOCR/rag/embedding.py)).
-*   **Singleton Pattern**: The model is loaded once and cached in memory via [load_embedding_model()](file:///home/owner/OLMOCR/rag/embedding.py#L85-L116). Switching models triggers a reload.
+*   **Singleton Pattern**: The model is loaded once and cached in memory via [load_embedding_model()](file:///home/owner/OLMOCR/rag/embedding.py#L90-L130). Switching models triggers a reload.
 *   **Device Control**: Runs on CPU by default (`OLMOCR_EMBEDDING_DEVICE=cpu`) to avoid competing with the vLLM GPU inference engine.
 *   **Default Model**: `BAAI/bge-large-en-v1.5` (1024 dimensions) — selected for its superior accuracy with complex medical and legal terminology.
 
@@ -165,7 +165,7 @@ Before indexing, the Markdown content must be converted into numerical vectors f
 | `BAAI/bge-large-en-v1.5` | 1024 | 🐢 Slower | **Excellent** | **Default & Recommended**: Complex medical jargon, legal arguments, multi-clinician records |
 | `sentence-transformers/all-MiniLM-L6-v2` | 384 | ⚡ Fast | Good | Quick prototyping, short documents (can be added manually via custom value) |
 
-**Collision Prevention**: Different embedding models produce vectors of different dimensionality. The system automatically isolates collections using [get_collection_name(model_name)](file:///home/owner/OLMOCR/rag/embedding.py#L37-L53). For example:
+**Collision Prevention**: Different embedding models produce vectors of different dimensionality. The system automatically isolates collections using [get_collection_name(model_name)](file:///home/owner/OLMOCR/rag/embedding.py#L38-L54). For example:
 * `all-MiniLM-L6-v2` → collection `olmocr_documents_all-minilm-l6-v2`
 * `BAAI/bge-large-en-v1.5` → collection `olmocr_documents_baai_bge-large-en-v1_5`
 
@@ -189,7 +189,7 @@ Generic RAG systems split text strictly by character count, which breaks clinica
 
 The chunker operates in three stages:
 
-**Stage 1 — Section Boundary Detection** ([_split_into_sections()](file:///home/owner/OLMOCR/rag/chunker.py#L293-L323)):
+**Stage 1 — Section Boundary Detection** ([_split_into_sections()](file:///home/owner/OLMOCR/rag/chunker.py)):
 Detects logical document boundaries using six pattern types:
 * Date + Letter headers (e.g., `12/02/2018 Letter`)
 * "Dear Dr..." salutations at line start
@@ -200,7 +200,7 @@ Detects logical document boundaries using six pattern types:
 
 Minimum section size: 200 characters (prevents micro-fragments).
 
-**Stage 2 — Paragraph-Aware Chunk Splitting** ([_split_section_into_chunks()](file:///home/owner/OLMOCR/rag/chunker.py#L326-L405)):
+**Stage 2 — Paragraph-Aware Chunk Splitting** ([_split_section_into_chunks()](file:///home/owner/OLMOCR/rag/chunker.py)):
 Within each section:
 * Splits at double-newlines (paragraph boundaries) first
 * Falls back to single newlines
@@ -208,17 +208,17 @@ Within each section:
 * Maximum chunk size: **800 characters** (~200 tokens)
 * Overlap: **100 characters** between consecutive chunks for narrative continuity
 
-**Stage 3 — Rich Clinical Metadata Extraction** ([chunk_document()](file:///home/owner/OLMOCR/rag/chunker.py#L408-L498)):
+**Stage 3 — Rich Clinical Metadata Extraction** ([chunk_document()](file:///home/owner/OLMOCR/rag/chunker.py)):
 For every text chunk, regex patterns extract:
 
 | Metadata Field | Extraction Method | Examples |
 |:---|:---|:---|
-| **ISO Dates** | Multiple patterns via [_parse_date()](file:///home/owner/OLMOCR/rag/chunker.py#L185-L218) | `12.02.18` → `2018-02-12`, `Aug 27, 2020` → `2020-08-27` |
-| **Authors** | Signature blocks, clinical headers, sender tags via [_extract_author()](file:///home/owner/OLMOCR/rag/chunker.py#L230-L236) | `Dr. Jane Smith (Physiotherapist)` |
-| **Document Type** | Content pattern scoring via [_classify_document_type()](file:///home/owner/OLMOCR/rag/chunker.py#L239-L249) | `specialist_letter`, `clinical_notes`, `referral_letter`, `physiotherapy_report`, `radiology_report`, `medicolegal_report` |
-| **Section Type** | Keyword patterns via [_classify_section_type()](file:///home/owner/OLMOCR/rag/chunker.py#L252-L257) | `clinical_findings`, `history`, `medications`, `diagnosis`, `treatment_plan`, `allergies`, `correspondence` |
-| **Patient Name** | Header patterns via [_extract_patient_name()](file:///home/owner/OLMOCR/rag/chunker.py#L260-L266) | `Re: John Doe DOB: ...` → `John Doe` |
-| **Page Number** | Character-to-page mapping via [_find_page_for_position()](file:///home/owner/OLMOCR/rag/chunker.py#L269-L284) | Maps each chunk to its source PDF page |
+| **ISO Dates** | Multiple patterns via [_parse_date()](file:///home/owner/OLMOCR/rag/chunker.py) | `12.02.18` → `2018-02-12`, `Aug 27, 2020` → `2020-08-27` |
+| **Authors** | Signature blocks, clinical headers, sender tags via [_extract_author()](file:///home/owner/OLMOCR/rag/chunker.py) | `Dr. Jane Smith (Physiotherapist)` |
+| **Document Type** | Content pattern scoring via [_classify_document_type()](file:///home/owner/OLMOCR/rag/chunker.py) | `specialist_letter`, `clinical_notes`, `referral_letter`, `physiotherapy_report`, `radiology_report`, `medicolegal_report` |
+| **Section Type** | Keyword patterns via [_classify_section_type()](file:///home/owner/OLMOCR/rag/chunker.py) | `clinical_findings`, `history`, `medications`, `diagnosis`, `treatment_plan`, `allergies`, `correspondence` |
+| **Patient Name** | Header patterns via [_extract_patient_name()](file:///home/owner/OLMOCR/rag/chunker.py) | `Re: John Doe DOB: ...` → `John Doe` |
+| **Page Number** | Character-to-page mapping via [_find_page_for_position()](file:///home/owner/OLMOCR/rag/chunker.py) | Maps each chunk to its source PDF page |
 
 #### 4.2 Running the Indexing Process
 
@@ -226,12 +226,12 @@ For every text chunk, regex patterns extract:
 1. In the **📦 Document Indexing** accordion, click **🔄 Refresh Stats** to rescan the `workspace/` directory.
 2. Select the target run from the **Select OCR Run** dropdown.
 3. Click **📥 Index Selected Run** (or **📥 Index All Runs** for bulk indexing).
-4. Monitor the **📜 RAG System Log** below the chat window. The system will:
+4. Monitor the **📜 RAG System Log** below the chat window. The system will execute the [CorpusIndexingService.index_run()](file:///home/owner/OLMOCR/indexing_service.py#L12-L155) pipeline:
     * **Check skip**: If the run is already indexed (`is_run_indexed(run_id)` returns `True`), it skips immediately.
-    * **Chunk**: Invokes [chunk_documents_from_run()](file:///home/owner/OLMOCR/rag/chunker.py#L501-L586), which reads all `.md` files from the run, loads JSONL page ranges, and produces chunk dicts.
-    * **Register**: Writes run and document records to PostgreSQL via [register_run()](file:///home/owner/OLMOCR/rag/db.py#L126-L136) and [register_document()](file:///home/owner/OLMOCR/rag/db.py#L191-L211).
+    * **Chunk**: Invokes [chunk_documents_from_run()](file:///home/owner/OLMOCR/rag/chunker.py), which reads all `.md` files from the run, loads JSONL page ranges, and produces chunk dicts.
+    * **Register**: Writes run and document records to PostgreSQL via [register_run()](file:///home/owner/OLMOCR/rag/db.py) and [register_document()](file:///home/owner/OLMOCR/rag/db.py).
     * **Upload**: Archives PDFs and Markdown to MinIO under `run_id/doc_id/filename` keys.
-    * **Embed**: Encodes all chunks via [upsert_chunks()](file:///home/owner/OLMOCR/rag/embedding.py#L234-L307) in batches of 32, normalises embeddings for cosine similarity, and upserts vector points into Qdrant with full metadata payloads.
+    * **Embed**: Encodes all chunks via [upsert_chunks_generator()](file:///home/owner/OLMOCR/rag/embedding.py) in batches of 32, normalises embeddings for cosine similarity, and upserts vector points into Qdrant with full metadata payloads. A live progress card shows percentage completion for both embedding and indexing stages.
     * **Finalise**: Marks documents and the run as indexed, and invalidates the Redis query cache.
 5. Verify by clicking **🔄 Refresh Stats** — the corpus statistics table should reflect the new document and chunk counts.
 
@@ -241,32 +241,55 @@ For every text chunk, regex patterns extract:
 
 Once documents are indexed, a local LLM is queried through the same vLLM OpenAI-compatible API used for OCR. The analysis model is selected separately from the OCR model.
 
-| Model Category | Recommended Model | Parameters | Strengths | Best Used For |
-|:---|:---|:---:|:---|:---|
-| **Instruct Models** | `nvidia/Llama-3.3-70B-Instruct-NVFP4` | 70B | High speed, reliable formatting, strict instruction adherence | Writing reports, structured summaries, listing medications, clean table output |
-| **Reasoning Models** | `nvidia/Phi-4-reasoning-plus-NVFP4` | 14B | Multi-step logical reasoning, hidden chain-of-thought, strong analytical capability | Finding inconsistencies, resolving conflicting dates, complex cross-referencing, IME audits |
-| **Balanced (Large)** | `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` | 120B (12B active) | Mixture-of-experts architecture, broad knowledge | General-purpose medicolegal analysis |
-| **Balanced (Small)** | `nvidia/Qwen3.6-35B-A3B-NVFP4` | 35B (3B active) | Very fast inference, good accuracy | High-throughput batch queries, quick lookups |
+| Model Category | Recommended Model | Parameters | Max Context | Strengths | Best Used For |
+|:---|:---|:---:|:---:|:---|:---|
+| **Instruct Models** | `nvidia/Llama-3.3-70B-Instruct-NVFP4` | 70B | 131K | High speed, reliable formatting, strict instruction adherence | Writing reports, structured summaries, listing medications, clean table output |
+| **Reasoning Models** | `nvidia/Phi-4-reasoning-plus-NVFP4` | 14B | 32K | Multi-step logical reasoning, hidden chain-of-thought, strong analytical capability | Finding inconsistencies, resolving conflicting dates, complex cross-referencing, IME audits |
+| **Balanced (Large)** | `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` | 120B (12B active) | 1M | Mixture-of-experts architecture, broad knowledge | General-purpose medicolegal analysis |
+| **Balanced (Small)** | `nvidia/Qwen3.6-35B-A3B-NVFP4` | 35B (3B active) | 262K | Very fast inference, good accuracy | High-throughput batch queries, quick lookups |
+| **Instruction-Tuned** | `google/gemma-4-31B-it` | 31B | 262K | Google's latest instruction-tuned model, strong multilingual capability | Multilingual cases, general analysis |
 
 #### Smart Parameter Handling
 
-The [analyzer.py → query_llm_streaming()](file:///home/owner/OLMOCR/rag/analyzer.py#L132-L203) function applies automatic optimisations:
+The [analyzer.py → query_llm_streaming()](file:///home/owner/OLMOCR/rag/analyzer.py#L169-L240) function applies automatic optimisations:
 
 *   **Reasoning Model Detection**: Any model with `reasoning` or `r1` in its name is automatically detected.
 *   **Temperature Override**: For reasoning models, the default low temperature (`0.1`) is overridden to `0.7` to prevent logical loops and repetitive output.
 *   **Repetition Penalty**: A `1.05` repetition penalty is applied to reasoning models to reduce degenerate output.
-*   **Model Equivalence Mapping**: The system maintains an equivalence table ([analyzer.py:L330-L340](file:///home/owner/OLMOCR/rag/analyzer.py#L330-L340)) that maps equivalent model identifiers (e.g., `microsoft/Phi-4-reasoning-plus` ↔ `nvidia/Phi-4-reasoning-plus-NVFP4`) to prevent false "model not loaded" warnings.
+*   **Model Equivalence Mapping**: The system maintains an equivalence table ([analyzer.py:L452-L462](file:///home/owner/OLMOCR/rag/analyzer.py#L452-L462)) that maps equivalent model identifiers (e.g., `microsoft/Phi-4-reasoning-plus` ↔ `nvidia/Phi-4-reasoning-plus-NVFP4`) to prevent false "model not loaded" warnings.
 *   **Automatic Fallback**: If the configured model is not loaded in vLLM, the system automatically falls back to whichever model is actually loaded and displays a warning.
+*   **Context Window Truncation**: The [analyze()](file:///home/owner/OLMOCR/rag/analyzer.py#L299-L489) function automatically truncates the retrieved context if it exceeds the model's maximum prompt length, keeping the most relevant chunks.
 
 **Routine:**
 1. Expand **⚙️ Analysis Settings**.
 2. Select the model from the **Analysis Model Name** dropdown.
 3. Set the **Analysis LLM Server URL** (default: `http://localhost:8000/v1`).
-4. Adjust **Retrieval Top-K** (default: 5 — the number of chunks retrieved per query).
-5. Click **💾 Save Analysis Configuration**.
+4. Adjust **Retrieval Top-K** (default: 15 — the number of chunks retrieved per query; structured modes auto-increase to 50).
+5. Configure the **Cross-Encoder Reranker** (see Phase 5.1 below).
+6. Click **💾 Save Analysis Configuration**.
 
 > [!TIP]
 > **Workflow tip**: Use the **Instruct model** for initial summaries and timelines (where formatting matters), then switch to the **Reasoning model** for inconsistency detection and complex cross-referencing tasks (where analytical depth matters).
+
+#### Phase 5.1: Cross-Encoder Reranking
+
+The retrieval pipeline supports an optional **Cross-Encoder reranking** stage ([rag/retriever.py → search_similar()](file:///home/owner/OLMOCR/rag/retriever.py#L26-L219)) that dramatically improves precision by re-scoring candidate chunks against the original query.
+
+| Setting | Default | Description |
+|:---|:---|:---|
+| **Use Reranker** | ✅ Enabled | Toggle in ⚙️ Analysis Settings; applies a Cross-Encoder model to rerank the top candidate chunks |
+| **Reranker Model** | `BAAI/bge-reranker-large` | HuggingFace Cross-Encoder model loaded via [load_reranker_model()](file:///home/owner/OLMOCR/rag/embedding.py) |
+| **Reranker Device** | `cuda` | Run on GPU for speed; set to `cpu` if GPU memory is needed for the LLM |
+
+**How it works:**
+1. The retriever fetches `top_k × 3` candidate chunks from Qdrant (or at least 20).
+2. Each candidate is paired with the query and scored by the Cross-Encoder.
+3. Logit scores are mapped to probabilities via sigmoid normalisation.
+4. Results are re-sorted by the new scores.
+5. MMR diversity re-ranking is applied to the reranked results.
+
+> [!TIP]
+> The reranker adds ~1–3 seconds per query on GPU but significantly improves relevance, especially for complex medicolegal queries where keyword overlap is low but semantic meaning is critical.
 
 ---
 
@@ -274,20 +297,21 @@ The [analyzer.py → query_llm_streaming()](file:///home/owner/OLMOCR/rag/analyz
 
 #### 6.1 The RAG Query Pipeline
 
-Each query triggers the full RAG pipeline via [analyze()](file:///home/owner/OLMOCR/rag/analyzer.py#L262-L362):
+Each query triggers the full RAG pipeline via [analyze()](file:///home/owner/OLMOCR/rag/analyzer.py#L299-L489):
 
 ```
-Query → Embed → Qdrant Filtered Search → MMR Re-ranking → Context Assembly → LLM Streaming → Chat Output
+Query → Embed → Qdrant Filtered Search → Cross-Encoder Rerank → MMR Diversity → Context Assembly → LLM Streaming → Chat Output
 ```
 
-**Retrieval** ([rag/retriever.py → search_similar()](file:///home/owner/OLMOCR/rag/retriever.py#L25-L143)):
+**Retrieval** ([rag/retriever.py → search_similar()](file:///home/owner/OLMOCR/rag/retriever.py#L26-L219)):
 1. Encodes the query using the same embedding model.
 2. Applies optional metadata filters: `run_id`, `doc_type`, `author`, `date_from`, `date_to`.
-3. Fetches `top_k × 2` candidate chunks from Qdrant (with a `score_threshold` of 0.25).
+3. Fetches `top_k × 3` candidate chunks from Qdrant (with a `score_threshold` of 0.25; structured modes like Timeline/Injury Summary auto-increase `top_k` to at least 50 with a lowered threshold of 0.05).
 4. Enriches results by merging Qdrant payloads with PostgreSQL chunk metadata (joining on `qdrant_point_id`).
-5. Applies **Maximal Marginal Relevance (MMR)** re-ranking ([_mmr_rerank()](file:///home/owner/OLMOCR/rag/retriever.py#L146-L206)) with `λ=0.7` to balance relevance with diversity, using Jaccard text similarity for diversity measurement.
+5. If the Cross-Encoder reranker is enabled, re-scores all candidates using the configured Cross-Encoder model with sigmoid-normalised logits.
+6. Applies **Maximal Marginal Relevance (MMR)** re-ranking ([_mmr_rerank()](file:///home/owner/OLMOCR/rag/retriever.py#L222-L295)) with `λ=0.7` to balance relevance with diversity, using Jaccard text similarity for diversity measurement.
 
-**Context Formatting** ([format_context_for_llm()](file:///home/owner/OLMOCR/rag/retriever.py#L223-L258)):
+**Context Formatting** ([format_context_for_llm()](file:///home/owner/OLMOCR/rag/retriever.py#L312-L347)):
 Each chunk is labelled with structured source citations:
 ```
 [Source 1] | File: specialist_report.md | Page: 3 | Author: Dr. Smith | Date: 2024-06-15 | Type: Specialist Letter
@@ -296,18 +320,20 @@ Each chunk is labelled with structured source citations:
 
 #### 6.2 Analysis Modes & Prompt Templates
 
-Five specialised system prompts ([rag/analyzer.py → SYSTEM_PROMPTS](file:///home/owner/OLMOCR/rag/analyzer.py#L21-L77)) are pre-configured for medicolegal work:
+Five specialised system prompts ([rag/analyzer.py → SYSTEM_PROMPTS](file:///home/owner/OLMOCR/rag/analyzer.py#L21-L105)) are pre-configured for medicolegal work:
 
 | Mode | Icon | Purpose | Output Format | Ideal LLM |
 |:---|:---:|:---|:---|:---|
 | **Free Q&A** | 💬 | Answer any question about the records | Cited paragraphs | Either |
-| **Timeline Generator** | 📅 | Extract every dated clinical event | Markdown table: `Date \| Event \| Provider \| Source` | Instruct |
+| **Timeline Generator** | 📅 | Extract every dated clinical event | Markdown table: `Date \| Event \| Provider \| Source (PDF Page & Verifying Details)` | Instruct |
 | **Injury Summary** | 🏥 | Structured injury/treatment report | Numbered headings: Patient Details → Mechanism → Injuries → Treatment → Status → Medications → Providers → Outstanding Issues | Instruct |
 | **Inconsistency Finder** | 🔍 | Cross-reference discrepancies across sources | Table: `Issue \| Source A Says \| Source B Says \| Severity (Minor/Moderate/Major)` | **Reasoning** |
-| **Medication Tracker** | 💊 | Track all prescriptions and changes | Table: `Medication \| Dose/Freq \| Date Started \| Date Stopped \| Prescriber \| Source` | Either |
+| **Medication Tracker** | 💊 | Track all prescriptions and changes | Table: `Medication \| Dose/Freq \| Date Started \| Date Stopped \| Prescriber \| Source (PDF Page & Verifying Details)` | Either |
 
 All modes enforce:
-* Citation of `[Source N]`, filename, page, and date for every factual claim.
+* **No raw source tags**: The LLM is instructed never to use raw system source tags like `[Source 26]` in final outputs.
+* **Exact page citations**: Every factual claim must cite the exact page number range of the original PDF document.
+* **Robust verification details**: Each citation includes the document type/title, authoring physician or clinic, and identifying report details (reference numbers, accession numbers) so users can instantly verify the source.
 * Explicit acknowledgement when information cannot be determined from the provided excerpts.
 * ISO date format (`YYYY-MM-DD`) throughout.
 * Professional language appropriate for medicolegal analysis.
@@ -324,14 +350,16 @@ All modes enforce:
 4. Type your question in the chat input field.
 5. Click **🚀 Ask** or press `Ctrl+Enter`.
 6. The response streams in real-time with full source citations.
-7. Use the **📋 Copy** button on any response, or press `Ctrl+Shift+C` to copy the last response to clipboard.
-8. Switch analysis modes between queries to generate different report types from the same indexed documents.
-9. Click **🗑️ Clear Chat** (or press `Ctrl+Shift+N`) to reset the conversation when moving to a new line of enquiry.
+7. Click **⏹️ Stop** at any time to cancel in-flight chat inference and stop the LLM response generation.
+8. Use the **📋 Copy** button on any response, or press `Ctrl+Shift+C` to copy the last response to clipboard.
+9. Switch analysis modes between queries to generate different report types from the same indexed documents.
+10. Click **🗑️ Clear Chat** (or press `Ctrl+Shift+N`) to reset the conversation when moving to a new line of enquiry.
+11. Use the **⬅️ Hide Controls** toggle to collapse the RAG sidebar and expand the chat window to full width for reviewing long responses.
 
-The chat supports multi-turn conversation. The system retains the last 6 messages of chat history ([build_prompt()](file:///home/owner/OLMOCR/rag/analyzer.py#L91-L129)) to manage context window limits while allowing follow-up questions.
+The chat supports multi-turn conversation. The system retains the last 6 messages of chat history ([build_prompt()](file:///home/owner/OLMOCR/rag/analyzer.py#L128-L166)) to manage context window limits while allowing follow-up questions.
 
 > [!TIP]
-> **Case isolation is critical for medicolegal work.** Always select the specific case from the Active Case dropdown before querying. The system applies the corresponding `run_id` as a filter in [search_similar()](file:///home/owner/OLMOCR/rag/retriever.py#L26-L36), restricting semantic lookups strictly to that case’s vectors. Use "All Cases" only for deliberate cross-case research.
+> **Case isolation is critical for medicolegal work.** Always select the specific case from the Active Case dropdown before querying. The system applies the corresponding `run_id` as a filter in [search_similar()](file:///home/owner/OLMOCR/rag/retriever.py#L26-L219), restricting semantic lookups strictly to that case's vectors. Use "All Cases" only for deliberate cross-case research.
 
 #### 6.4 Exporting & Saving Outputs
 
@@ -372,7 +400,7 @@ There are two methods: the **UI-based upload** (recommended) and the **manual di
 
 ### Method B: Manual Directory Structure (Advanced)
 
-Create a folder inside the `workspace/` directory that mimics the OLMOCR run output. The folder name **must** start with the prefix `run_` to be detected by the [get_available_runs()](file:///home/owner/OLMOCR/rag_ui.py#L22-L45) scanner.
+Create a folder inside the `workspace/` directory that mimics the OLMOCR run output. The folder name **must** start with the prefix `run_` to be detected by the [get_available_runs()](file:///home/owner/OLMOCR/rag_ui.py#L26-L44) scanner (also available in [settings_manager.py](file:///home/owner/OLMOCR/settings_manager.py#L98-L121)).
 
 ```
 workspace/
@@ -388,7 +416,7 @@ workspace/
 ```
 
 > [!IMPORTANT]
-> **Naming Convention**: Prefix markdown filenames with a numeric index (`0_`, `1_`, `2_`) followed by a descriptive name. The indexer strips this prefix when storing the `original_filename` in PostgreSQL ([rag_ui.py:L113-L114](file:///home/owner/OLMOCR/rag_ui.py#L113-L114)), so your corpus stats display clean filenames.
+> **Naming Convention**: Prefix markdown filenames with a numeric index (`0_`, `1_`, `2_`) followed by a descriptive name. The indexer strips this prefix when storing the `original_filename` in PostgreSQL ([indexing_service.py:L76-L77](file:///home/owner/OLMOCR/indexing_service.py#L76-L77)), so your corpus stats display clean filenames.
 
 ### Step 2: (Optional) Add Page-Range JSONL Metadata
 
@@ -419,7 +447,7 @@ Each triple `[char_start, char_end, page_number]` maps character ranges in the m
 1. Open the OLMOCR Web Application.
 2. Click **💬 RAG Processing** in the left navigation sidebar.
 3. Expand the **📦 Document Indexing** accordion.
-4. Click **🔄 Refresh Stats** — this calls [get_available_runs()](file:///home/owner/OLMOCR/rag_ui.py#L22-L45) which rescans `workspace/` for any `run_*` directory containing `.md` files under `markdown/inputs/`.
+4. Click **🔄 Refresh Stats** — this calls [get_available_runs()](file:///home/owner/OLMOCR/rag_ui.py#L26-L44) which rescans `workspace/` for any `run_*` directory containing `.md` files under `markdown/inputs/`.
 5. Select `run_CaseXYZ_Smith_v_Jones_2024` from the **Select OCR Run** dropdown.
 6. Click **📥 Index Selected Run**.
 7. Monitor the **📜 RAG System Log**. The pipeline:
@@ -458,7 +486,7 @@ workspace/
 
 ### 2. Relational Registry & Run Identifiers
 
-Every document and chunk is tagged with a unique `run_id` — a deterministic SHA-256 hash of the run's workspace directory path ([rag_ui.py:L67](file:///home/owner/OLMOCR/rag_ui.py#L67)). The PostgreSQL schema enforces foreign key relationships:
+Every document and chunk is tagged with a unique `run_id` — a deterministic SHA-256 hash of the run's workspace directory path ([indexing_service.py:L30](file:///home/owner/OLMOCR/indexing_service.py#L30)). The PostgreSQL schema enforces foreign key relationships:
 
 ```mermaid
 erDiagram
@@ -494,14 +522,14 @@ erDiagram
     }
 ```
 
-**Cascading deletion**: Deleting a run via [delete_run_data(run_id)](file:///home/owner/OLMOCR/rag/db.py#L361-L367) automatically purges all child `documents` and `chunks` records in a single SQL cascade.
+**Cascading deletion**: Deleting a run via [delete_run_data(run_id)](file:///home/owner/OLMOCR/rag/db.py) automatically purges all child `documents` and `chunks` records in a single SQL cascade. This is orchestrated from the Case Dashboard via [_delete_selected_cases()](file:///home/owner/OLMOCR/rag_ui_dashboard.py#L222-L265) or [_delete_all_cases()](file:///home/owner/OLMOCR/rag_ui_dashboard.py#L273-L321), which also remove vectors from Qdrant and blobs from MinIO.
 
 ### 3. Vector Database Namespace Isolation
 
-Vector embeddings are upserted into Qdrant with a payload containing the `run_id` field ([embedding.py:L281](file:///home/owner/OLMOCR/rag/embedding.py#L281)).
+Vector embeddings are upserted into Qdrant with a payload containing the `run_id` field ([embedding.py → upsert_chunks_generator()](file:///home/owner/OLMOCR/rag/embedding.py)).
 
-*   **Search Isolation**: During RAG queries, you can isolate searches to a single client by applying a `run_id_filter` in [search_similar()](file:///home/owner/OLMOCR/rag/retriever.py#L25-L143). This adds a `FieldCondition(key="run_id", match=MatchValue(value=run_id))` filter to the Qdrant query, restricting semantic lookups strictly to that case's vectors.
-*   **Selective Deletion**: Removing a case's vectors from Qdrant is done via [delete_run_vectors(run_id)](file:///home/owner/OLMOCR/rag/embedding.py#L310-L333), which issues a filtered delete that leaves all other cases untouched.
+*   **Search Isolation**: During RAG queries, you can isolate searches to a single client by applying a `run_id_filter` in [search_similar()](file:///home/owner/OLMOCR/rag/retriever.py#L26-L219). This adds a `FieldCondition(key="run_id", match=MatchValue(value=run_id))` filter to the Qdrant query, restricting semantic lookups strictly to that case's vectors.
+*   **Selective Deletion**: Removing a case's vectors from Qdrant is done via [delete_run_vectors(run_id)](file:///home/owner/OLMOCR/rag/embedding.py), which issues a filtered delete that leaves all other cases untouched.
 
 ### 4. Object Storage Isolation
 
@@ -509,7 +537,7 @@ In MinIO, files are stored under a key structure of `run_id/doc_id/filename` wit
 * `olmocr-pdfs`: Original source PDFs.
 * `olmocr-markdown`: Extracted Markdown files.
 
-The [delete_run_objects(run_id)](file:///home/owner/OLMOCR/rag/storage.py#L206-L217) function recursively removes all objects under the `run_id/` prefix from both buckets.
+The [delete_run_objects(run_id)](file:///home/owner/OLMOCR/rag/storage.py) function recursively removes all objects under the `run_id/` prefix from both buckets.
 
 ### 5. Clearing Resources Between Cases
 
@@ -527,7 +555,7 @@ When wrapping up a case and transitioning to the next, experts should clean up i
 > [!CAUTION]
 > Cleaning obsolete run directories deletes the local Markdown files permanently. Ensure the case has been fully indexed (archived in MinIO + PostgreSQL + Qdrant) before removing local files, or that you have exported all needed outputs.
 
-Alternatively, individual cases can be deleted from the **📊 Case Dashboard** panel using the **🗑️ Delete Case** button, which removes all associated data from PostgreSQL, Qdrant, and MinIO in one action.
+Alternatively, individual cases can be selected and deleted from the **📊 Case Dashboard** panel. Experts can click on case cards or check their selection boxes to select one or multiple cases for deletion, then click the **🗑️ Delete Selected** button. All case data can also be deleted in a single step using the **🚨 Delete All Cases** button. Both actions completely remove the case records from PostgreSQL, vectors from Qdrant, and blobs from MinIO.
 
 ---
 
@@ -573,17 +601,17 @@ mindmap
 
 | | |
 |:---|:---|
-| **Status** | ✅ Fully implemented in [rag_ui.py:L960-L967](file:///home/owner/OLMOCR/rag_ui.py#L960-L967). |
+| **Status** | ✅ Fully implemented. |
 | **Location** | **🔍 Search Filters** accordion in the RAG Processing sidebar. |
-| **Behaviour** | An **Active Case** dropdown lists all indexed cases (populated from [_get_indexed_run_choices()](file:///home/owner/OLMOCR/rag_ui.py#L711-L731)). Selecting a case applies the corresponding `run_id` as a `run_id_filter` to [search_similar()](file:///home/owner/OLMOCR/rag/retriever.py#L26-L36), isolating semantic lookups to that case's vectors. An **"🌐 All Cases (no filter)"** option allows deliberate cross-case analysis. |
-| **Active Case Banner** | A prominent banner above the chat window ([_get_case_banner_html()](file:///home/owner/OLMOCR/rag_ui.py#L741-L759)) displays the currently active case name, providing visual confirmation of query scope. |
-| **Auto-Population** | When a case is selected, the Author filter and Date Range fields are automatically populated from the case's metadata via [on_case_selected()](file:///home/owner/OLMOCR/rag_ui.py#L1179-L1221). |
+| **Behaviour** | An **Active Case** dropdown lists all indexed cases (populated from [_get_indexed_run_choices()](file:///home/owner/OLMOCR/rag_ui_dashboard.py)). Selecting a case applies the corresponding `run_id` as a `run_id_filter` to [search_similar()](file:///home/owner/OLMOCR/rag/retriever.py#L26-L219), isolating semantic lookups to that case's vectors. An **"🌐 All Cases (no filter)"** option allows deliberate cross-case analysis. |
+| **Active Case Banner** | A prominent banner above the chat window ([_get_case_banner_html()](file:///home/owner/OLMOCR/rag_ui.py)) displays the currently active case name, providing visual confirmation of query scope. |
+| **Auto-Population** | When a case is selected, the Author filter and Date Range fields are automatically populated from the case's metadata via [on_case_selected()](file:///home/owner/OLMOCR/rag_ui.py#L904-L943). |
 
 ### ✅ 2. Interactive Filter Controls — IMPLEMENTED
 
 | | |
 |:---|:---|
-| **Status** | ✅ Fully implemented in [rag_ui.py:L959-L1006](file:///home/owner/OLMOCR/rag_ui.py#L959-L1006). |
+| **Status** | ✅ Fully implemented in [rag_ui.py](file:///home/owner/OLMOCR/rag_ui.py) (Search Filters accordion within `build_rag_chat_ui()`). |
 | **Location** | **🔍 Search Filters** accordion, below the Active Case Selector. |
 | **Components** | |
 
@@ -612,14 +640,16 @@ Exported files are saved to `workspace/exports/` with timestamped filenames and 
 | | |
 |:---|:---|
 | **Status** | ✅ Implemented as a dedicated **📊 Case Dashboard** panel (Panel 3) accessible from the left navigation sidebar. |
-| **Location** | [build_case_dashboard_ui()](file:///home/owner/OLMOCR/rag_ui.py#L762-L845). |
+| **Location** | [build_case_dashboard_ui()](file:///home/owner/OLMOCR/rag_ui_dashboard.py). |
 | **Features** | |
 
-*   All indexed cases displayed in a **card grid layout** ([_build_dashboard_html()](file:///home/owner/OLMOCR/rag_ui.py#L643-L708)).
-*   Per-case metrics: document count, chunk count, unique authors, date range, indexed timestamp.
+*   All indexed cases displayed in a **card grid layout** ([_build_dashboard_html()](file:///home/owner/OLMOCR/rag_ui_dashboard.py)).
+*   Rich per-case information: Displays canonical client name, Date of Birth (DOB), and key extracted Injury/Diagnosis bullet points along with document count, chunk count, unique authors, date range, and indexed timestamp.
 *   Status indicator: ✅ Indexed badge on each card.
-*   **🔄 Refresh Dashboard** button to reload case data.
-*   **🗑️ Delete Case** button with case selector — removes all data from PostgreSQL, Qdrant, and MinIO in one action.
+*   **🔄 Refresh Dashboard** button to reload case data via [_refresh_dashboard()](file:///home/owner/OLMOCR/rag_ui_dashboard.py#L147-L154).
+*   **☑️ Select All** and **⬜ Clear Selection** buttons with JavaScript checkbox management.
+*   **🗑️ Delete Selected** button (with dynamic selected case count via [_update_delete_button_label()](file:///home/owner/OLMOCR/rag_ui_dashboard.py#L62-L68)) to remove selected cases from PostgreSQL, Qdrant, and MinIO.
+*   **🚨 Delete All Cases** button to purge all indexed cases at once via [_delete_all_cases()](file:///home/owner/OLMOCR/rag_ui_dashboard.py#L273-L321).
 
 ### ✅ 5. Keyboard Shortcuts — IMPLEMENTED
 
@@ -629,7 +659,7 @@ Exported files are saved to `workspace/exports/` with timestamped filenames and 
 | `Ctrl+Shift+C` | Copy last bot response to clipboard | ✅ |
 | `Ctrl+Shift+N` | Clear chat and start new analysis session | ✅ |
 
-Shortcut hints are displayed below the chat input row. Implementation is in the runtime JavaScript block at [app.py:L1357-L1390](file:///home/owner/OLMOCR/app.py#L1357-L1390).
+Shortcut hints are displayed below the chat input row. Implementation is in [assets/accessibility.js](file:///home/owner/OLMOCR/assets/accessibility.js), loaded at application start.
 
 ---
 
@@ -641,7 +671,7 @@ The following features remain as future enhancements:
 
 | | |
 |:---|:---|
-| **Current State** | The three-panel symmetrical view (PDF / Raw Markdown / Rendered Preview) with synchronized scrolling is implemented in the Layout Inspector panel ([app.py:L1392-L1449](file:///home/owner/OLMOCR/app.py#L1392-L1449)). |
+| **Current State** | The three-panel symmetrical view (PDF / Raw Markdown / Rendered Preview) with synchronized scrolling is implemented in the Layout Inspector panel ([app.py](file:///home/owner/OLMOCR/app.py)). Scroll synchronisation is handled by [assets/accessibility.js](file:///home/owner/OLMOCR/assets/accessibility.js). |
 | **Proposed Enhancement** | Extend with in-document annotation capabilities: |
 
 *   Allow users to **highlight text** directly on the rendered Markdown or PDF panel.
@@ -681,7 +711,7 @@ The following features remain as future enhancements:
 3. **One case = one run**: Upload each client's documents as a separate batch. Name imported runs descriptively: `run_imported_Smith_v_Jones_2024`. Alternatively, use the **📥 Upload External Markdown** accordion to create named cases directly.
 4. **Always select the active case**: Before querying, select the specific case from the **Active Case** dropdown in the **🔍 Search Filters** accordion. Never analyse with "All Cases" selected unless performing deliberate cross-case research.
 5. **Use metadata filters**: Apply document type, author, and date range filters to narrow queries and reduce noise, especially in large multi-clinician cases.
-6. **Clean up after each case**: Use the **🗑️ Delete Case** button on the Case Dashboard, or use the **🧹 Reset & Cleanup** tool in the System Diagnostics panel to purge temporary files.
+6. **Clean up after each case**: Check the case card's checkbox and click the **🗑️ Delete Selected** button on the Case Dashboard (or use **🚨 Delete All Cases** to purge all cases), or use the **🧹 Reset & Cleanup** tool in the System Diagnostics panel to purge temporary files.
 
 ### Analysis Strategy
 7. **Use the right model for the task**: Use Instruct models for structured reports and timelines; use Reasoning models for inconsistency detection and complex analysis.

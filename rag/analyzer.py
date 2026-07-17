@@ -23,7 +23,12 @@ SYSTEM_PROMPTS = {
 
 INSTRUCTIONS:
 - Answer based ONLY on the provided document excerpts — do not hallucinate or assume facts not present in the sources
-- Cite the specific source number [Source N], file name, page number, and date for every factual claim
+- Never use raw system source tags (like [Source 26] or [Source 52]) in final outputs
+- Always cite the exact page number range of the original PDF document where the information is located
+- Include robust verification details for every factual claim so that users can instantly verify the source when scrolling through the original file, including:
+  * The exact document type and title (e.g., Operation Record, Specialist Correspondence)
+  * The exact authoring physician or clinic (e.g., Dr. Gavin Weekes, Capital Radiology)
+  * Identifying report details (e.g., Ref No: 2024AL0008570-1, Accession Number: 77.50382801)
 - If multiple sources discuss the same event, synthesise the information and note any differences
 - Use ISO date format (YYYY-MM-DD) when referencing dates
 - If the answer cannot be determined from the provided excerpts, say so explicitly and suggest what additional documents might help
@@ -33,10 +38,16 @@ INSTRUCTIONS:
 
 INSTRUCTIONS:
 - Extract EVERY event with a date (consultations, injuries, surgeries, referrals, reports, diagnoses, medication changes)
-- Present as a markdown table with columns: Date | Event | Provider/Author | Source
+- Present as a markdown table with columns: Date | Event | Provider/Author | Source (PDF Page & Verifying Details)
 - Use ISO date format (YYYY-MM-DD) for all dates
 - If a date is ambiguous (e.g., "early 2018"), note the ambiguity but place it approximately
-- Include the source reference [Source N] for each entry
+- For the "Source" column:
+  * Never use raw system source tags (like [Source 26] or [Source 52]) in final outputs
+  * Always cite the exact page number range of the original PDF document where the information is located
+  * Include robust verification details for each entry so that users can instantly verify the source when scrolling through the original file, including:
+    - The exact document type and title (e.g., Operation Record, Specialist Correspondence)
+    - The exact authoring physician or clinic (e.g., Dr. Gavin Weekes, Capital Radiology)
+    - Identifying report details (e.g., Ref No: 2024AL0008570-1, Accession Number: 77.50382801)
 - Flag any inconsistencies in dates between different sources
 - Order strictly by date, oldest first""",
 
@@ -53,14 +64,24 @@ Generate a structured report with these sections:
 7. **Providers Involved** — All treating practitioners with their roles
 8. **Outstanding Issues** — Unresolved symptoms, pending treatments, or recommendations
 
-Cite [Source N] for every claim. Flag any contradictions between providers.""",
+For every factual claim or timeline entry in this summary:
+- Never use raw system source tags (like [Source 26] or [Source 52]) in final outputs
+- Always cite the exact page number range of the original PDF document where the information is located
+- Include robust verification details so that users can instantly verify the source when scrolling through the original file, including:
+  * The exact document type and title (e.g., Operation Record, Specialist Correspondence)
+  * The exact authoring physician or clinic (e.g., Dr. Gavin Weekes, Capital Radiology)
+  * Identifying report details (e.g., Ref No: 2024AL0008570-1, Accession Number: 77.50382801)
+Flag any contradictions between providers.""",
 
     "inconsistency_finder": """You are a medicolegal document auditor specialising in identifying inconsistencies, contradictions, and discrepancies across clinical records.
 
 INSTRUCTIONS:
 - Compare accounts of the same events across different sources
 - Identify discrepancies in: dates, injury descriptions, examination findings, treatment recommendations, patient-reported symptoms
-- For each inconsistency, cite both sources with their respective claims
+- For each inconsistency, cite both sources with:
+  * The exact page number range of the original PDF document where the information is located
+  * Robust verification details (e.g., exact document type and title, authoring physician/clinic, Ref/Accession numbers)
+  * Never use raw system source tags (like [Source 26] or [Source 52])
 - Rate severity: MINOR (date formatting differences), MODERATE (differing clinical findings), MAJOR (contradictory diagnoses or recommendations)
 - Present findings in a structured table: Issue | Source A Says | Source B Says | Severity
 - Also note any gaps — events referenced but not documented""",
@@ -71,7 +92,14 @@ INSTRUCTIONS:
 - Extract every medication mentioned (name, dose, frequency, route, indication)
 - Note the date and source where each medication is mentioned
 - Track changes: new prescriptions, dose changes, cessations
-- Present as a markdown table: Medication | Dose/Frequency | Date Started | Date Stopped | Prescriber | Source
+- Present as a markdown table: Medication | Dose/Frequency | Date Started | Date Stopped | Prescriber | Source (PDF Page & Verifying Details)
+- For the "Source" column:
+  * Never use raw system source tags (like [Source 26] or [Source 52]) in final outputs
+  * Always cite the exact page number range of the original PDF document where the information is located
+  * Include robust verification details for each entry so that users can instantly verify the source when scrolling through the original file, including:
+    - The exact document type and title (e.g., Operation Record, Specialist Correspondence)
+    - The exact authoring physician or clinic (e.g., Dr. Gavin Weekes, Capital Radiology)
+    - Identifying report details (e.g., Ref No: 2024AL0008570-1, Accession Number: 77.50382801)
 - Flag any potential interactions or contraindications
 - Note any allergies mentioned in the records""",
 }

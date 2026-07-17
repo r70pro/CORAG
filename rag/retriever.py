@@ -255,6 +255,19 @@ def _mmr_rerank(
     selected.append(best_idx)
     candidates.remove(best_idx)
 
+    # Initialize max_sim_to_selected with similarity to the first selected item
+    max_sim_to_selected = [0.0] * len(results)
+    first_set = token_sets[best_idx]
+    first_len = set_lengths[best_idx]
+    if first_len > 0:
+        for cand_idx in candidates:
+            cand_set = token_sets[cand_idx]
+            cand_len = set_lengths[cand_idx]
+            if cand_len > 0:
+                intersection_len = len(cand_set & first_set)
+                union_len = cand_len + first_len - intersection_len
+                max_sim_to_selected[cand_idx] = intersection_len / union_len if union_len > 0 else 0.0
+
     while len(selected) < top_k and candidates:
         best_score = -float("inf")
         best_candidate = None
@@ -263,24 +276,11 @@ def _mmr_rerank(
             # Relevance component
             relevance = results[cand_idx]["score"]
 
-            # Diversity component — max similarity to any selected result
-            cand_set = token_sets[cand_idx]
-            cand_len = set_lengths[cand_idx]
-            max_sim_to_selected = 0.0
-            if cand_len > 0:
-                for sel_idx in selected:
-                    sel_set = token_sets[sel_idx]
-                    sel_len = set_lengths[sel_idx]
-                    if sel_len == 0:
-                        continue
-                    intersection_len = len(cand_set & sel_set)
-                    union_len = cand_len + sel_len - intersection_len
-                    sim = intersection_len / union_len if union_len > 0 else 0.0
-                    if sim > max_sim_to_selected:
-                        max_sim_to_selected = sim
+            # Diversity component — max similarity to any selected result is pre-calculated/cached
+            sim_val = max_sim_to_selected[cand_idx]
 
             # MMR score
-            mmr_score = lambda_param * relevance - (1 - lambda_param) * max_sim_to_selected
+            mmr_score = lambda_param * relevance - (1 - lambda_param) * sim_val
 
             if mmr_score > best_score:
                 best_score = mmr_score
@@ -289,6 +289,20 @@ def _mmr_rerank(
         if best_candidate is not None:
             selected.append(best_candidate)
             candidates.remove(best_candidate)
+
+            # Update max_sim_to_selected for remaining candidates with the newly selected candidate
+            new_set = token_sets[best_candidate]
+            new_len = set_lengths[best_candidate]
+            if new_len > 0:
+                for cand_idx in candidates:
+                    cand_set = token_sets[cand_idx]
+                    cand_len = set_lengths[cand_idx]
+                    if cand_len > 0:
+                        intersection_len = len(cand_set & new_set)
+                        union_len = cand_len + new_len - intersection_len
+                        sim = intersection_len / union_len if union_len > 0 else 0.0
+                        if sim > max_sim_to_selected[cand_idx]:
+                            max_sim_to_selected[cand_idx] = sim
         else:
             break
 

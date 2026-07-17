@@ -9,21 +9,28 @@ body {
 
 .gradio-container {
     background-color: #090d16 !important;
-    max-width: 96% !important;
-    width: 96% !important;
+    max-width: 98% !important;
+    width: 98% !important;
     margin: 0 auto !important;
-    padding: 0 24px !important;
+    padding: 0 16px !important;
 }
 
 .sidebar-panel {
-    max-width: 320px !important;
-    min-width: 280px !important;
+    max-width: 260px !important;
+    min-width: 200px !important;
 }
 
 /* Prevent table text/filenames from overflowing and causing horizontal scroll */
 table td, table th {
-    word-break: break-all !important;
+    word-break: normal !important;
+    overflow-wrap: break-word !important;
     white-space: normal !important;
+}
+
+.analysis-chatbot table td:first-child,
+.analysis-chatbot table th:first-child {
+    white-space: nowrap !important;
+    word-break: keep-all !important;
 }
 
 .glass-panel {
@@ -379,6 +386,30 @@ input[role="combobox"] {
     box-shadow: 0 6px 24px rgba(99, 102, 241, 0.15);
     transform: translateY(-2px);
 }
+
+.case-card.selected {
+    border-color: #6366f1 !important;
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.4), 0 6px 24px rgba(99, 102, 241, 0.25) !important;
+    background: rgba(99, 102, 241, 0.08) !important;
+}
+
+.case-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.case-select-checkbox {
+    accent-color: #6366f1;
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    border-radius: 4px;
+    margin-top: 2px;
+}
+
 
 .case-card-title {
     font-size: 1.05rem;

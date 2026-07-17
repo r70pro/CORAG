@@ -416,18 +416,55 @@ def make_case_dashboard_html(runs: List[Dict[str, Any]]) -> str:
             except Exception:
                 indexed_str = str(indexed_at)[:16]
 
+        run_id = run.get("run_id", "")
+        
+        # Fetch rich case metadata
+        from rag.metadata_helper import get_case_metadata
+        meta = get_case_metadata(run_id)
+        
+        client_display = ", ".join(meta["names"]) if meta["names"] else "Unknown Client"
+        dob_display = meta["dob"] if meta["dob"] != "—" else "Not Extracted"
+        
+        if meta["injuries"]:
+            injury_display = "<ul style='margin: 0; padding-left: 14px; font-size: 0.8rem;'>" + "".join([f"<li style='margin-bottom: 2px;'>{inj}</li>" for inj in meta["injuries"]]) + "</ul>"
+        else:
+            injury_display = "<span style='color: #9ca3af; font-style: italic; font-size: 0.8rem;'>No specific injury or diagnosis found.</span>"
+
         card = f"""
-        <div class="case-card">
-            <div class="case-card-title">📁 {run_name}</div>
-            <div class="case-card-stats">
+        <div class="case-card" onclick="window.toggleCaseSelection(this, event, '{run_id}')" style="cursor: pointer;">
+            <div class="case-card-header" style="margin-bottom: 8px;">
+                <div style="display: flex; flex-direction: column; gap: 4px; width: 100%;">
+                    <div style="font-size: 0.75rem; color: #9ca3af; font-family: monospace; word-break: break-all; opacity: 0.85;">📁 {run_name}</div>
+                    <div class="case-card-title" style="margin: 4px 0 0 0; font-size: 1.15rem; color: #f3f4f6; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+                        <span>👤</span> {client_display}
+                    </div>
+                </div>
+                <input type="checkbox" class="case-select-checkbox" data-run-id="{run_id}" onclick="event.stopPropagation(); window.toggleCaseSelection(this, event, '{run_id}');" />
+            </div>
+            
+            <div style="margin: 6px 0; font-size: 0.85rem; color: #d1d5db; display: flex; align-items: center; gap: 6px;">
+                <span style="color: #818cf8; font-weight: 600;">📅 DOB:</span> <span>{dob_display}</span>
+            </div>
+
+            <div style="margin: 10px 0; padding: 8px 12px; background: rgba(99, 102, 241, 0.05); border: 1px solid rgba(99, 102, 241, 0.15); border-radius: 8px;">
+                <div style="font-size: 0.7rem; color: #a5b4fc; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 4px;">
+                    <span>🤕</span> Injury / Diagnosis
+                </div>
+                <div style="color: #e0e7ff; line-height: 1.4;">
+                    {injury_display}
+                </div>
+            </div>
+
+            <div class="case-card-stats" style="margin-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.06); padding-top: 10px; opacity: 0.9;">
                 <span>Documents: <span class="stat-val">{docs}</span></span>
                 <span>Chunks: <span class="stat-val">{chunks}</span></span>
                 <span>Authors: <span class="stat-val">{authors}</span></span>
-                <span>Date Range: <span class="stat-val">{date_range}</span></span>
+                <span>Date Range: <span class="stat-val" style="font-size: 0.75rem;">{date_range}</span></span>
             </div>
-            <div style="font-size:0.78rem; color:#6b7280; margin-bottom:8px;">
-                <span class="badge-success" style="font-size:0.75rem;">✓ Indexed</span>
-                {f'&nbsp; {indexed_str}' if indexed_str else ''}
+            
+            <div style="font-size:0.75rem; color:#6b7280; margin-top:10px; display: flex; justify-content: space-between; align-items: center;">
+                <span class="badge-success" style="font-size:0.7rem; padding: 2px 6px; border-radius: 4px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.15); color: #34d399;">✓ Indexed</span>
+                <span>{indexed_str}</span>
             </div>
         </div>
         """

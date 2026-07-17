@@ -509,9 +509,15 @@ class TestUICallbacks(unittest.TestCase):
         self.assertIn("RAG Indexing Progress", accumulated_status)
         self.assertTrue("bulk indexing" in logs)
 
+    @patch("rag.metadata_helper.get_case_metadata")
     @patch("rag.db.get_runs_with_stats")
-    def test_build_case_dashboard_html(self, mock_stats):
+    def test_build_case_dashboard_html(self, mock_stats, mock_get_meta):
         import datetime
+        mock_get_meta.return_value = {
+            "names": ["Test Patient"],
+            "dob": "01/01/1970",
+            "injuries": ["Test Injury"]
+        }
         # Scenario 1: Case stats returned successfully
         mock_stats.return_value = [
             {
@@ -539,6 +545,9 @@ class TestUICallbacks(unittest.TestCase):
         self.assertTrue("run_123" in html)
         self.assertTrue("run_456" in html)
         self.assertTrue("Documents: <span class=\"stat-val\">5</span>" in html)
+        self.assertTrue("Test Patient" in html)
+        self.assertTrue("01/01/1970" in html)
+        self.assertTrue("Test Injury" in html)
 
         # Scenario 2: No runs indexed
         mock_stats.return_value = []
@@ -570,9 +579,15 @@ class TestUICallbacks(unittest.TestCase):
         with patch("rag_ui.load_settings", return_value={"analysis_model_name": "custom-analysis-model", "embedding_model": "custom-emb-model"}):
             importlib.reload(rag_ui)
 
+    @patch("rag.metadata_helper.get_case_metadata")
     @patch("rag.db.get_runs_with_stats")
-    def test_build_dashboard_html_single_bounds(self, mock_stats):
+    def test_build_dashboard_html_single_bounds(self, mock_stats, mock_get_meta):
         import datetime
+        mock_get_meta.return_value = {
+            "names": ["Test Patient"],
+            "dob": "01/01/1970",
+            "injuries": ["Test Injury"]
+        }
         # Scenario 1: earliest set, latest None
         mock_stats.return_value = [
             {

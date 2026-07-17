@@ -154,4 +154,43 @@
             activeScrollSource = null;
         }, 100);
     }, true);
+
+    window.toggleCaseSelection = function(cardOrCheckbox, event, runId) {
+        let card = cardOrCheckbox;
+        if (!card.classList.contains('case-card')) {
+            card = card.closest('.case-card');
+        }
+        if (!card) return;
+        const cb = card.querySelector('.case-select-checkbox');
+        if (!cb) return;
+
+        // If clicked on the card itself (not directly on the checkbox), toggle the checkbox
+        if (cardOrCheckbox !== cb) {
+            cb.checked = !cb.checked;
+        }
+
+        // Update selected class based on checkbox checked state
+        if (cb.checked) {
+            card.classList.add('selected');
+        } else {
+            card.classList.remove('selected');
+        }
+
+        // Collect all currently checked run_ids
+        const selectedIds = [];
+        document.querySelectorAll('.case-select-checkbox').forEach(input => {
+            if (input.checked) {
+                const rid = input.getAttribute('data-run-id');
+                if (rid) selectedIds.push(rid);
+            }
+        });
+
+        // Find hidden Gradio input/textarea and dispatch event
+        const txtEl = document.querySelector('#selected-cases-input textarea, #selected-cases-input input');
+        if (txtEl) {
+            txtEl.value = selectedIds.join(',');
+            txtEl.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+    };
 }
+
