@@ -442,5 +442,35 @@ class TestOLMOCRApp(unittest.TestCase):
         self.assertTrue("Cleanup Summary" in res)
         self.assertTrue("Successfully cleaned" in res)
 
+    @patch("app.process_pdfs")
+    def test_process_pdfs_ui_wrapper(self, mock_process_pdfs):
+        mock_result = MagicMock()
+        mock_result.log_text = "log"
+        mock_result.status_badge = "badge"
+        mock_result.progress_bar = "progress"
+        mock_result.completed_pages = "pages"
+        mock_result.failed_pages = "fail"
+        mock_result.file_selector = "selector"
+        mock_result.download_zip = "zip"
+        mock_result.download_individual = "indiv"
+        mock_result.start_btn = "start"
+        mock_result.active_run_id = "run_id"
+        mock_result.file_status_table = "status_table"
+        mock_result.upload_manifest_display = "manifest"
+        mock_process_pdfs.return_value = [mock_result]
+        
+        gen = app.process_pdfs_ui_wrapper("arg1", kwarg1="val1")
+        results = list(gen)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0], (
+            "log", "badge", "progress", "pages", "fail", "selector", "zip", "indiv", "start", "run_id", "status_table", "manifest"
+        ))
+        mock_process_pdfs.assert_called_once_with("arg1", kwarg1="val1")
+
+    @patch("app.gr.update")
+    def test_update_max_content_length(self, mock_gr_update):
+        app.update_max_content_length("unknown_model", 200000)
+        mock_gr_update.assert_called_once_with(maximum=131072, value=131072)
+
 if __name__ == "__main__":
     unittest.main()

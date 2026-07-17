@@ -366,6 +366,37 @@ class TestRAGEmbeddingAll(unittest.TestCase):
         res2 = rag_emb.load_reranker_model(None, None)
         self.assertEqual(res, res2)
 
+    @patch("rag.cache.is_healthy", return_value=False)
+    @patch("sentence_transformers.SentenceTransformer")
+    @patch("rag.embedding.load_settings")
+    def test_encode_texts_model_name_none_fallback(self, mock_load_settings, mock_transformer, mock_is_healthy):
+        # Reset cached model
+        rag_emb._embedding_model = None
+        rag_emb._embedding_model_name = None
+        
+        # Configure sentence transformer mock
+        mock_model = mock_transformer.return_value
+        mock_result = MagicMock()
+        mock_result.tolist.return_value = [[0.9, 0.9]]
+        mock_model.encode.return_value = mock_result
+        
+        # 1. Success path: load_settings returns a value
+        mock_load_settings.return_value = {"embedding_model": "test-settings-model"}
+        res = rag_emb.encode_texts(["text1"], None)
+        self.assertEqual(res, [[0.9, 0.9]])
+        self.assertEqual(rag_emb._embedding_model_name, "test-settings-model")
+        
+        # Reset cached model
+        rag_emb._embedding_model = None
+        rag_emb._embedding_model_name = None
+
+        # 2. Exception path: load_settings raises exception, falls back to env var
+        mock_load_settings.side_effect = Exception("failed to load settings")
+        with patch.dict(os.environ, {"OLMOCR_EMBEDDING_MODEL": "test-env-model"}):
+            res2 = rag_emb.encode_texts(["text2"], None)
+            self.assertEqual(res2, [[0.9, 0.9]])
+            self.assertEqual(rag_emb._embedding_model_name, "test-env-model")
+
 
 if __name__ == "__main__":
     unittest.main()

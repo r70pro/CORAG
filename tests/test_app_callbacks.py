@@ -73,6 +73,26 @@ class TestAppCallbacks(unittest.TestCase):
         self.assertEqual(msg, "Stopped")
         self.assertEqual(badge, "Stopped badge")
 
+    @patch("app.shutdown_docker_container")
+    @patch("rag_infra_manager.destroy_rag_infrastructure")
+    @patch("app.get_docker_status_str")
+    def test_ui_shutdown_all_containers(self, mock_status_str, mock_destroy, mock_shutdown):
+        ui_shutdown = self.callbacks.get("ui_shutdown_all_containers")
+        self.assertIsNotNone(ui_shutdown)
+
+        mock_shutdown.return_value = (True, "Container shutdown successfully.")
+        mock_destroy.return_value = (True, "RAG infrastructure destroyed.")
+        mock_status_str.return_value = (True, "Shutdown badge")
+        
+        msg, badge = ui_shutdown(8000)
+        self.assertEqual(msg, "Container shutdown successfully. RAG: RAG infrastructure destroyed.")
+        self.assertEqual(badge, "Shutdown badge")
+
+        # Case when destroy_rag_infrastructure raises an exception
+        mock_destroy.side_effect = Exception("failed to down")
+        msg, badge = ui_shutdown(8000)
+        self.assertIn("Error destroying infrastructure", msg)
+
     @patch("app.create_docker_container")
     @patch("app.get_docker_status_str")
     @patch("app.save_settings")

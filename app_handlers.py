@@ -5,6 +5,7 @@ from docker_manager import (
     start_docker_container,
     stop_docker_container,
     create_docker_container,
+    shutdown_docker_container,
 )
 from html_utils import (
     make_backing_services_html,
@@ -162,3 +163,17 @@ def periodic_diagnostics_check(port_val):
     backing_services, header_health_badge = check_backing(vllm_port=int(port_val))
     gpu_stats = get_gpu()
     return backing_services, gpu_stats, header_health_badge
+
+
+def ui_shutdown_all_containers(port):
+    shutdown_fn = get_app_fn('shutdown_docker_container', shutdown_docker_container)
+    status_fn = get_app_fn('get_docker_status_str', get_docker_status_str)
+    success, msg1 = shutdown_fn()
+    try:
+        from rag_infra_manager import destroy_rag_infrastructure
+        success2, msg2 = destroy_rag_infrastructure(remove_volumes=False)
+        msg = f"{msg1} RAG: {msg2}"
+    except Exception as e:
+        msg = f"{msg1} RAG: Error destroying infrastructure: {e}"
+    _, badge = status_fn(port)
+    return msg, badge

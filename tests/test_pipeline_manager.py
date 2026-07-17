@@ -652,6 +652,77 @@ class TestPipelineManager(unittest.TestCase):
         self.assertTrue("Model Mismatch" in res[0][1]["value"])
         self.assertTrue("The requested model 'allenai/olmOCR-2-7B-1025-FP8' is not loaded" in res[0][0])
 
+    def test_pipeline_result_properties(self):
+        res = pipeline_manager.PipelineResult(
+            "log", "badge", "progress", "comp", "fail", "selector", "zip", "indiv", "start", "run_id", "status_table", "manifest"
+        )
+        self.assertEqual(res.log_text, "log")
+        self.assertEqual(res.status_badge, "badge")
+        self.assertEqual(res.progress_bar, "progress")
+        self.assertEqual(res.completed_pages, "comp")
+        self.assertEqual(res.failed_pages, "fail")
+        self.assertEqual(res.file_selector, "selector")
+        self.assertEqual(res.download_zip, "zip")
+        self.assertEqual(res.download_individual, "indiv")
+        self.assertEqual(res.start_btn, "start")
+        self.assertEqual(res.active_run_id, "run_id")
+        self.assertEqual(res.file_status_table, "status_table")
+        self.assertEqual(res.upload_manifest_display, "manifest")
+
+    @patch("subprocess.Popen")
+    @patch("shutil.copy")
+    @patch("httpx.get")
+    def test_process_pdfs_preflight_invalid_models_format(self, mock_get, mock_copy, mock_popen):
+        mock_popen.side_effect = Exception("abort pipeline execution")
+        mock_response = MagicMock(status_code=200)
+        mock_response.json.return_value = {
+            "data": "not a list"
+        }
+        mock_get.return_value = mock_response
+        
+        mock_file = MagicMock()
+        mock_file.name = "test.pdf"
+        
+        gen = pipeline_manager.process_pdfs(
+            files=[mock_file],
+            server_url="http://localhost:8000/v1",
+            model_name="allenai/olmOCR-2-7B-1025-FP8",
+            workers=4,
+            max_concurrent=20,
+            max_retries=8,
+            target_dim=1288,
+            guided_decoding=True
+        )
+        res = list(gen)
+        self.assertTrue(len(res) > 0)
+        self.assertFalse(any("is not loaded on the server" in item[0] for item in res))
+
+    @patch("subprocess.Popen")
+    @patch("shutil.copy")
+    @patch("httpx.get")
+    def test_process_pdfs_preflight_json_decode_error(self, mock_get, mock_copy, mock_popen):
+        mock_popen.side_effect = Exception("abort pipeline execution")
+        mock_response = MagicMock(status_code=200)
+        mock_response.json.side_effect = ValueError("Invalid JSON")
+        mock_get.return_value = mock_response
+        
+        mock_file = MagicMock()
+        mock_file.name = "test.pdf"
+        
+        gen = pipeline_manager.process_pdfs(
+            files=[mock_file],
+            server_url="http://localhost:8000/v1",
+            model_name="allenai/olmOCR-2-7B-1025-FP8",
+            workers=4,
+            max_concurrent=20,
+            max_retries=8,
+            target_dim=1288,
+            guided_decoding=True
+        )
+        res = list(gen)
+        self.assertTrue(len(res) > 0)
+        self.assertFalse(any("is not loaded on the server" in item[0] for item in res))
+
 
 if __name__ == "__main__":
     unittest.main()

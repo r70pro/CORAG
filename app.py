@@ -14,6 +14,7 @@ from docker_manager import (  # noqa: F401
     cleanup_docker,
     check_server_ready,
     get_docker_status,
+    shutdown_docker_container,
 )
 
 # Resets & Space metrics
@@ -69,6 +70,7 @@ from app_handlers import (
     ui_header_stop,
     periodic_status_check,
     periodic_diagnostics_check,
+    ui_shutdown_all_containers,
 )
 
 # Register exit hooks
@@ -164,7 +166,9 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                     docker_start_btn = gr.Button("▶️ Start", variant="secondary")
                     docker_stop_btn = gr.Button("⏹️ Stop", variant="secondary")
                 
-                docker_recreate_btn = gr.Button("🔄 Recreate & Run", variant="primary")
+                with gr.Row():
+                    docker_recreate_btn = gr.Button("🔄 Recreate & Run", variant="primary")
+                    docker_shutdown_btn = gr.Button("🛑 Shut Down", variant="stop")
                 docker_action_status = gr.Markdown()
             
             # Sidebar Footer
@@ -601,6 +605,12 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
             docker_gpu_mem_input, docker_max_model_len_input
         ],
         outputs=[docker_action_status, backend_status_badge, server_url_input]
+    )
+
+    docker_shutdown_btn.click(
+        ui_shutdown_all_containers,
+        inputs=[docker_port_input],
+        outputs=[docker_action_status, backend_status_badge]
     )
 
     model_name_input.change(lambda x: x, inputs=[model_name_input], outputs=[docker_model_name_input])

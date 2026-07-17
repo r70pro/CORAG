@@ -135,6 +135,40 @@ class TestDockerManager(unittest.TestCase):
 
     @patch("docker_manager.get_docker_status")
     @patch("subprocess.run")
+    def test_shutdown_docker_container(self, mock_run, mock_status):
+        # Case: not running / not created
+        mock_status.return_value = "not_found"
+        success, msg = docker_manager.shutdown_docker_container()
+        self.assertTrue(success)
+        self.assertIn("not running", msg)
+
+        # Case: exited (success)
+        mock_status.return_value = "exited"
+        mock_run.return_value = MagicMock(returncode=0)
+        success, msg = docker_manager.shutdown_docker_container()
+        self.assertTrue(success)
+        self.assertIn("shutdown successfully", msg)
+        mock_run.assert_called_with(["docker", "rm", "olmocr"], check=True, capture_output=True)
+
+        # Case: running (success)
+        mock_status.return_value = "running"
+        mock_run.reset_mock()
+        mock_run.return_value = MagicMock(returncode=0)
+        success, msg = docker_manager.shutdown_docker_container()
+        self.assertTrue(success)
+        self.assertIn("shutdown successfully", msg)
+        self.assertEqual(mock_run.call_count, 2)
+
+        # Case: running (failure on stop)
+        mock_status.return_value = "running"
+        mock_run.reset_mock()
+        mock_run.side_effect = subprocess.CalledProcessError(1, "docker stop", stderr=b"failed to stop")
+        success, msg = docker_manager.shutdown_docker_container()
+        self.assertFalse(success)
+        self.assertIn("failed to stop", msg.lower())
+
+    @patch("docker_manager.get_docker_status")
+    @patch("subprocess.run")
     @patch("os.makedirs")
     def test_create_docker_container(self, mock_makedirs, mock_run, mock_status):
         # Case: running -> remove -> create success

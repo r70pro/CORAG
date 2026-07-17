@@ -371,10 +371,118 @@ class TestRAGRetrieverAll(unittest.TestCase):
         mock_load_reranker.side_effect = Exception("Reranker loading failed")
 
         res = rag_ret.search_similar("query", use_reranker=True)
-        # Should catch exception, log warning, and return results using original Qdrant scores
         self.assertEqual(len(res), 1)
         self.assertEqual(res[0]["chunk_id"], "c1")
         self.assertEqual(res[0]["score"], 0.8)
+
+    def test_mmr_rerank_with_empty_texts(self):
+        results = [
+            {"score": 0.9, "text": ""},
+            {"score": 0.8, "text": "shoulder"},
+            {"score": 0.7, "text": ""}
+        ]
+        reranked = rag_ret._mmr_rerank(results, [0.1]*10, top_k=2)
+        self.assertEqual(len(reranked), 2)
+
+    @patch("rag.db.get_chunks_by_qdrant_ids")
+    @patch("rag.retriever.get_qdrant_client")
+    @patch("rag.retriever.encode_query")
+    def test_search_similar_no_reranker_success(self, mock_encode, mock_get_client, mock_get_chunks):
+        mock_encode.return_value = [0.1, 0.2]
+        mock_client = mock_get_client.return_value
+        mock_res = MagicMock()
+        mock_res.id = "point1"
+        mock_res.score = 0.85
+        mock_res.payload = {"chunk_id": "c1"}
+        mock_client.search.return_value = [mock_res]
+        mock_get_chunks.return_value = [{"qdrant_point_id": "point1", "chunk_id": "c1", "text": "my text"}]
+
+        progress_calls = []
+        def progress_callback(pct, msg):
+            progress_calls.append((pct, msg))
+
+        res = rag_ret.search_similar(
+            "query",
+            use_reranker=False,
+            top_k=2,
+            progress_callback=progress_callback
+        )
+        self.assertEqual(len(res), 1)
+        self.assertEqual(res[0]["text"], "my text")
+        self.assertTrue(len(progress_calls) > 0)
+
+    @patch("sentence_transformers.CrossEncoder")
+    @patch("rag.retriever.encode_query")
+    @patch("rag.retriever.get_qdrant_client")
+    @patch("rag.db.get_chunks_by_qdrant_ids")
+    def test_search_similar_with_reranker_and_progress_callback(self, mock_get_chunks, mock_qdrant_client, mock_encode, mock_cross_encoder_class):
+        mock_encode.return_value = [0.1, 0.2]
+        mock_get_chunks.return_value = [
+            {"qdrant_point_id": "point1", "chunk_id": "c1", "text": "shoulder pain acute"}
+        ]
+        mock_client = mock_qdrant_client.return_value
+        mock_res1 = MagicMock()
+        mock_res1.id = "point1"
+        mock_res1.score = 0.9
+        mock_res1.payload = {"chunk_id": "c1", "text_preview": "shoulder pain"}
+        mock_client.search.return_value = [mock_res1]
+        
+        mock_encoder = mock_cross_encoder_class.return_value
+        mock_encoder.predict.return_value = [1.0]
+
+        import rag.embedding as rag_emb
+        rag_emb._reranker_model = None
+        rag_emb._reranker_model_name = None
+
+        progress_calls = []
+        def progress_cb(pct, msg):
+            progress_calls.append((pct, msg))
+
+        res = rag_ret.search_similar(
+            query="knee surgery",
+            top_k=2,
+            use_reranker=True,
+            reranker_device="cpu",
+            progress_callback=progress_cb
+        )
+        self.assertEqual(len(res), 1)
+        self.assertTrue(any(pct == 0.4 for pct, _ in progress_calls))
+        self.assertTrue(any(pct == 0.8 for pct, _ in progress_calls))
+
+    @patch("sentence_transformers.CrossEncoder")
+    @patch("rag.retriever.encode_query")
+    @patch("rag.retriever.get_qdrant_client")
+    @patch("rag.db.get_chunks_by_qdrant_ids")
+    def test_search_similar_reranker_exception_with_progress_callback(self, mock_get_chunks, mock_qdrant_client, mock_encode, mock_cross_encoder_class):
+        mock_encode.return_value = [0.1, 0.2]
+        mock_get_chunks.return_value = [
+            {"qdrant_point_id": "point1", "chunk_id": "c1", "text": "shoulder pain"}
+        ]
+        mock_client = mock_qdrant_client.return_value
+        mock_res1 = MagicMock()
+        mock_res1.id = "point1"
+        mock_res1.score = 0.9
+        mock_client.search.return_value = [mock_res1]
+        
+        mock_encoder = mock_cross_encoder_class.return_value
+        mock_encoder.predict.side_effect = Exception("Predict failed")
+
+        import rag.embedding as rag_emb
+        rag_emb._reranker_model = None
+
+        progress_calls = []
+        def progress_cb(pct, msg):
+            progress_calls.append((pct, msg))
+
+        res = rag_ret.search_similar(
+            query="knee surgery",
+            top_k=2,
+            use_reranker=True,
+            reranker_device="cpu",
+            progress_callback=progress_cb
+        )
+        self.assertEqual(len(res), 1)
+        self.assertTrue(any("failed" in msg.lower() for _, msg in progress_calls))
 
 
 if __name__ == "__main__":

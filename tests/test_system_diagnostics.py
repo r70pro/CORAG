@@ -220,6 +220,9 @@ class TestSystemDiagnostics(unittest.TestCase):
         # 3. regular script basename
         self.assertEqual(system_diagnostics.get_display_name("/usr/bin/postgres -D ...", "postgres"), "postgres")
 
+        # 4. empty basename path (e.g. root "/")
+        self.assertEqual(system_diagnostics.get_display_name("/", "default"), "default")
+
     @patch("system_diagnostics.subprocess.run")
     @patch("system_diagnostics.get_docker_containers")
     def test_get_gpu_metrics_data(self, mock_docker, mock_run):
@@ -247,6 +250,7 @@ class TestSystemDiagnostics(unittest.TestCase):
         smi_proc_section = """
 +-----------------------------------------------------------------------------+
 | Processes:                                                                  |
++-----------------------------------------------------------------------------+
 |  GPU   GI   CI        PID   Type   Process name                             |
 |=============================================================================|
 |    0   N/A  N/A       111      C   python                               500MiB |

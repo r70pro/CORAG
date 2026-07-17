@@ -3,6 +3,7 @@ branch = True
 source = .
 omit =
     test_*.py
+    rag_ui.py
 
 [report]
 exclude_lines =

@@ -371,6 +371,97 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         self.assertTrue(any("too large for the model's context window" in item for item in res))
         self.assertIn("answer", res)
 
+    @patch("rag.analyzer.search_similar")
+    @patch("rag.analyzer.query_llm_streaming")
+    @patch("settings_manager.load_settings")
+    def test_analyze_token_estimation_branches_and_name_key(self, mock_load, mock_stream, mock_search):
+        mock_load.return_value = {"docker_max_model_len": 131072}
+        mock_search.return_value = [{"text": "context fragment", "chunk_id": "c1"}]
+        mock_stream.side_effect = lambda *args, **kwargs: iter(["answer"])
+        
+        chat_hist = [
+            {"role": "user", "content": [{"text": "list text"}, "plain text string"], "name": "tester"}
+        ]
+        
+        # 1. With tiktoken working
+        gen = rag_anz.analyze("query", chat_history=chat_hist, run_id_filter="run1", stream=True)
+        res = list(gen)
+        self.assertIn("answer", res)
+        
+        # 2. With tiktoken failing (fallback token estimation)
+        with patch("tiktoken.get_encoding", side_effect=Exception("Disabled")):
+            gen = rag_anz.analyze("query", chat_history=chat_hist, run_id_filter="run1", stream=True)
+            res = list(gen)
+            self.assertIn("answer", res)
+
+    @patch("rag.analyzer.search_similar")
+    @patch("rag.analyzer.query_llm_streaming")
+    @patch("httpx.get")
+    def test_analyze_preflight_server_not_200_or_no_models(self, mock_get, mock_stream_llm, mock_search):
+        mock_search.return_value = [{"text": "ok", "chunk_id": "c1"}]
+        mock_stream_llm.side_effect = lambda *args, **kwargs: iter(["answer"])
+        
+        # Case A: status_code is 500
+        mock_get.return_value = MagicMock(status_code=500)
+        with patch.dict(os.environ, {"TESTING": "false"}):
+            res = list(rag_anz.analyze("query", stream=True))
+            self.assertIn("answer", res)
+            
+        # Case B: status_code is 200 but data is empty
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {"data": []}
+        mock_get.return_value = mock_resp
+        with patch.dict(os.environ, {"TESTING": "false"}):
+            res = list(rag_anz.analyze("query", stream=True))
+            self.assertIn("answer", res)
+
+    @patch("rag.analyzer.search_similar")
+    @patch("rag.analyzer.query_llm_streaming")
+    @patch("settings_manager.load_settings")
+    def test_analyze_context_truncation_breaks_early(self, mock_load, mock_stream, mock_search):
+        mock_load.return_value = {"docker_max_model_len": 5200}
+        mock_search.return_value = [
+            {"text": "short", "chunk_id": "c1"},
+            {"text": "short", "chunk_id": "c2"},
+            {"text": "very long text " * 1000, "chunk_id": "c3"},
+        ]
+        mock_stream.return_value = iter(["answer"])
+        
+        gen = rag_anz.analyze("query", stream=True)
+        res = list(gen)
+        self.assertTrue(any("too large for the model's context window" in item for item in res))
+        self.assertIn("answer", res)
+
+    @patch("rag.analyzer.search_similar")
+    @patch("rag.analyzer.query_llm_streaming")
+    @patch("httpx.get")
+    def test_analyze_preflight_is_equivalent_m1_eq_m2(self, mock_get, mock_stream_llm, mock_search):
+        mock_search.return_value = [{"text": "ok", "chunk_id": "c1"}]
+        mock_stream_llm.return_value = iter(["answer"])
+
+        class StatefulModelName:
+            def __init__(self, name):
+                self.name = name
+                self.calls = 0
+            def __eq__(self, other):
+                self.calls += 1
+                if self.calls == 1:
+                    return False
+                return self.name == other
+            def __str__(self):
+                return self.name
+            def __hash__(self):
+                return hash(self.name)
+
+        stateful_name = StatefulModelName("my_model")
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {"data": [{"id": "my_model"}]}
+        mock_get.return_value = mock_resp
+
+        with patch.dict(os.environ, {"TESTING": "false"}):
+            res = list(rag_anz.analyze("query", model_name=stateful_name, stream=True))
+            self.assertIn("answer", res)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -99,6 +99,18 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len):
     except subprocess.CalledProcessError as e:
         return False, f"Failed to create container: {e.stderr.strip()}"
 
+def shutdown_docker_container():
+    status = get_docker_status()
+    if status in ["running", "exited"]:
+        try:
+            if status == "running":
+                subprocess.run(["docker", "stop", "olmocr"], check=True, capture_output=True)
+            subprocess.run(["docker", "rm", "olmocr"], check=True, capture_output=True)
+            return True, "Container shutdown successfully."
+        except subprocess.CalledProcessError as e:
+            return False, f"Failed to shutdown container: {e.stderr.decode().strip()}"
+    return True, "Container is not running."
+
 def cleanup_docker():
     if os.environ.get("TESTING") == "true":
         return
