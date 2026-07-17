@@ -92,7 +92,8 @@ def process_pdfs_ui_wrapper(*args: Any, **kwargs: Any) -> Generator[Tuple[Any, .
             result.start_btn,
             result.active_run_id,
             result.file_status_table,
-            result.upload_manifest_display
+            result.upload_manifest_display,
+            result.stop_btn
         )
 
 
@@ -533,12 +534,8 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
             file_selector, download_zip_btn, download_individual_btn,
             start_btn, active_run_id,
             file_status_table, upload_manifest_display,
+            stop_btn,
         ]
-    )
-    
-    start_btn.click(
-        lambda: gr.update(interactive=True),
-        outputs=[stop_btn]
     )
 
     stop_btn.click(

@@ -296,6 +296,137 @@ def query_llm(
         return f"⚠️ Error: {str(e)}"
 
 
+def replace_source_tags_in_string(text: str, results: List[Dict]) -> str:
+    """Replace abstract [Source X] references with detailed citations."""
+    import re
+    pattern = re.compile(
+        r'\[[Ss]ources?\s*:?\s*(\d+(?:\s*(?:,|\b)\s*\d+)*)\]|\b[Ss]ources?\s+(\d+(?:\s*(?:,|\b)\s*\d+)*)\b',
+        re.IGNORECASE
+    )
+    
+    def get_citation_for_idx(idx: int) -> Optional[str]:
+        if 1 <= idx <= len(results):
+            result = results[idx - 1]
+            parts = []
+            
+            # 1. Author
+            author = result.get("author") or ""
+            if author:
+                parts.append(author)
+                
+            # 2. Document type
+            doc_type = result.get("document_type") or ""
+            if doc_type and doc_type != "unknown":
+                doc_type = doc_type.replace("_", " ").title()
+                parts.append(doc_type)
+            
+            # 3. Date
+            date = result.get("date_extracted") or ""
+            if date:
+                parts.append(date)
+                
+            # 4. Page number
+            page = result.get("page_number")
+            if page:
+                parts.append(f"p. {page}")
+                
+            # 5. Identifying report details if present in chunk text
+            chunk_text = result.get("text", "")
+            ref_match = re.search(
+                r'\b(?:Ref(?:\s*No)?\.?\s*:\s*|Accession(?:\s*Number)?\.?\s*:\s*)([A-Z0-9_\-]+(?:\.[A-Z0-9_\-]+)*)',
+                chunk_text,
+                re.IGNORECASE
+            )
+            if ref_match:
+                ref_val = ref_match.group(0).strip()
+                ref_val = ref_val.rstrip(',.;:')
+                parts.append(ref_val)
+
+            # Check if original filename is present, and append if details are minimal
+            filename = result.get("original_filename") or ""
+            if filename and len(parts) < 2 and filename not in parts:
+                parts.append(filename)
+                
+            if parts:
+                return ", ".join(parts)
+            else:
+                return f"Source {idx}"
+        return None
+
+    def replacer(match):
+        bracketed_str = match.group(1)
+        word_str = match.group(2)
+        source_str = bracketed_str or word_str
+        if not source_str:
+            return match.group(0)
+            
+        indices = [int(num) for num in re.findall(r'\d+', source_str)]
+        citations = []
+        for idx in indices:
+            cit = get_citation_for_idx(idx)
+            if cit:
+                citations.append(cit)
+            else:
+                citations.append(f"Source {idx}")
+        if citations:
+            return "(" + "; ".join(citations) + ")"
+        return match.group(0)
+
+    return pattern.sub(replacer, text)
+
+
+def replace_source_tags_streaming(generator, results: List[Dict]) -> Generator[str, None, None]:
+    """Wraps an LLM streaming generator and replaces source tags on the fly."""
+    import re
+    buffer = ""
+    for chunk in generator:
+        if not chunk:
+            continue
+        buffer += chunk
+        
+        while True:
+            start_idx = buffer.find("[")
+            if start_idx == -1:
+                # No bracket. Check if there's a potential unbracketed Source prefix at the end of the buffer.
+                lower_buf = buffer.lower()
+                last_source_idx = -1
+                for prefix in ["source", "sources"]:
+                    idx = lower_buf.rfind(prefix)
+                    if idx > last_source_idx:
+                        last_source_idx = idx
+                
+                if last_source_idx != -1:
+                    suffix = buffer[last_source_idx:]
+                    if re.match(r'^[Ss]ources?\s*\d*$', suffix):
+                        if last_source_idx > 0:
+                            yield replace_source_tags_in_string(buffer[:last_source_idx], results)
+                            buffer = buffer[last_source_idx:]
+                        break
+                
+                yield replace_source_tags_in_string(buffer, results)
+                buffer = ""
+                break
+            
+            if start_idx > 0:
+                yield replace_source_tags_in_string(buffer[:start_idx], results)
+                buffer = buffer[start_idx:]
+            
+            close_idx = buffer.find("]")
+            if close_idx == -1:
+                if len(buffer) > 150:
+                    yield replace_source_tags_in_string(buffer, results)
+                    buffer = ""
+                break
+            else:
+                tag = buffer[:close_idx + 1]
+                replaced_tag = replace_source_tags_in_string(tag, results)
+                yield replaced_tag
+                buffer = buffer[close_idx + 1:]
+                
+    if buffer:
+        yield replace_source_tags_in_string(buffer, results)
+
+
 def analyze(
     query: str,
     mode: str = "free_qa",
@@ -480,11 +611,13 @@ def analyze(
     if stream:
         if warning_msg:
             yield warning_msg
-        yield from query_llm_streaming(messages, server_url, resolved_model)
+        raw_stream = query_llm_streaming(messages, server_url, resolved_model)
+        yield from replace_source_tags_streaming(raw_stream, results)
     else:
         response_text = query_llm(messages, server_url, resolved_model)
+        processed_text = replace_source_tags_in_string(response_text, results)
         if warning_msg:
-            yield warning_msg + response_text
+            yield warning_msg + processed_text
         else:
-            yield response_text
+            yield processed_text
 

@@ -457,13 +457,14 @@ class TestOLMOCRApp(unittest.TestCase):
         mock_result.active_run_id = "run_id"
         mock_result.file_status_table = "status_table"
         mock_result.upload_manifest_display = "manifest"
+        mock_result.stop_btn = "stop"
         mock_process_pdfs.return_value = [mock_result]
         
         gen = app.process_pdfs_ui_wrapper("arg1", kwarg1="val1")
         results = list(gen)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0], (
-            "log", "badge", "progress", "pages", "fail", "selector", "zip", "indiv", "start", "run_id", "status_table", "manifest"
+            "log", "badge", "progress", "pages", "fail", "selector", "zip", "indiv", "start", "run_id", "status_table", "manifest", "stop"
         ))
         mock_process_pdfs.assert_called_once_with("arg1", kwarg1="val1")
 

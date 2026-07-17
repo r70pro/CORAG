@@ -462,6 +462,65 @@ class TestRAGAnalyzerAll(unittest.TestCase):
             res = list(rag_anz.analyze("query", model_name=stateful_name, stream=True))
             self.assertIn("answer", res)
 
+    def test_source_tag_replacements(self):
+        results = [
+            {
+                "original_filename": "souki_enclosures.pdf",
+                "page_number": 37,
+                "author": "Dr. Gavin Weekes",
+                "date_extracted": "2021-02-14",
+                "document_type": "specialist_correspondence",
+                "text": "Ref No: 2021AL0008570-1 some other info"
+            },
+            {
+                "original_filename": "medical_report.pdf",
+                "page_number": 6,
+                "author": "",
+                "date_extracted": "",
+                "document_type": "unknown",
+                "text": "plain text chunk"
+            }
+        ]
+
+        # 1. Bracketed single tag replacement
+        input1 = "The patient denied pain [Source 1]."
+        output1 = rag_anz.replace_source_tags_in_string(input1, results)
+        self.assertIn("Dr. Gavin Weekes", output1)
+        self.assertIn("Specialist Correspondence", output1)
+        self.assertIn("2021-02-14", output1)
+        self.assertIn("p. 37", output1)
+        self.assertIn("Ref No: 2021AL0008570-1", output1)
+        self.assertNotIn("souki_enclosures.pdf", output1)
+
+        # 2. Minimal info fallback (filename should be included)
+        input2 = "Degenerative changes noted [Source 2]."
+        output2 = rag_anz.replace_source_tags_in_string(input2, results)
+        self.assertIn("medical_report.pdf", output2)
+        self.assertIn("p. 6", output2)
+
+        # 3. Multiple sources replacement
+        input3 = "Issues mentioned in [Source 1, 2]."
+        output3 = rag_anz.replace_source_tags_in_string(input3, results)
+        self.assertIn("Dr. Gavin Weekes", output3)
+        self.assertIn("medical_report.pdf", output3)
+
+        # 4. Out of bounds index
+        input4 = "Out of bounds [Source 3]."
+        output4 = rag_anz.replace_source_tags_in_string(input4, results)
+        self.assertEqual(output4, "Out of bounds (Source 3).")
+
+        # 5. Streaming wrapper test
+        def mock_generator():
+            yield "Hello, see "
+            yield "[Source"
+            yield " 1] and [So"
+            yield "urce 2]."
+        
+        stream_out = "".join(list(rag_anz.replace_source_tags_streaming(mock_generator(), results)))
+        self.assertIn("Dr. Gavin Weekes", stream_out)
+        self.assertIn("medical_report.pdf", stream_out)
+        self.assertNotIn("[Source", stream_out)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -654,7 +654,7 @@ class TestPipelineManager(unittest.TestCase):
 
     def test_pipeline_result_properties(self):
         res = pipeline_manager.PipelineResult(
-            "log", "badge", "progress", "comp", "fail", "selector", "zip", "indiv", "start", "run_id", "status_table", "manifest"
+            "log", "badge", "progress", "comp", "fail", "selector", "zip", "indiv", "start", "run_id", "status_table", "manifest", "stop"
         )
         self.assertEqual(res.log_text, "log")
         self.assertEqual(res.status_badge, "badge")
@@ -668,6 +668,7 @@ class TestPipelineManager(unittest.TestCase):
         self.assertEqual(res.active_run_id, "run_id")
         self.assertEqual(res.file_status_table, "status_table")
         self.assertEqual(res.upload_manifest_display, "manifest")
+        self.assertEqual(res.stop_btn, "stop")
 
     @patch("subprocess.Popen")
     @patch("shutil.copy")

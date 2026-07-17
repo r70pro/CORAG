@@ -43,8 +43,11 @@ class PipelineResult(tuple):
         start_btn: Any,
         active_run_id: str,
         file_status_table: str = "",
-        upload_manifest_display: str = ""
+        upload_manifest_display: str = "",
+        stop_btn: Any = None
     ) -> "PipelineResult":
+        if stop_btn is None:
+            stop_btn = gr.update()
         return tuple.__new__(cls, (
             log_text,
             status_badge,
@@ -57,7 +60,8 @@ class PipelineResult(tuple):
             start_btn,
             active_run_id,
             file_status_table,
-            upload_manifest_display
+            upload_manifest_display,
+            stop_btn
         ))
 
     @property
@@ -108,6 +112,10 @@ class PipelineResult(tuple):
     def upload_manifest_display(self) -> str:
         return self[11]
 
+    @property
+    def stop_btn(self) -> Any:
+        return self[12]
+
 
 def _make_empty_yield(log_text: str, badge_html: str, progress_html: str, start_interactive: bool = True, run_id: str = "") -> PipelineResult:
     return PipelineResult(
@@ -123,6 +131,7 @@ def _make_empty_yield(log_text: str, badge_html: str, progress_html: str, start_
         run_id,
         "",
         "",
+        gr.update(interactive=False),
     )
 
 def process_pdfs(
@@ -285,6 +294,7 @@ def process_pdfs(
             "",
             "",
             manifest_html,
+            gr.update(interactive=False),
         )
         return
 
@@ -324,6 +334,7 @@ def process_pdfs(
         run_id,
         file_status_html,
         manifest_html,
+        gr.update(interactive=True),
     )
 
     streaming_choices = []
@@ -358,6 +369,7 @@ def process_pdfs(
                         "",
                         make_file_status_html(file_mapping, file_page_counts, completed_file_indices, failed_file_indices),
                         manifest_html,
+                        gr.update(interactive=False),
                     )
                     return
 
@@ -462,6 +474,7 @@ def process_pdfs(
                     run_id,
                     file_status_html,
                     manifest_html,
+                    gr.update(interactive=True),
                 )
                 last_yield_time = now
 
@@ -523,6 +536,7 @@ def process_pdfs(
             run_id,
             file_status_html,
             manifest_html,
+            gr.update(interactive=False),
         )
 
     except Exception as e:
@@ -540,6 +554,7 @@ def process_pdfs(
             "",
             "",
             manifest_html,
+            gr.update(interactive=False),
         )
     finally:
         with process_state.active_runs_lock:
