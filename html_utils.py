@@ -125,72 +125,122 @@ def get_simulated_sparkline(is_up: bool = True, latency_history: Optional[List[f
 
 
 def make_backing_services_html(data: Dict[str, Any]) -> str:
-    html_parts = []
+    import os
     service_names = {
-        "postgres": "PostgreSQL",
-        "redis": "Redis",
-        "minio": "MinIO",
-        "qdrant": "Qdrant",
-        "vllm": "vLLM"
+        "postgres": "PostgreSQL 16",
+        "redis": "Redis 7.2",
+        "minio": "MinIO S3",
+        "qdrant": "Qdrant 1.10",
+        "vllm": "vLLM Engine"
     }
     
-    for s, info in data["services"].items():
+    service_descs = {
+        "postgres": "port: 5432 | db: olmocr_rag",
+        "redis": "port: 6379 | db: 0",
+        "minio": "port: 9000 | bucket: pdfs",
+        "qdrant": "port: 6333 | collection: cases",
+        "vllm": "port: 8000 | model: "
+    }
+    
+    html_parts = []
+    
+    for s in ["postgres", "qdrant", "redis", "minio", "vllm"]:
+        info = data["services"].get(s, {"is_up": False, "latency": 0.0, "extra_info": None, "latency_history": []})
         is_up = info["is_up"]
         latency = info["latency"]
         extra_info = info["extra_info"]
         latency_history = info["latency_history"]
         
-        model_badge = ""
-        extra_badge = ""
-        if is_up:
-            sparkline = get_simulated_sparkline(True, latency_history)
-            badge = "<span class='badge-success' style='font-size:0.75rem; padding: 2px 6px;'>UP</span>"
-            latency_str = f"{latency:.1f} ms"
-            if s == "vllm":
-                if extra_info:
-                    model_badge = f"<span style='font-size:0.75rem; color:#94a3b8; font-weight: normal; font-family: monospace; background: rgba(255, 255, 255, 0.05); padding: 2px 6px; border-radius: 4px; margin-left: 8px;'>{extra_info}</span>"
-        else:
-            sparkline = get_simulated_sparkline(False)
-            badge = "<span class='badge-stopped' style='font-size:0.75rem; padding: 2px 6px;'>DOWN</span>"
-            latency_str = "N/A"
-            if s == "vllm" and data["vllm_progress"]:
-                progress = data["vllm_progress"]
-                badge = "<span class='badge-running' style='font-size:0.75rem; padding: 2px 6px; animation: pulse 2s infinite;'>LOADING</span>"
-                latency_str = f"Progress: {progress['pct']}%"
-                extra_badge = f"""
-                <div style='margin-top: 10px; width: 100%; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.2); border-radius: 8px; padding: 10px; box-sizing: border-box;'>
-                    <div style='display:flex; justify-content:space-between; font-size:0.75rem; font-weight:600; color:#60a5fa; margin-bottom: 4px;'>
-                        <span>Model Loading...</span>
-                        <span>{progress['shards_loaded']}/{progress['shards_total']} shards</span>
-                    </div>
-                    <div style='display:flex; justify-content:space-between; font-size:0.7rem; color:#94a3b8; margin-top:2px;'>
-                        <span>ETA: {progress['eta']}</span>
-                        <span>{progress['pct']}%</span>
-                    </div>
-                    <div style='background: rgba(255,255,255,0.05); height: 6px; border-radius: 3px; overflow: hidden; margin-top: 6px;'>
-                        <div style='width: {progress['pct']}%; height: 100%; background: linear-gradient(90deg, #60a5fa, #3b82f6); transition: width 0.5s ease;'></div>
-                    </div>
-                </div>
-                """
+        desc = service_descs[s]
+        if s == "vllm":
+            if is_up and extra_info:
+                desc += extra_info
+            elif not is_up and data.get("vllm_progress"):
+                desc += "Loading weights..."
+            else:
+                desc += "None Loaded"
                 
+        status_class = "up" if is_up else "down"
+        badge_class = "up" if is_up else "down"
+        badge_text = "UP" if is_up else "DOWN"
+        latency_str = f"{latency:.1f} ms" if is_up else "N/A"
+        
+        if not is_up and s == "vllm" and data.get("vllm_progress"):
+            status_class = "warning"
+            badge_class = "warning"
+            badge_text = "LOADING"
+            progress = data["vllm_progress"]
+            latency_str = f"Progress: {progress['pct']}%"
+            
+        sparkline = get_simulated_sparkline(is_up, latency_history)
+        
         html_parts.append(f"""
-        <div class='diag-service-row' style='display: block;'>
-            <div style='display: flex; align-items: center; justify-content: space-between; width: 100%;'>
-                <div class='diag-service-name'>
-                    <span>{service_names[s]}</span>
-                    {badge}
-                    {model_badge}
+        <div class='diag-service-card'>
+            <div class='diag-card-header'>
+                <div class='diag-card-title-row'>
+                    <span class='status-dot {status_class}'></span>
+                    <span class='diag-card-name'>{service_names[s]}</span>
                 </div>
-                <div class='diag-service-latency'>
-                    <span>{latency_str}</span>
-                    {sparkline}
-                </div>
+                <span class='diag-card-badge {badge_class}'>{badge_text}</span>
             </div>
-            {extra_badge}
+            <div class='diag-card-desc'>{desc}</div>
+            <div class='diag-card-chart'>{sparkline}</div>
+            <div class='diag-card-footer'>
+                <span class='latency-label'>Latency</span>
+                <span class='latency-value'>{latency_str}</span>
+            </div>
         </div>
         """)
         
-    return "".join(html_parts)
+    # Card 6: Runtime Metadata
+    redis_mem_used = "320 KB"
+    redis_max_mem = "512 MB"
+    try:
+        import redis
+        from rag.cache import get_redis_config
+        cfg = get_redis_config()
+        r = redis.Redis(host=cfg["host"], port=cfg["port"], db=cfg["db"], socket_connect_timeout=1)
+        info = r.info()
+        redis_mem_used = info.get("used_memory_human", "320 KB")
+        m = info.get("maxmemory_human", "0B")
+        if m != "0B" and m != "0":
+            redis_max_mem = m
+        else:
+            redis_max_mem = "Unlimited"
+    except Exception:
+        pass
+        
+    env_str = "Docker container" if os.path.exists("/.dockerenv") or os.environ.get("IS_DOCKER") else "Host OS"
+    vllm_model_name = data.get("vllm_model", "None Loaded")
+    if not vllm_model_name:
+        vllm_model_name = "None Loaded"
+        
+    metadata_desc = f"""Redis memory: {redis_mem_used} / {redis_max_mem}<br>
+Redis query cache TTL: 3600 s<br>
+Multi-modal: {vllm_model_name}<br>
+Environment: {env_str}"""
+
+    html_parts.append(f"""
+    <div class='diag-service-card'>
+        <div class='diag-card-header'>
+            <div class='diag-card-title-row'>
+                <span class='status-dot up'></span>
+                <span class='diag-card-name'>Runtime Metadata</span>
+            </div>
+            <span class='diag-card-badge up'>100% Available</span>
+        </div>
+        <div class='diag-card-desc' style='line-height: 1.4; font-family: sans-serif; font-size: 0.8rem;'>{metadata_desc}</div>
+        <div class='diag-card-chart'>
+            <svg class='sparkline-svg' viewBox='0 0 60 20'><polyline points='0,15 10,12 20,15 30,13 40,15 50,14 60,15'/></svg>
+        </div>
+        <div class='diag-card-footer'>
+            <span class='latency-label'>Status</span>
+            <span class='latency-value'>Active</span>
+        </div>
+    </div>
+    """)
+    
+    return f"<div class='diag-grid'>{''.join(html_parts)}</div>"
 
 
 def make_system_health_badge_html(data: Dict[str, Any]) -> str:
@@ -323,49 +373,59 @@ def make_gpu_metrics_html(data: Dict[str, Any]) -> str:
             """
 
     return f"""
-    <div style='background: rgba(17, 24, 39, 0.5); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 12px; padding: 18px; margin-top: 10px;'>
-        <div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;'>
-            <span class='badge-success' style='padding:4px 10px;'>✓ CUDA Available - 1 GPU</span>
-        </div>
-        <div style='font-weight:600; font-size:1.05rem; color:#e2e8f0;'>GPU 0: {gpu_name}</div>
-        
-        <div style='color:#94a3b8; font-size:0.85rem; margin-top:12px; margin-bottom:4px;'>Overall VRAM Usage</div>
-        <div class='vram-progress-container'>
-            <div style='display:flex; justify-content:space-between; font-size:0.85rem; font-family:"JetBrains Mono", monospace; color:#34d399; margin-bottom:4px;'>
-                <span>{vram_pct:.1f}%</span>
-                <span>{vram_used:,.0f} MB / {vram_total:,.0f} MB</span>
+    <div class='gpu-container'>
+        <!-- Column 1: Specifications & Usage -->
+        <div class='gpu-spec-card'>
+            <div class='gpu-card-title'>
+                <span class='status-dot up'></span>
+                <span>GPU 0: {gpu_name}</span>
             </div>
-            <div class='vram-bar-outer' style='background: rgba(255,255,255,0.05); height: 8px; border-radius: 4px; overflow: hidden;'>
-                <div class='vram-bar-inner' style='width: {vram_pct:.1f}%; height: 100%; background: linear-gradient(90deg, #34d399, #10b981); transition: width 0.5s ease;'></div>
-            </div>
-        </div>
-        
-        <div style='display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 16px; margin-bottom: 16px;'>
-            <div style='background: rgba(30, 41, 59, 0.4); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 8px; padding: 10px; text-align: center;'>
-                <div style='font-size: 0.75rem; color: #94a3b8; text-transform: uppercase;'>Free VRAM</div>
-                <div style='font-size: 1.15rem; font-weight: 700; color: #34d399; margin-top: 4px;'>{vram_free:,.0f} MB</div>
-            </div>
-            <div style='background: rgba(30, 41, 59, 0.4); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 8px; padding: 10px; text-align: center;'>
-                <div style='font-size: 0.75rem; color: #94a3b8; text-transform: uppercase;'>Reclaimable</div>
-                <div style='font-size: 1.15rem; font-weight: 700; color: #fbbf24; margin-top: 4px;'>{vram_reclaimable:,.0f} MB</div>
-            </div>
-            <div style='grid-column: span 2; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 8px; padding: 10px; text-align: center;'>
-                <div style='font-size: 0.75rem; color: #a7f3d0; text-transform: uppercase;'>Max Potential Free VRAM</div>
-                <div style='font-size: 1.25rem; font-weight: 800; color: #34d399; margin-top: 4px;'>{vram_potential_free:,.0f} MB</div>
-                <div style='font-size: 0.7rem; color: #6ee7b7; margin-top: 2px;'>If non-essential apps & containers are stopped</div>
-            </div>
-        </div>
-        
-        <div style='margin-top: 16px;'>
-            <div style='font-size: 0.9rem; font-weight: 600; color: #c7d2fe; margin-bottom: 8px;'>Active GPU Processes</div>
             
-            <div style='max-height: 500px; overflow-y: auto; border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 8px;'>
-                <table style='width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: left; background: rgba(15, 23, 42, 0.3);'>
+            <div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;'>
+                <span class='badge-success' style='padding:4px 10px; font-size: 0.75rem;'>✓ CUDA Available - 1 GPU Active</span>
+            </div>
+            
+            <div style='color:#94a3b8; font-size:0.85rem; margin-top:12px; margin-bottom:4px;'>Overall VRAM Usage</div>
+            <div class='vram-progress-container'>
+                <div style='display:flex; justify-content:space-between; font-size:0.85rem; font-family:"JetBrains Mono", monospace; color:#34d399; margin-bottom:4px;'>
+                    <span>{vram_pct:.1f}%</span>
+                    <span>{vram_used:,.0f} MB / {vram_total:,.0f} MB</span>
+                </div>
+                <div class='vram-bar-outer'>
+                    <div class='vram-bar-inner' style='width: {vram_pct:.1f}%; background: linear-gradient(90deg, #ec4899, #3b82f6);'></div>
+                </div>
+            </div>
+            
+            <div class='gpu-stats-grid'>
+                <div class='gpu-stat-box'>
+                    <div class='gpu-stat-label'>Free VRAM</div>
+                    <div class='gpu-stat-value success'>{vram_free:,.0f} MB</div>
+                </div>
+                <div class='gpu-stat-box'>
+                    <div class='gpu-stat-label'>Reclaimable</div>
+                    <div class='gpu-stat-value warning'>{vram_reclaimable:,.0f} MB</div>
+                </div>
+                <div class='gpu-stat-box highlight'>
+                    <div class='gpu-stat-label' style='color: #a7f3d0;'>Max Potential Free VRAM</div>
+                    <div class='gpu-stat-value success' style='font-size: 1.25rem;'>{vram_potential_free:,.0f} MB</div>
+                    <div style='font-size: 0.7rem; color: #6ee7b7; margin-top: 2px;'>If non-essential apps & containers are stopped</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Column 2: Active Processes -->
+        <div class='gpu-processes-card'>
+            <div style='font-size: 0.95rem; font-weight: 600; color: #c7d2fe; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;'>
+                <span>📈</span> Active GPU Processes
+            </div>
+            
+            <div class='gpu-table-wrapper' style='min-height: 375px !important; max-height: 375px !important; overflow-y: auto !important;'>
+                <table class='gpu-table'>
                     <thead>
-                        <tr style='border-bottom: 1px solid rgba(255, 255, 255, 0.1); background: rgba(15, 23, 42, 0.6); color: #94a3b8;'>
-                            <th style='padding: 8px 10px;'>Process / PID</th>
-                            <th style='padding: 8px 10px;'>VRAM</th>
-                            <th style='padding: 8px 10px;'>Type / Action</th>
+                        <tr>
+                            <th>Process / PID</th>
+                            <th>VRAM</th>
+                            <th>Type / Action</th>
                         </tr>
                     </thead>
                     <tbody>

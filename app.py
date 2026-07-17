@@ -392,30 +392,56 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
             # PANEL 5: System Diagnostics
             # ────────────────────────────────────────────────────────
             with gr.Column(visible=False) as diagnostics_panel:
-                with gr.Row():
-                    # Left Column: diagnostics controls
-                    with gr.Column(scale=1, elem_classes=["sidebar-panel"]):
-                        with gr.Accordion("🧹 Reset & Cleanup", open=False, elem_classes=["glass-panel"]):
-                            gr.Markdown("Select components to clean up and reclaim disk space:")
-                            clean_runs_chk = gr.Checkbox(label="Obsolete run directories (workspace/run_*)", value=True)
-                            clean_gradio_chk = gr.Checkbox(label="Gradio upload temp files (/tmp/gradio)", value=True)
-                            clean_pycache_chk = gr.Checkbox(label="Python bytecode cache (__pycache__)", value=True)
-                            clean_hf_chk = gr.Checkbox(label="Hugging Face model cache (~/.cache/huggingface)", value=False)
-                            gr.HTML("<span class='inline-warning-text'>⚠️ WARNING: Hugging Face deletion will require re-downloading model weights (approx 10-30GB).</span>")
-                            
-                            reset_cleanup_btn = gr.Button("🧹 Clean & Reset", variant="stop")
-                            reset_cleanup_status = gr.Markdown()
-
-                    # Right Column: Live health check indicators & hardware utilization
+                # Top header bar: status info and quick buttons
+                with gr.Row(elem_classes=["diagnostics-header-row"]):
                     with gr.Column(scale=3):
+                        gr.HTML(
+                            "<div style='display: flex; align-items: center; gap: 12px; margin-top: 10px;'>"
+                            "<span class='badge-running' style='padding: 6px 12px; font-weight: 700; font-size: 0.85rem;'>⚡ SERVICE HEALTH & DIAGNOSTICS</span>"
+                            "<span style='color: #fbbf24; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.2); padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; font-weight: 600;'>OPTIMIZED PERFORMANCE</span>"
+                            "</div>"
+                        )
+                    with gr.Column(scale=2, elem_classes=["diagnostics-actions-col"]):
                         with gr.Row():
-                            with gr.Column(scale=1, elem_classes=["glass-panel"]):
-                                gr.HTML("<h3 class='inline-section-header'>⚡ Backing Services Health</h3>")
-                                backing_services_html = gr.HTML(value="Loading backing services status...")
+                            refresh_diag_btn = gr.Button("🔄 Refresh Status", variant="secondary", size="sm")
+                            download_report_btn = gr.Button("📥 Download Report", variant="primary", size="sm")
+                        
+                        # Hidden file download component
+                        download_file_comp = gr.File(label="Diagnostic Report File", visible=False, interactive=False)
+                        
+                        with gr.Row(elem_classes=["header-docker-widget"]):
+                            gr.HTML("<span style='font-size: 0.75rem; color: #94a3b8; font-weight: 700; display: flex; align-items: center; margin-right: 8px;'>🐳 DOCKER SERVER:</span>")
+                            docker_widget_stop_btn = gr.Button("Stop", size="sm", variant="secondary")
+                            docker_widget_recreate_btn = gr.Button("Recreate", size="sm", variant="secondary")
+                
+                with gr.Row():
+                    # Left Column: Services & Cleanup
+                    with gr.Column(scale=1):
+                        with gr.Column(elem_classes=["glass-panel"]):
+                            gr.HTML("<h3 class='inline-section-header'>⚡ Backing Services Health</h3>")
+                            backing_services_html = gr.HTML(value="Loading backing services status...")
+                        
+                        with gr.Column(elem_classes=["glass-panel"]):
+                            gr.HTML("<h3 class='inline-section-header'>🧹 Reset & Cleanup Manager</h3>")
+                            gr.Markdown("Select components to clean up and reclaim disk space:")
+                            with gr.Row():
+                                clean_runs_chk = gr.Checkbox(label="Obsolete run directories (workspace/run_*)", value=True)
+                                clean_gradio_chk = gr.Checkbox(label="Gradio upload temp files (/tmp/gradio)", value=True)
+                            with gr.Row():
+                                clean_pycache_chk = gr.Checkbox(label="Python bytecode cache (__pycache__)", value=True)
+                                clean_hf_chk = gr.Checkbox(label="Hugging Face model cache (~/.cache/huggingface)", value=False)
                             
-                            with gr.Column(scale=1, elem_classes=["glass-panel"]):
-                                gr.HTML("<h3 class='inline-section-header'>🖥️ Hardware & Resource Utilization</h3>")
-                                hardware_utilization_html = gr.HTML(value="Loading hardware utilization...")
+                            gr.HTML("<span class='inline-warning-text' style='margin-bottom: 12px; margin-top: 4px; display: block;'>⚠️ WARNING: Hugging Face deletion will require re-downloading model weights (approx 10-30GB).</span>")
+                            
+                            with gr.Row():
+                                reset_cleanup_btn = gr.Button("🛑 Clear & Reset Selected", variant="stop")
+                            reset_cleanup_status = gr.Markdown()
+                    
+                    # Right Column: GPU Spec & VRAM + Processes
+                    with gr.Column(scale=1):
+                        with gr.Column(elem_classes=["glass-panel"]):
+                            gr.HTML("<h3 class='inline-section-header'>🖥️ Hardware & GPU Resource Utilization</h3>")
+                            hardware_utilization_html = gr.HTML(value="Loading hardware utilization...")
 
     # Extra hidden buttons for backwards compatibility / test suite (since tests patch header buttons)
     with gr.Row(visible=False):
@@ -633,7 +659,34 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
         outputs=[reset_cleanup_status]
     )
 
+    # Wire up the new header actions & widget controls
+    refresh_diag_btn.click(
+        periodic_diagnostics_check,
+        inputs=[docker_port_input],
+        outputs=[backing_services_html, hardware_utilization_html, system_health_badge]
+    )
 
+    from app_handlers import trigger_download_report
+    download_report_btn.click(
+        trigger_download_report,
+        inputs=[docker_port_input],
+        outputs=[download_file_comp]
+    )
+
+    docker_widget_stop_btn.click(
+        ui_stop_container,
+        inputs=[docker_port_input],
+        outputs=[docker_action_status, backend_status_badge]
+    )
+
+    docker_widget_recreate_btn.click(
+        ui_recreate_container,
+        inputs=[
+            hf_token_input, docker_port_input, docker_model_name_input,
+            docker_gpu_mem_input, docker_max_model_len_input
+        ],
+        outputs=[docker_action_status, backend_status_badge, server_url_input]
+    )
 
     header_docker_start_btn.click(
         ui_header_start,

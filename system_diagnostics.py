@@ -373,3 +373,58 @@ def get_gpu_metrics_data() -> Dict[str, Any]:
             "vram_potential_free": 0.0,
             "processes": []
         }
+
+
+def generate_diagnostic_report_file(port_val: int = 8000) -> str:
+    from settings_manager import load_settings
+    
+    settings = load_settings()
+    backing_data = check_backing_services_data({}, port_val)
+    gpu_data = get_gpu_metrics_data()
+    
+    report = []
+    report.append("# IQ-RAG System Diagnostics Report")
+    report.append(f"Generated at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    report.append("\n## 1. System Health Status")
+    all_healthy = backing_data["all_healthy"]
+    report.append(f"Overall Status: {'✓ HEALTHY' if all_healthy else '✗ DEGRADED'}")
+    
+    report.append("\n## 2. Backing Services Latency & Connection")
+    for s, info in backing_data["services"].items():
+        is_up = info["is_up"]
+        lat = info["latency"]
+        extra = info["extra_info"]
+        report.append(f"- **{s.capitalize()}**: {'UP' if is_up else 'DOWN'} | Latency: {lat:.2f}ms | Extra: {extra}")
+        
+    report.append("\n## 3. GPU Hardware & VRAM Telemetry")
+    if gpu_data["cuda_available"]:
+        report.append(f"- **GPU Model**: {gpu_data['gpu_name']}")
+        report.append(f"- **VRAM Allocated**: {gpu_data['vram_used']:.1f} MB")
+        report.append(f"- **VRAM Free**: {gpu_data['vram_free']:.1f} MB")
+        report.append(f"- **VRAM Total**: {gpu_data['vram_total']:.1f} MB")
+        report.append(f"- **VRAM Usage %**: {gpu_data['vram_pct']:.2f}%")
+        report.append(f"- **Reclaimable VRAM**: {gpu_data['vram_reclaimable']:.1f} MB")
+        report.append(f"- **Potential Max Free**: {gpu_data['vram_potential_free']:.1f} MB")
+        
+        report.append("\n### Active GPU Processes")
+        for p in gpu_data["processes"]:
+            report.append(f"- PID: {p['pid']} | {p['display_name']} | VRAM: {p['vram']} MB | Type: {p['type_text']}")
+    else:
+        report.append("- CUDA is unavailable. Running on Host CPU.")
+        
+    report.append("\n## 4. Application Configuration Settings")
+    for k, v in settings.items():
+        if k == "hf_token" and v:
+            v = "********"
+        report.append(f"- **{k}**: {v}")
+        
+    workspace_dir = os.path.dirname(os.path.abspath(__file__))
+    target_dir = os.path.join(workspace_dir, "workspace")
+    os.makedirs(target_dir, exist_ok=True)
+    report_path = os.path.join(target_dir, "diagnostic_report.md")
+    
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(report))
+        
+    return report_path
+

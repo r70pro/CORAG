@@ -97,7 +97,7 @@ def build_case_dashboard_ui():
         # Keep hidden button for backward compatibility with tests
         dashboard_delete_btn = gr.Button("🗑️ Delete Case", variant="stop", visible=False)
 
-    selected_cases_input = gr.Textbox(elem_id="selected-cases-input", visible=False, value="")
+    selected_cases_input = gr.Textbox(elem_id="selected-cases-input", visible=True, value="")
     dashboard_html = gr.HTML(value=build_html())
     dashboard_status = gr.Markdown("")
 

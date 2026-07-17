@@ -49,7 +49,7 @@ def select_view(active_view_idx):
         "<h1 class='inline-header-title'>Layout Inspector</h1><p class='inline-header-subtitle'>Verify visual text extraction accuracy side-by-side</p>",
         "<h1 class='inline-header-title'>Case Dashboard</h1><p class='inline-header-subtitle'>Overview of ingested case folders and databases</p>",
         "<h1 class='inline-header-title'>RAG Processing (Query & Cite)</h1><p class='inline-header-subtitle'>Query, summarize, and retrieve matching citations</p>",
-        "<h1 class='inline-header-title'>System Diagnostics</h1><p class='inline-header-subtitle'>Backing services health status and hardware metrics</p>"
+        "<h1 class='inline-header-title'>System Diagnostics</h1><p class='inline-header-subtitle'>Service health, GPU telemetry & cleanup management.</p>"
     ]
     
     btn_updates = []
@@ -177,3 +177,11 @@ def ui_shutdown_all_containers(port):
         msg = f"{msg1} RAG: Error destroying infrastructure: {e}"
     _, badge = status_fn(port)
     return msg, badge
+
+
+def trigger_download_report(port_val):
+    from system_diagnostics import generate_diagnostic_report_file
+    if port_val is None:
+        port_val = 8000
+    report_path = generate_diagnostic_report_file(int(port_val))
+    return gr.update(value=report_path, visible=True)

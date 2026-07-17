@@ -9,10 +9,13 @@ body {
 
 .gradio-container {
     background-color: #090d16 !important;
-    max-width: 98% !important;
-    width: 98% !important;
+    max-width: 100% !important;
+    width: 100% !important;
     margin: 0 auto !important;
-    padding: 0 16px !important;
+    padding: 0 24px !important;
+    --grid-page-gutter: 20px !important;
+    --grid-page-width: 100% !important;
+    --width-xl: 100% !important;
 }
 
 .sidebar-panel {
@@ -862,46 +865,269 @@ input[role="combobox"] {
     font-size: 0.85rem !important;
     line-height: 1.5 !important;
 }
+/* ── Diagnostics Grid & Card Layouts ── */
+.diag-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+    gap: 16px;
+    padding: 10px 0;
+    width: 100%;
+}
 
+.diag-service-card {
+    background: rgba(17, 24, 39, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    transition: transform 0.2s ease, border-color 0.2s ease;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
 
+.diag-service-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(99, 102, 241, 0.4);
+}
 
+.diag-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
 
+.diag-card-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
 
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+}
 
+.status-dot.up {
+    background-color: #10b981;
+    box-shadow: 0 0 8px #10b981;
+}
 
+.status-dot.down {
+    background-color: #ef4444;
+    box-shadow: 0 0 8px #ef4444;
+}
 
+.status-dot.warning {
+    background-color: #f59e0b;
+    box-shadow: 0 0 8px #f59e0b;
+}
 
+.diag-card-name {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #e2e8f0;
+}
 
+.diag-card-badge {
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 4px;
+    text-transform: uppercase;
+}
 
+.diag-card-badge.up {
+    background: rgba(16, 185, 129, 0.1);
+    color: #34d399;
+    border: 1px solid rgba(16, 185, 129, 0.2);
+}
 
+.diag-card-badge.down {
+    background: rgba(239, 68, 68, 0.1);
+    color: #fca5a5;
+    border: 1px solid rgba(239, 68, 68, 0.2);
+}
 
+.diag-card-badge.warning {
+    background: rgba(245, 158, 11, 0.1);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.2);
+}
 
+.diag-card-desc {
+    font-size: 0.8rem;
+    color: #94a3b8;
+    margin-bottom: 12px;
+    word-break: break-all;
+    font-family: monospace;
+}
 
+.diag-card-chart {
+    height: 30px;
+    display: flex;
+    align-items: center;
+    margin-bottom: 10px;
+}
 
+.diag-card-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    padding-top: 8px;
+    margin-top: auto;
+}
 
+.latency-label {
+    font-size: 0.75rem;
+    color: #64748b;
+}
 
+.latency-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    color: #e2e8f0;
+    font-weight: 600;
+}
 
+/* ── GPU 2-Column Responsive Layout ── */
+.gpu-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(450px, 100%), 1fr));
+    gap: 20px;
+    width: 100%;
+}
 
+.gpu-spec-card {
+    background: rgba(17, 24, 39, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+}
 
+.gpu-card-title {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: #e2e8f0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
 
+.gpu-stats-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 16px;
+}
 
+.gpu-stat-box {
+    background: rgba(30, 41, 59, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+    padding: 10px;
+    text-align: center;
+}
 
+.gpu-stat-box.highlight {
+    grid-column: span 2;
+    background: rgba(16, 185, 129, 0.06);
+    border-color: rgba(16, 185, 129, 0.15);
+}
 
+.gpu-stat-label {
+    font-size: 0.75rem;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
 
+.gpu-stat-value {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: #e2e8f0;
+    margin-top: 4px;
+}
 
+.gpu-stat-value.success {
+    color: #34d399;
+}
 
+.gpu-stat-value.warning {
+    color: #fbbf24;
+}
 
+.gpu-processes-card {
+    background: rgba(17, 24, 39, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+}
 
+.gpu-table-wrapper {
+    min-height: 375px !important;
+    max-height: 375px !important;
+    overflow-y: auto !important;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+}
 
+.gpu-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
 
+.gpu-table th {
+    background: rgba(15, 23, 42, 0.6);
+    color: #94a3b8;
+    padding: 8px 12px;
+    font-weight: 600;
+    text-align: left;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
 
+.gpu-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    color: #e2e8f0;
+}
 
+/* ── Top Diagnostics Header Row & Widgets ── */
+.diagnostics-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+    width: 100%;
+}
 
+.diagnostics-actions-col {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+}
 
+.header-docker-widget {
+    background: rgba(17, 24, 39, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 6px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
 
-
-
-
-
-
-
+#selected-cases-input {
+    display: none !important;
+}
