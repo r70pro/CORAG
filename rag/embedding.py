@@ -11,7 +11,8 @@ Handles:
 import os
 import re
 import uuid
-from typing import List, Dict
+import threading
+from typing import List, Dict, Generator
 
 from settings_manager import load_settings
 
@@ -55,8 +56,10 @@ def get_collection_name(model_name=None) -> str:
 # Singleton model holder
 _embedding_model = None
 _embedding_model_name = None
+_embedding_model_lock = threading.Lock()
 _reranker_model = None
 _reranker_model_name = None
+_reranker_model_lock = threading.Lock()
 
 
 def get_qdrant_config():
@@ -108,14 +111,18 @@ def load_embedding_model(model_name=None):
     if _embedding_model is not None and _embedding_model_name == model_name:
         return _embedding_model
 
-    from sentence_transformers import SentenceTransformer
+    with _embedding_model_lock:
+        if _embedding_model is not None and _embedding_model_name == model_name:
+            return _embedding_model
 
-    device = os.environ.get("OLMOCR_EMBEDDING_DEVICE", "cpu")
-    print(f"Loading embedding model '{model_name}' on {device}...")
-    _embedding_model = SentenceTransformer(model_name, device=device)
-    _embedding_model_name = model_name
-    print(f"Embedding model loaded. Dimension: {_embedding_model.get_embedding_dimension()}")
-    return _embedding_model
+        from sentence_transformers import SentenceTransformer
+
+        device = os.environ.get("OLMOCR_EMBEDDING_DEVICE", "cpu")
+        print(f"Loading embedding model '{model_name}' on {device}...")
+        _embedding_model = SentenceTransformer(model_name, device=device)
+        _embedding_model_name = model_name
+        print(f"Embedding model loaded. Dimension: {_embedding_model.get_embedding_dimension()}")
+        return _embedding_model
 
 
 def get_embedding_dimension(model_name=None):
@@ -138,14 +145,61 @@ def encode_texts(texts: List[str], model_name=None, batch_size=32) -> List[List[
     if not texts:
         return []
 
-    model = load_embedding_model(model_name)
-    embeddings = model.encode(
-        texts,
-        batch_size=batch_size,
-        show_progress_bar=len(texts) > 50,
-        normalize_embeddings=True,  # For cosine similarity
-    )
-    return embeddings.tolist()
+    if model_name is None:
+        try:
+            model_name = load_settings().get("embedding_model", DEFAULT_EMBEDDING_MODEL)
+        except Exception:
+            model_name = os.environ.get(
+                "OLMOCR_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL
+            )
+
+    import rag.cache as cache
+    redis_healthy = False
+    try:
+        redis_healthy = cache.is_healthy()
+    except Exception:
+        pass
+
+    embeddings = [None] * len(texts)
+    uncached_indices = []
+    uncached_texts = []
+
+    if redis_healthy:
+        for idx, text in enumerate(texts):
+            try:
+                cached_val = cache.get_cached_embedding(text, model_name)
+                if cached_val is not None:
+                    embeddings[idx] = cached_val
+                else:
+                    uncached_indices.append(idx)
+                    uncached_texts.append(text)
+            except Exception:
+                uncached_indices.append(idx)
+                uncached_texts.append(text)
+    else:
+        uncached_indices = list(range(len(texts)))
+        uncached_texts = texts
+
+    if uncached_texts:
+        model = load_embedding_model(model_name)
+        new_embeddings = model.encode(
+            uncached_texts,
+            batch_size=batch_size,
+            show_progress_bar=len(uncached_texts) > 50,
+            normalize_embeddings=True,
+        )
+        new_embeddings_list = new_embeddings.tolist()
+
+        for idx, new_idx in enumerate(uncached_indices):
+            emb = new_embeddings_list[idx]
+            embeddings[new_idx] = emb
+            if redis_healthy:
+                try:
+                    cache.cache_embedding(uncached_texts[idx], emb, model_name)
+                except Exception:
+                    pass
+
+    return embeddings
 
 
 def encode_query(query: str, model_name=None) -> List[float]:
@@ -158,12 +212,43 @@ def encode_query(query: str, model_name=None) -> List[float]:
     Returns:
         Embedding vector (list of floats).
     """
+    if model_name is None:
+        try:
+            model_name = load_settings().get("embedding_model", DEFAULT_EMBEDDING_MODEL)
+        except Exception:
+            model_name = os.environ.get(
+                "OLMOCR_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL
+            )
+
+    import rag.cache as cache
+    redis_healthy = False
+    try:
+        redis_healthy = cache.is_healthy()
+    except Exception:
+        pass
+
+    if redis_healthy:
+        try:
+            cached_val = cache.get_cached_embedding(query, model_name)
+            if cached_val is not None:
+                return cached_val
+        except Exception:
+            pass
+
     model = load_embedding_model(model_name)
     embedding = model.encode(
         query,
         normalize_embeddings=True,
     )
-    return embedding.tolist()
+    emb_list = embedding.tolist()
+
+    if redis_healthy:
+        try:
+            cache.cache_embedding(query, emb_list, model_name)
+        except Exception:
+            pass
+
+    return emb_list
 
 
 def init_collection(dimension=None, model_name=None):
@@ -233,34 +318,24 @@ def get_collection_info(model_name=None):
         }
 
 
-def upsert_chunks(chunks: List[Dict], model_name=None, batch_size=32) -> List[Dict]:
-    """Embed and upsert chunks into Qdrant.
-
-    This is the main indexing function. It:
-    1. Extracts text from each chunk
-    2. Encodes all texts in batches
-    3. Upserts vectors with metadata payload into Qdrant
-    4. Returns the chunks with qdrant_point_id populated
+def upsert_chunks_generator(chunks: List[Dict], model_name=None, batch_size=32) -> Generator[Dict, None, None]:
+    """Embed and upsert chunks into Qdrant, yielding progress status dicts.
 
     Args:
         chunks: List of chunk dicts from the chunker.
         model_name: Embedding model name.
         batch_size: Batch size for embedding.
 
-    Returns:
-        Updated chunks list with qdrant_point_id set.
+    Yields:
+        Dict progress update: {"stage": "embedding"|"indexing", "current": int, "total": int}
     """
     if not chunks:
-        return []
+        return
 
     client = get_qdrant_client()
 
     # Ensure collection exists
     init_collection(model_name=model_name)
-
-    # Extract texts and encode
-    texts = [c["text"] for c in chunks]
-    embeddings = encode_texts(texts, model_name=model_name, batch_size=batch_size)
 
     if model_name is None:
         try:
@@ -270,7 +345,20 @@ def upsert_chunks(chunks: List[Dict], model_name=None, batch_size=32) -> List[Di
 
     collection_name = get_collection_name(model_name)
 
-    # Build Qdrant points
+    # Process in batches to support streaming progress
+    total = len(chunks)
+    
+    # 1. First encode all texts.
+    texts = [c["text"] for c in chunks]
+    embeddings = []
+    
+    for i in range(0, total, batch_size):
+        batch_texts = texts[i:i + batch_size]
+        batch_embs = encode_texts(batch_texts, model_name=model_name, batch_size=batch_size)
+        embeddings.extend(batch_embs)
+        yield {"stage": "embedding", "current": min(i + batch_size, total), "total": total}
+
+    # 2. Build Qdrant points
     points = []
     for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
         point_id = str(uuid.uuid4())
@@ -297,15 +385,37 @@ def upsert_chunks(chunks: List[Dict], model_name=None, batch_size=32) -> List[Di
             payload=payload,
         ))
 
-    # Upsert in batches
+    # 3. Upsert in batches
     for i in range(0, len(points), batch_size):
         batch = points[i:i + batch_size]
         client.upsert(
             collection_name=collection_name,
             points=batch,
         )
+        yield {"stage": "indexing", "current": min(i + batch_size, total), "total": total}
 
     print(f"Upserted {len(points)} vectors into Qdrant collection '{collection_name}'.")
+
+
+def upsert_chunks(chunks: List[Dict], model_name=None, batch_size=32) -> List[Dict]:
+    """Embed and upsert chunks into Qdrant.
+
+    This is the main indexing function. It:
+    1. Extracts text from each chunk
+    2. Encodes all texts in batches
+    3. Upserts vectors with metadata payload into Qdrant
+    4. Returns the chunks with qdrant_point_id populated
+
+    Args:
+        chunks: List of chunk dicts from the chunker.
+        model_name: Embedding model name.
+        batch_size: Batch size for embedding.
+
+    Returns:
+        Updated chunks list with qdrant_point_id set.
+    """
+    for _ in upsert_chunks_generator(chunks, model_name=model_name, batch_size=batch_size):
+        pass
     return chunks
 
 
@@ -356,11 +466,15 @@ def load_reranker_model(model_name=None, device=None):
     if _reranker_model is not None and _reranker_model_name == model_name:
         return _reranker_model
 
-    from sentence_transformers import CrossEncoder
+    with _reranker_model_lock:
+        if _reranker_model is not None and _reranker_model_name == model_name:
+            return _reranker_model
 
-    print(f"Loading reranker model '{model_name}' on {device}...")
-    _reranker_model = CrossEncoder(model_name, device=device)
-    _reranker_model_name = model_name
-    print("Reranker model loaded successfully.")
-    return _reranker_model
+        from sentence_transformers import CrossEncoder
+
+        print(f"Loading reranker model '{model_name}' on {device}...")
+        _reranker_model = CrossEncoder(model_name, device=device)
+        _reranker_model_name = model_name
+        print("Reranker model loaded successfully.")
+        return _reranker_model
 

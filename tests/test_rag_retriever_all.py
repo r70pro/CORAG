@@ -47,6 +47,19 @@ class TestRAGRetrieverAll(unittest.TestCase):
         self.assertEqual(reranked[0]["text"], "shoulder pain acute")
         self.assertEqual(reranked[1]["text"], "knee replacement surgery")
 
+    def test_mmr_rerank_performance(self):
+        # Verify that optimized MMR executes rapidly on large inputs (e.g. 600 candidates to top_k=100)
+        import time
+        large_results = [
+            {"score": 0.9 - (i * 0.001), "text": f"some clinical note fragment about patient symptoms number {i}"}
+            for i in range(600)
+        ]
+        start_time = time.time()
+        reranked = rag_ret._mmr_rerank(large_results, [0.1]*10, top_k=100)
+        duration = time.time() - start_time
+        self.assertLess(duration, 0.5)
+        self.assertEqual(len(reranked), 100)
+
     @patch("rag.retriever.encode_query")
     @patch("rag.retriever.get_qdrant_client")
     @patch("rag.db.get_chunks_by_qdrant_ids")
@@ -277,6 +290,91 @@ class TestRAGRetrieverAll(unittest.TestCase):
         self.assertEqual(len(res), 2)
         self.assertEqual(res[0]["chunk_id"], "c2")
         self.assertEqual(res[1]["chunk_id"], "c1")
+
+    @patch("rag.retriever.encode_query")
+    @patch("rag.retriever.get_qdrant_client")
+    @patch("settings_manager.load_settings")
+    def test_search_similar_settings_fallback(self, mock_load_settings, mock_get_client, mock_encode):
+        mock_encode.return_value = [0.1, 0.2]
+        mock_load_settings.return_value = {
+            "use_reranker": False,
+            "reranker_model": "some-reranker",
+            "reranker_device": "cpu"
+        }
+        mock_client = mock_get_client.return_value
+        mock_client.search.return_value = []
+        
+        # Omit reranker args to trigger settings lookup
+        res = rag_ret.search_similar("query", use_reranker=None, reranker_model=None, reranker_device=None)
+        self.assertEqual(res, [])
+        mock_load_settings.assert_called()
+
+    @patch("rag.retriever.encode_query")
+    @patch("rag.retriever.get_qdrant_client")
+    @patch("rag.retriever.init_collection")
+    def test_search_similar_qdrant_exceptions(self, mock_init, mock_get_client, mock_encode):
+        mock_encode.return_value = [0.1, 0.2]
+        mock_client = mock_get_client.return_value
+
+        # Scenario 1: Qdrant search raises "doesn't exist" -> triggers init_collection -> retry search succeeds
+        mock_client.search.side_effect = [
+            Exception("Collection doesn't exist"),
+            []
+        ]
+        res1 = rag_ret.search_similar("query", use_reranker=False)
+        self.assertEqual(res1, [])
+        mock_init.assert_called_once()
+
+        # Scenario 2: Qdrant search raises "doesn't exist" -> triggers init_collection -> retry search fails
+        mock_init.reset_mock()
+        mock_client.search.side_effect = [
+            Exception("Collection doesn't exist"),
+            Exception("Search still fails")
+        ]
+        res2 = rag_ret.search_similar("query", use_reranker=False)
+        self.assertEqual(res2, [])
+        mock_init.assert_called_once()
+
+        # Scenario 3: Qdrant search raises other Exception (like Connection Refused) -> returns empty list immediately
+        mock_init.reset_mock()
+        mock_client.search.side_effect = Exception("Connection Refused")
+        res3 = rag_ret.search_similar("query", use_reranker=False)
+        self.assertEqual(res3, [])
+        mock_init.assert_not_called()
+
+    @patch("rag.retriever.encode_query")
+    @patch("rag.retriever.get_qdrant_client")
+    def test_search_similar_empty_results_with_reranker(self, mock_get_client, mock_encode):
+        mock_encode.return_value = [0.1, 0.2]
+        mock_client = mock_get_client.return_value
+        mock_client.search.return_value = []
+
+        # Reranker is True, but search returns empty list
+        res = rag_ret.search_similar("query", use_reranker=True)
+        self.assertEqual(res, [])
+
+    @patch("rag.retriever.encode_query")
+    @patch("rag.retriever.get_qdrant_client")
+    @patch("rag.embedding.load_reranker_model")
+    @patch("rag.db.get_chunks_by_qdrant_ids")
+    def test_search_similar_reranker_exception(self, mock_get_chunks, mock_load_reranker, mock_get_client, mock_encode):
+        mock_encode.return_value = [0.1, 0.2]
+        mock_client = mock_get_client.return_value
+        mock_result = MagicMock()
+        mock_result.id = "point1"
+        mock_result.score = 0.8
+        mock_result.payload = None
+        mock_client.search.return_value = [mock_result]
+        mock_get_chunks.return_value = [{"qdrant_point_id": "point1", "chunk_id": "c1", "text": "shoulder pain"}]
+
+        # Reranker loading raises Exception
+        mock_load_reranker.side_effect = Exception("Reranker loading failed")
+
+        res = rag_ret.search_similar("query", use_reranker=True)
+        # Should catch exception, log warning, and return results using original Qdrant scores
+        self.assertEqual(len(res), 1)
+        self.assertEqual(res[0]["chunk_id"], "c1")
+        self.assertEqual(res[0]["score"], 0.8)
 
 
 if __name__ == "__main__":

@@ -167,8 +167,8 @@ def on_file_selected(selected_file, run_id_state):
 def update_view(selected_file, view_mode, page_num, pdf_path, total_pages, page_ranges, full_markdown):
     if not selected_file:
         return (
-            "<div id='pdf-scroll-container' class='sync-scroll-target' style='height: 70vh; display: flex; justify-content: center; align-items: center; background: #0f172a; color: #94a3b8; border-radius: 8px;'>Select a processed document to view.</div>",
-            "<div id='raw-scroll-container' class='sync-scroll-target' style='height: 70vh; display: flex; justify-content: center; align-items: center; background: #020617; color: #94a3b8; border-radius: 8px;'>Select a processed document to view.</div>",
+            "<div id='pdf-scroll-container' class='sync-scroll-target pdf-viewer-placeholder'>Select a processed document to view.</div>",
+            "<div id='raw-scroll-container' class='sync-scroll-target raw-markdown-placeholder'>Select a processed document to view.</div>",
             "Select a processed document to preview."
         )
 
@@ -176,11 +176,11 @@ def update_view(selected_file, view_mode, page_num, pdf_path, total_pages, page_
     if view_mode == "Full Document":
         if pdf_path and os.path.exists(pdf_path):
             pdf_url = f"/gradio_api/file={pdf_path}"
-            pdf_html = f"""<div id="pdf-scroll-container" class="sync-scroll-target" style="height: 70vh; overflow: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px;">
-                <iframe src="{pdf_url}" style="width: 100%; height: 100%; border: none;"></iframe>
+            pdf_html = f"""<div id="pdf-scroll-container" class="sync-scroll-target pdf-scroll-outer">
+                <iframe src="{pdf_url}" class="pdf-iframe"></iframe>
             </div>"""
         else:
-            pdf_html = """<div id="pdf-scroll-container" class="sync-scroll-target" style="height: 70vh; display: flex; justify-content: center; align-items: center; background: #1e293b; color: #94a3b8; border-radius: 8px;">
+            pdf_html = """<div id="pdf-scroll-container" class="sync-scroll-target pdf-viewer-alternative">
                 <span>Original PDF file not found.</span>
             </div>"""
     else:
@@ -188,15 +188,15 @@ def update_view(selected_file, view_mode, page_num, pdf_path, total_pages, page_
             pil_img = render_pdf_page(pdf_path, page_num)
             if pil_img:
                 img_b64 = pil_to_base64(pil_img)
-                pdf_html = f"""<div id="pdf-scroll-container" class="sync-scroll-target" style="height: 70vh; overflow-y: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; background: #000; display: flex; justify-content: center; align-items: flex-start;">
-                    <img src="{img_b64}" style="width: 100%; height: auto; display: block;">
+                pdf_html = f"""<div id="pdf-scroll-container" class="sync-scroll-target pdf-image-container">
+                    <img src="{img_b64}" class="pdf-image-view">
                 </div>"""
             else:
-                pdf_html = f"""<div id="pdf-scroll-container" class="sync-scroll-target" style="height: 70vh; display: flex; justify-content: center; align-items: center; background: #1e293b; color: #94a3b8; border-radius: 8px;">
+                pdf_html = f"""<div id="pdf-scroll-container" class="sync-scroll-target pdf-viewer-alternative">
                     <span>Failed to render page {page_num}</span>
                 </div>"""
         else:
-            pdf_html = """<div id="pdf-scroll-container" class="sync-scroll-target" style="height: 70vh; display: flex; justify-content: center; align-items: center; background: #1e293b; color: #94a3b8; border-radius: 8px;">
+            pdf_html = """<div id="pdf-scroll-container" class="sync-scroll-target pdf-viewer-alternative">
                 <span>Original PDF file not found.</span>
             </div>"""
 
@@ -212,6 +212,8 @@ def update_view(selected_file, view_mode, page_num, pdf_path, total_pages, page_
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
-    raw_md_html = f"""<div id="raw-scroll-container" class="sync-scroll-target" style="height: 70vh; overflow-y: auto; font-family: 'JetBrains Mono', monospace; white-space: pre-wrap; background: #020617; color: #38bdf8; padding: 15px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); font-size: 0.85rem; line-height: 1.5;">{escaped_raw}</div>"""
+    raw_md_html = f"""<div id="raw-scroll-container" class="sync-scroll-target raw-md-view-container">{escaped_raw}</div>"""
 
     return pdf_html, raw_md_html, raw_md_text
+
+

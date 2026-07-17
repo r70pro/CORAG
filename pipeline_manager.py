@@ -11,13 +11,14 @@ import subprocess
 import httpx
 import gradio as gr
 import process_state
+from typing import List, Optional, Any, Generator
 
 from settings_manager import WORKSPACE_DIR
 from html_utils import make_progress_bar_html, make_file_status_html, make_upload_manifest_html
 from pdf_manager import make_zip
 from pypdf import PdfReader
 
-def enqueue_output(out, q):
+def enqueue_output(out: Any, q: queue.Queue) -> None:
     try:
         for line in iter(out.readline, ''):
             q.put(line)
@@ -26,8 +27,90 @@ def enqueue_output(out, q):
     finally:
         out.close()
 
-def _make_empty_yield(log_text, badge_html, progress_html, start_interactive=True, run_id=""):
-    return (
+class PipelineResult(tuple):
+    __slots__ = ()
+
+    def __new__(
+        cls,
+        log_text: str,
+        status_badge: Any,
+        progress_bar: str,
+        completed_pages: Any,
+        failed_pages: Any,
+        file_selector: Any,
+        download_zip: Any,
+        download_individual: Any,
+        start_btn: Any,
+        active_run_id: str,
+        file_status_table: str = "",
+        upload_manifest_display: str = ""
+    ) -> "PipelineResult":
+        return tuple.__new__(cls, (
+            log_text,
+            status_badge,
+            progress_bar,
+            completed_pages,
+            failed_pages,
+            file_selector,
+            download_zip,
+            download_individual,
+            start_btn,
+            active_run_id,
+            file_status_table,
+            upload_manifest_display
+        ))
+
+    @property
+    def log_text(self) -> str:
+        return self[0]
+
+    @property
+    def status_badge(self) -> Any:
+        return self[1]
+
+    @property
+    def progress_bar(self) -> str:
+        return self[2]
+
+    @property
+    def completed_pages(self) -> Any:
+        return self[3]
+
+    @property
+    def failed_pages(self) -> Any:
+        return self[4]
+
+    @property
+    def file_selector(self) -> Any:
+        return self[5]
+
+    @property
+    def download_zip(self) -> Any:
+        return self[6]
+
+    @property
+    def download_individual(self) -> Any:
+        return self[7]
+
+    @property
+    def start_btn(self) -> Any:
+        return self[8]
+
+    @property
+    def active_run_id(self) -> str:
+        return self[9]
+
+    @property
+    def file_status_table(self) -> str:
+        return self[10]
+
+    @property
+    def upload_manifest_display(self) -> str:
+        return self[11]
+
+
+def _make_empty_yield(log_text: str, badge_html: str, progress_html: str, start_interactive: bool = True, run_id: str = "") -> PipelineResult:
+    return PipelineResult(
         log_text,
         gr.update(value=badge_html),
         progress_html,
@@ -38,11 +121,20 @@ def _make_empty_yield(log_text, badge_html, progress_html, start_interactive=Tru
         None,
         gr.update(interactive=start_interactive),
         run_id,
-        "",  # file_status_table
-        "",  # upload_manifest
+        "",
+        "",
     )
 
-def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_retries, target_dim, guided_decoding):
+def process_pdfs(
+    files: Optional[List[Any]],
+    server_url: str,
+    model_name: str,
+    workers: int,
+    max_concurrent: int,
+    max_retries: int,
+    target_dim: int,
+    guided_decoding: bool
+) -> Generator[PipelineResult, None, None]:
     if not files:
         yield _make_empty_yield("No files uploaded.", "<span class='badge-idle'>Idle</span>", "")
         return
@@ -180,7 +272,7 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
             if run_id in process_state.active_runs:
                 process_state.active_runs[run_id]["proc"] = proc
     except Exception as e:
-        yield (
+        yield PipelineResult(
             f"Failed to start pipeline process: {e}",
             gr.update(value="<span class='badge-failed'>Failed</span>"),
             "",
@@ -219,7 +311,7 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
     file_status_html = make_file_status_html(file_mapping, file_page_counts, completed_file_indices, failed_file_indices)
 
     progress_bar_fn = make_progress_bar_html
-    yield (
+    yield PipelineResult(
         "Initializing pipeline...",
         gr.update(value="<span class='badge-running'>Running</span>"),
         progress_bar_fn(0, total_pages),
@@ -253,7 +345,7 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
                         dropdown_value_set = True
                     else:
                         dropdown_val_update = gr.update(choices=streaming_choices)
-                    yield (
+                    yield PipelineResult(
                         accumulated_logs + "\n\n[PROCESS TERMINATED BY USER]\n",
                         gr.update(value="<span class='badge-stopped'>Stopped</span>"),
                         progress_bar_fn(completed_pages, total_pages, elapsed),
@@ -357,7 +449,7 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
                 else:
                     dropdown_val_update = gr.update(choices=streaming_choices)
                 
-                yield (
+                yield PipelineResult(
                     accumulated_logs,
                     gr.update(value="<span class='badge-running'>Running</span>"),
                     progress_bar_fn(completed_pages, total_pages, elapsed),
@@ -418,7 +510,7 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
         else:
             dropdown_val_update = gr.update(choices=choices)
 
-        yield (
+        yield PipelineResult(
             accumulated_logs + f"\n\n[PROCESS EXITED WITH CODE {exit_code}]\n",
             gr.update(value=status_text),
             progress_bar_fn(completed_pages, total_pages, elapsed),
@@ -435,7 +527,7 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
 
     except Exception as e:
         elapsed = time.monotonic() - start_time
-        yield (
+        yield PipelineResult(
             accumulated_logs + f"\n\nException during processing: {e}\n",
             gr.update(value="<span class='badge-failed'>Error</span>"),
             progress_bar_fn(completed_pages, total_pages, elapsed),
@@ -454,7 +546,7 @@ def process_pdfs(files, server_url, model_name, workers, max_concurrent, max_ret
             if run_id in process_state.active_runs:
                 process_state.active_runs[run_id]["completed"] = True
 
-def stop_processing(run_id):
+def stop_processing(run_id: str) -> str:
     if not run_id:
         return "<span class='badge-idle'>No active process to stop.</span>"
     with process_state.active_runs_lock:
@@ -466,7 +558,7 @@ def stop_processing(run_id):
             return f"<span class='badge-stopped'>Stop request sent for run {run_id[:8]}.</span>"
     return "<span class='badge-idle'>Process not found or already ended.</span>"
 
-def cleanup_active_runs():
+def cleanup_active_runs() -> None:
     if os.environ.get("TESTING") == "true":
         return
     with process_state.active_runs_lock:

@@ -4,8 +4,9 @@ import socket
 import subprocess
 import re
 import os
+from typing import Dict, List, Optional, Tuple, Any
 
-def get_service_latency(service_name, host="127.0.0.1", port=None):
+def get_service_latency(service_name: str, host: str = "127.0.0.1", port: Optional[int] = None) -> Tuple[bool, float, Optional[str]]:
     ports = {
         "postgres": 5432,
         "redis": 6379,
@@ -24,7 +25,7 @@ def get_service_latency(service_name, host="127.0.0.1", port=None):
             conn = psycopg2.connect(
                 dbname="olmocr_rag",
                 user="olmocr",
-                password="pg_pass_5c6d3284f18b90a6e2d8",
+                password=os.environ.get("OLMOCR_PG_PASS", ""),
                 host=host,
                 port=port,
                 connect_timeout=1
@@ -66,7 +67,7 @@ def get_service_latency(service_name, host="127.0.0.1", port=None):
     except Exception:
         return False, 0.0, None
 
-def get_vllm_loading_progress():
+def get_vllm_loading_progress() -> Optional[Dict[str, Any]]:
     try:
         res = subprocess.run(
             ["docker", "logs", "--tail", "50", "olmocr"],
@@ -113,7 +114,7 @@ def get_vllm_loading_progress():
         pass
     return None
 
-def check_backing_services_data(service_history, vllm_port=8000):
+def check_backing_services_data(service_history: Dict[str, List[float]], vllm_port: int = 8000) -> Dict[str, Any]:
     services_data = {}
     all_healthy = True
     failed_services = []
@@ -157,8 +158,75 @@ def check_backing_services_data(service_history, vllm_port=8000):
         "vllm_model": vllm_model,
         "vllm_progress": vllm_progress
     }
+def get_docker_containers() -> Dict[str, str]:
+    containers = {}
+    try:
+        res = subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{.ID}}|{{.Names}}"],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        if res.returncode == 0:
+            for line in res.stdout.strip().split("\n"):
+                if "|" in line:
+                    cid, name = line.split("|", 1)
+                    containers[cid] = name
+    except Exception:
+        pass
+    return containers
 
-def get_gpu_metrics_data():
+
+def resolve_process_details(pid: int, name_from_smi: str) -> Tuple[str, bool, str]:
+    cmdline = ""
+    is_docker = False
+    container_name = ""
+    try:
+        with open(f"/proc/{pid}/cmdline", "r") as f:
+            raw = f.read()
+            parts = [p for p in raw.split("\x00") if p]
+            if parts:
+                cmdline = " ".join(parts)
+    except Exception:
+        pass
+    if not cmdline:
+        cmdline = name_from_smi
+    try:
+        with open(f"/proc/{pid}/cgroup", "r") as f:
+            cgroup_content = f.read()
+            if "docker" in cgroup_content or "containerd" in cgroup_content:
+                is_docker = True
+                for line in cgroup_content.splitlines():
+                    if "docker-" in line:
+                        parts = line.split("docker-")
+                        if len(parts) > 1:
+                            container_name = parts[1].split(".")[0][:12]
+                            break
+                    elif "docker/" in line:
+                        parts = line.split("docker/")
+                        if len(parts) > 1:
+                            container_name = parts[1].split("/")[0][:12]
+                            break
+    except Exception:
+        pass
+    return cmdline, is_docker, container_name
+
+
+def get_display_name(cmdline: str, default_name: str) -> str:
+    if not cmdline:
+        return default_name
+    parts = cmdline.split(" ")
+    first = parts[0]
+    basename = os.path.basename(first)
+    if basename:
+        if basename.startswith("python") and len(parts) > 1:
+            script_name = os.path.basename(parts[1])
+            return f"python: {script_name}"
+        return basename
+    return default_name
+
+
+def get_gpu_metrics_data() -> Dict[str, Any]:
     cuda_available = False
     gpu_name = "N/A"
     vram_used = 0.0
@@ -194,72 +262,6 @@ def get_gpu_metrics_data():
         
     if cuda_available and vram_total > 0:
         vram_pct = (vram_used / vram_total) * 100.0
-        
-        def get_docker_containers():
-            containers = {}
-            try:
-                res = subprocess.run(
-                    ["docker", "ps", "-a", "--format", "{{.ID}}|{{.Names}}"],
-                    capture_output=True,
-                    text=True,
-                    timeout=2
-                )
-                if res.returncode == 0:
-                    for line in res.stdout.strip().split("\n"):
-                        if "|" in line:
-                            cid, name = line.split("|", 1)
-                            containers[cid] = name
-            except Exception:
-                pass
-            return containers
-
-        def resolve_process_details(pid, name_from_smi):
-            cmdline = ""
-            is_docker = False
-            container_name = ""
-            try:
-                with open(f"/proc/{pid}/cmdline", "r") as f:
-                    raw = f.read()
-                    parts = [p for p in raw.split("\x00") if p]
-                    if parts:
-                        cmdline = " ".join(parts)
-            except Exception:
-                pass
-            if not cmdline:
-                cmdline = name_from_smi
-            try:
-                with open(f"/proc/{pid}/cgroup", "r") as f:
-                    cgroup_content = f.read()
-                    if "docker" in cgroup_content or "containerd" in cgroup_content:
-                        is_docker = True
-                        for line in cgroup_content.splitlines():
-                            if "docker-" in line:
-                                parts = line.split("docker-")
-                                if len(parts) > 1:
-                                    container_name = parts[1].split(".")[0][:12]
-                                    break
-                            elif "docker/" in line:
-                                parts = line.split("docker/")
-                                if len(parts) > 1:
-                                    container_name = parts[1].split("/")[0][:12]
-                                    break
-            except Exception:
-                pass
-            return cmdline, is_docker, container_name
-
-        def get_display_name(cmdline, default_name):
-            if not cmdline:
-                return default_name
-            parts = cmdline.split(" ")
-            first = parts[0]
-            basename = os.path.basename(first)
-            if basename:
-                if basename.startswith("python") and len(parts) > 1:
-                    script_name = os.path.basename(parts[1])
-                    return f"python: {script_name}"
-                return basename
-            return default_name
-
         processes = []
         try:
             res_proc = subprocess.run(

@@ -36,7 +36,7 @@ class TestExternalMDUpload(unittest.TestCase):
     @patch("rag.db.mark_run_indexed")
     @patch("rag.db.get_connection")
     @patch("rag.chunker.chunk_document")
-    @patch("rag.embedding.upsert_chunks")
+    @patch("rag.embedding.upsert_chunks_generator")
     @patch("rag.storage.upload_markdown")
     @patch("rag.cache.invalidate_query_cache")
     def test_upload_new_case_success(self, mock_invalidate, mock_upload_md, mock_upsert, mock_chunk, mock_conn, mock_mark_run, mock_mark_doc, mock_insert_chunks, mock_register_doc, mock_register_run, mock_settings):
@@ -49,7 +49,12 @@ class TestExternalMDUpload(unittest.TestCase):
         mock_file.name = file_path
 
         mock_chunk.return_value = [{"chunk_id": "c1", "text": "Hello World"}]
-        mock_upsert.return_value = [{"chunk_id": "c1", "text": "Hello World", "qdrant_point_id": "p1"}]
+        def mock_upsert_side_effect(chunks, *args, **kwargs):
+            for i, c in enumerate(chunks):
+                c["qdrant_point_id"] = f"p{i+1}"
+            yield {"stage": "embedding", "current": len(chunks), "total": len(chunks)}
+            yield {"stage": "indexing", "current": len(chunks), "total": len(chunks)}
+        mock_upsert.side_effect = mock_upsert_side_effect
 
         # Mock Postgres connection to return total count
         mock_cursor = MagicMock()
@@ -84,7 +89,7 @@ class TestExternalMDUpload(unittest.TestCase):
     @patch("rag.db.mark_run_indexed")
     @patch("rag.db.get_connection")
     @patch("rag.chunker.chunk_document")
-    @patch("rag.embedding.upsert_chunks")
+    @patch("rag.embedding.upsert_chunks_generator")
     @patch("rag.storage.upload_markdown")
     @patch("rag.cache.invalidate_query_cache")
     def test_upload_existing_case_success(self, mock_invalidate, mock_upload_md, mock_upsert, mock_chunk, mock_conn, mock_mark_run, mock_mark_doc, mock_insert_chunks, mock_register_doc, mock_register_run, mock_get_runs, mock_settings):
@@ -103,7 +108,12 @@ class TestExternalMDUpload(unittest.TestCase):
         mock_file.name = file_path
 
         mock_chunk.return_value = [{"chunk_id": "c2", "text": "Another file"}]
-        mock_upsert.return_value = [{"chunk_id": "c2", "text": "Another file", "qdrant_point_id": "p2"}]
+        def mock_upsert_side_effect(chunks, *args, **kwargs):
+            for i, c in enumerate(chunks):
+                c["qdrant_point_id"] = f"p{i+1}"
+            yield {"stage": "embedding", "current": len(chunks), "total": len(chunks)}
+            yield {"stage": "indexing", "current": len(chunks), "total": len(chunks)}
+        mock_upsert.side_effect = mock_upsert_side_effect
 
         # Mock Postgres connection to return total count
         mock_cursor = MagicMock()
@@ -135,8 +145,8 @@ class TestExternalMDUpload(unittest.TestCase):
         mock_upload.return_value = ["step1\n", "step2\n"]
         res = list(upload_and_index_markdown_ui_wrapper([], "new", ""))
         self.assertEqual(len(res), 2)
-        self.assertEqual(res[0], ("step1\n", "Log content"))
-        self.assertEqual(res[1], ("step1\nstep2\n", "Log content"))
+        self.assertIn("RAG Indexing Progress", res[0][0])
+        self.assertIn("RAG Indexing Progress", res[1][0])
 
     @patch("rag_ui._get_indexed_run_choices", return_value=[("run_display", "run1")])
     def test_refresh_active_case_after_upload(self, mock_choices):

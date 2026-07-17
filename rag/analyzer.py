@@ -11,7 +11,7 @@ Provides:
 import os
 import json
 import httpx
-from typing import List, Dict, Optional, Generator
+from typing import List, Dict, Optional, Generator, Any
 
 from rag.retriever import search_similar, format_context_for_llm
 
@@ -74,6 +74,15 @@ INSTRUCTIONS:
 - Present as a markdown table: Medication | Dose/Frequency | Date Started | Date Stopped | Prescriber | Source
 - Flag any potential interactions or contraindications
 - Note any allergies mentioned in the records""",
+}
+
+
+ANALYSIS_MODE_MAP = {
+    "💬 Free Q&A": "free_qa",
+    "📅 Timeline Generator": "timeline",
+    "🏥 Injury Summary": "injury_summary",
+    "🔍 Inconsistency Finder": "inconsistency_finder",
+    "💊 Medication Tracker": "medication_tracker",
 }
 
 
@@ -168,7 +177,7 @@ def query_llm_streaming(
             "POST",
             url,
             json=payload,
-            timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
+            timeout=httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0),
         ) as response:
             if response.status_code != 200:
                 yield f"\n\n⚠️ **Error**: LLM server returned HTTP {response.status_code}. "
@@ -241,7 +250,7 @@ def query_llm(
         response = httpx.post(
             url,
             json=payload,
-            timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
+            timeout=httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0),
         )
 
         if response.status_code != 200:
@@ -272,6 +281,7 @@ def analyze(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     stream: bool = True,
+    progress_callback: Optional[Any] = None,
     **search_kwargs,
 ) -> Generator[str, None, None]:
     """Full RAG analysis pipeline: retrieve → prompt → generate.
@@ -291,11 +301,19 @@ def analyze(
         date_from: Optional date range start.
         date_to: Optional date range end.
         stream: Whether to stream the response.
+        progress_callback: Callback to report retrieval/rerank progress.
         **search_kwargs: Additional kwargs for search_similar().
 
     Yields:
         Response text chunks (if streaming) or full response.
     """
+    # For structured/analytical modes, automatically increase top_k to at least 50
+    # to guarantee comprehensive document coverage.
+    if mode in ["timeline", "injury_summary", "inconsistency_finder", "medication_tracker"]:
+        top_k = max(top_k, 50)
+        if run_id_filter and "score_threshold" not in search_kwargs:
+            search_kwargs["score_threshold"] = 0.05
+
     # Step 1: Retrieve relevant chunks
     results = search_similar(
         query=query,
@@ -305,6 +323,7 @@ def analyze(
         author_filter=author_filter,
         date_from=date_from,
         date_to=date_to,
+        progress_callback=progress_callback,
         **search_kwargs,
     )
 
@@ -313,10 +332,82 @@ def analyze(
         yield "Please ensure documents have been indexed using the 'Build Index' button."
         return
 
-    # Step 2: Format context
+    # Truncate context to fit model's max limit
+    from settings_manager import load_settings
+    settings = load_settings()
+    max_model_len = settings.get("docker_max_model_len", 131072)
+    max_prompt_tokens = max(max_model_len - 5120, 2048)
+
+    # Estimate base prompt and overall tokens
+    def estimate_tokens(msgs: List[Dict]) -> int:
+        try:
+            import tiktoken
+            encoding = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            encoding = None
+
+        if encoding is None:
+            total_chars = 0
+            for m in msgs:
+                total_chars += len(m.get("role", ""))
+                content = m.get("content", "")
+                if isinstance(content, str):
+                    total_chars += len(content)
+                elif isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and "text" in item:
+                            total_chars += len(item["text"])
+                        elif isinstance(item, str):
+                            total_chars += len(item)
+            return total_chars // 4
+
+        num_tokens = 0
+        for message in msgs:
+            num_tokens += 4
+            for key, value in message.items():
+                if isinstance(value, str):
+                    num_tokens += len(encoding.encode(value))
+                elif isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, dict) and "text" in item:
+                            num_tokens += len(encoding.encode(item["text"]))
+                        elif isinstance(item, str):
+                            num_tokens += len(encoding.encode(item))
+                if key == "name":
+                    num_tokens += -1
+        num_tokens += 2
+        return num_tokens
+
+    # Build prompt and check length
+    context = format_context_for_llm(results)
+    messages = build_prompt(query, context, mode, chat_history)
+    estimated_total = estimate_tokens(messages)
+
+    warning_msg = None
+    if estimated_total > max_prompt_tokens:
+        truncated_results = list(results)
+        while len(truncated_results) > 1:
+            truncated_results.pop()
+            context = format_context_for_llm(truncated_results)
+            messages = build_prompt(query, context, mode, chat_history)
+            if estimate_tokens(messages) <= max_prompt_tokens:
+                results = truncated_results
+                break
+        else:
+            results = truncated_results[:1]
+            context = format_context_for_llm(results)
+            messages = build_prompt(query, context, mode, chat_history)
+
+        warning_msg = (
+            f"⚠️ **Note**: The retrieved context was too large for the model's context window "
+            f"({estimated_total} estimated tokens vs limit of {max_prompt_tokens}). "
+            f"It has been truncated to the top {len(results)} most relevant chunks.\n\n"
+        )
+
+    # Step 2: Format context (using final resolved results)
     context = format_context_for_llm(results)
 
-    # Step 3: Build prompt
+    # Step 3: Build prompt (using final resolved context)
     messages = build_prompt(query, context, mode, chat_history)
 
     # Step 4: Query LLM
@@ -359,7 +450,13 @@ def analyze(
             pass
 
     if stream:
+        if warning_msg:
+            yield warning_msg
         yield from query_llm_streaming(messages, server_url, resolved_model)
     else:
-        yield query_llm(messages, server_url, resolved_model)
+        response_text = query_llm(messages, server_url, resolved_model)
+        if warning_msg:
+            yield warning_msg + response_text
+        else:
+            yield response_text
 

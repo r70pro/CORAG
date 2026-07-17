@@ -1,94 +1,105 @@
 import atexit
+from typing import Generator, Tuple, Any
 import gradio as gr
 
-# Shared State
-
 # Settings
-from settings_manager import load_settings, save_settings, WORKSPACE_DIR  # noqa: F401
+from settings_manager import load_settings, save_settings, WORKSPACE_DIR, SUPPORTED_MODELS, MODEL_MAX_CONTENT_LENGTHS  # noqa: F401
 
 # Docker Container operations
-from docker_manager import (
+from docker_manager import (  # noqa: F401
     get_docker_status_str,
     start_docker_container,
     stop_docker_container,
     create_docker_container,
-    cleanup_docker
+    cleanup_docker,
+    check_server_ready,
+    get_docker_status,
 )
 
 # Resets & Space metrics
-from cleanup_manager import perform_reset_cleanup
+from cleanup_manager import perform_reset_cleanup, get_dir_size, format_size  # noqa: F401
 
 # HTML templates
-from html_utils import (
+from html_utils import (  # noqa: F401
     make_progress_bar_html,
     make_backing_services_html,
     make_system_health_badge_html,
     make_gpu_metrics_html,
+    make_upload_manifest_html,
+    make_file_status_html,
+    get_simulated_sparkline,
 )
-from system_diagnostics import (
+from system_diagnostics import (  # noqa: F401
     check_backing_services_data,
     get_gpu_metrics_data,
+    get_service_latency,
+    get_vllm_loading_progress,
 )
 
 # PDF rendering and file conversions
-from pdf_manager import (
+from pdf_manager import (  # noqa: F401
     on_file_selected,
-    update_view
+    update_view,
+    make_zip,
+    load_markdown_content,
 )
 
-# Pipeline runners
 from pipeline_manager import process_pdfs, stop_processing, cleanup_active_runs
 
 # Styling and theme properties
-from ui_theme import custom_css, dark_theme
+from ui_theme import custom_css, dark_theme  # noqa: F401
 
 # RAG Document Analysis UI
-from rag_ui import build_case_dashboard_ui, build_rag_chat_ui
+from rag_ui import build_case_dashboard_ui, build_rag_chat_ui  # noqa: F401
 
 # Expose additional state and utility functions for tests
 from process_state import active_runs, active_runs_lock  # noqa: F401
-from docker_manager import check_server_ready, get_docker_status  # noqa: F401
-from html_utils import make_upload_manifest_html, make_file_status_html  # noqa: F401
-from pdf_manager import make_zip, load_markdown_content  # noqa: F401
-from cleanup_manager import get_dir_size, format_size  # noqa: F401
-from system_diagnostics import get_service_latency, get_vllm_loading_progress  # noqa: F401
-from html_utils import get_simulated_sparkline  # noqa: F401
+
+from app_handlers import (
+    check_backing_services,  # noqa: F401
+    get_gpu_metrics,  # noqa: F401
+    select_view,
+    trigger_save_settings,
+    go_prev_page,
+    go_next_page,
+    ui_start_container,
+    ui_stop_container,
+    ui_recreate_container,
+    ui_header_start,
+    ui_header_stop,
+    periodic_status_check,
+    periodic_diagnostics_check,
+)
 
 # Register exit hooks
 atexit.register(cleanup_docker)
 atexit.register(cleanup_active_runs)
 
 
-# Service health check latency history (keeps last 8 data points)
-service_history = {
-    "postgres": [1.2, 1.1, 1.3, 1.2, 1.4, 1.2, 1.3],
-    "redis": [0.8, 0.7, 0.9, 0.8, 0.8, 0.7, 0.8],
-    "minio": [3.0, 3.2, 2.9, 3.1, 3.0, 2.8, 3.0],
-    "qdrant": [2.1, 2.3, 2.0, 2.2, 2.1, 1.9, 2.1],
-    "vllm": [15.8, 15.2, 16.1, 15.5, 15.9, 14.8, 15.8]
-}
+def process_pdfs_ui_wrapper(*args: Any, **kwargs: Any) -> Generator[Tuple[Any, ...], None, None]:
+    for result in process_pdfs(*args, **kwargs):
+        yield (
+            result.log_text,
+            result.status_badge,
+            result.progress_bar,
+            result.completed_pages,
+            result.failed_pages,
+            result.file_selector,
+            result.download_zip,
+            result.download_individual,
+            result.start_btn,
+            result.active_run_id,
+            result.file_status_table,
+            result.upload_manifest_display
+        )
 
-
-def check_backing_services(vllm_port=8000):
-    data = check_backing_services_data(service_history, vllm_port)
-    return make_backing_services_html(data), make_system_health_badge_html(data)
-
-def get_gpu_metrics():
-    data = get_gpu_metrics_data()
-    return make_gpu_metrics_html(data)
 
 # GUI layout construction
 
 settings = load_settings()
 
 current_model = settings.get("model_name", "allenai/olmOCR-2-7B-1025-FP8")
-model_choices = [
-    "allenai/olmOCR-2-7B-1025-FP8",
-    "nvidia/Qwen3.6-35B-A3B-NVFP4",
-    "nvidia/Phi-4-reasoning-plus-NVFP4",
-    "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
-    "nvidia/Llama-3.3-70B-Instruct-NVFP4"
-]
+model_choices = list(SUPPORTED_MODELS)
 if current_model not in model_choices:
     model_choices.append(current_model)
 
@@ -142,10 +153,11 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                     minimum=0.1, maximum=1.0, step=0.05, 
                     value=settings["docker_gpu_mem"]
                 )
+                initial_max_len = MODEL_MAX_CONTENT_LENGTHS.get(current_model, 131072)
                 docker_max_model_len_input = gr.Slider(
-                    label="Max Model Length", 
-                    minimum=2048, maximum=32768, step=1024, 
-                    value=settings["docker_max_model_len"]
+                    label="Max Content Length", 
+                    minimum=2048, maximum=initial_max_len, step=1024, 
+                    value=min(settings.get("docker_max_model_len", 131072), initial_max_len)
                 )
                 
                 with gr.Row():
@@ -172,12 +184,12 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
             with gr.Row():
                 with gr.Column(scale=3):
                     page_title = gr.HTML(
-                        "<h1 style='margin:0; font-size:1.8rem; color:#e2e8f0;'>Ingestion Pipeline</h1>"
-                        "<p style='color:#9ca3af; margin:4px 0 0 0; font-size:1rem;'>Upload and process documents through the OCR pipeline</p>"
+                        "<h1 class='inline-header-title'>Ingestion Pipeline</h1>"
+                        "<p class='inline-header-subtitle'>Upload and process documents through the OCR pipeline</p>"
                     )
                 with gr.Column(scale=1, elem_classes=["status-container"]):
                     system_health_badge = gr.HTML("<span class='badge-success'>✓ System Healthy</span>")
-                    backend_status_badge = gr.HTML("<span class='badge-idle' style='display:none;'>Checking Backend...</span>", visible=False)
+                    backend_status_badge = gr.HTML("<span class='badge-idle inline-hide-badge'>Checking Backend...</span>", visible=False)
 
             # Define the 5 Panels
             
@@ -340,7 +352,7 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                     with gr.Column(scale=1, elem_classes=["glass-panel"]):
                         gr.Markdown("## 📄 Original PDF")
                         pdf_viewer_panel = gr.HTML(
-                            value="<div id='pdf-scroll-container' class='sync-scroll-target' style='height: 70vh; display: flex; justify-content: center; align-items: center; background: #0f172a; color: #94a3b8; border-radius: 8px;'>Select a processed document to view.</div>"
+                            value="<div id='pdf-scroll-container' class='sync-scroll-target pdf-viewer-placeholder'>Select a processed document to view.</div>"
                         )
                         
                     # Column 2: Raw Markdown
@@ -349,7 +361,7 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                             gr.Markdown("## ✍️ Raw Markdown Output")
                             copy_btn = gr.Button("📋 Copy", variant="secondary", size="sm")
                         raw_markdown_panel = gr.HTML(
-                            value="<div id='raw-scroll-container' class='sync-scroll-target' style='height: 70vh; display: flex; justify-content: center; align-items: center; background: #020617; color: #94a3b8; border-radius: 8px;'>Select a processed document to view.</div>"
+                            value="<div id='raw-scroll-container' class='sync-scroll-target raw-markdown-placeholder'>Select a processed document to view.</div>"
                         )
                         
                     # Column 3: Rendered Preview
@@ -385,7 +397,7 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                             clean_gradio_chk = gr.Checkbox(label="Gradio upload temp files (/tmp/gradio)", value=True)
                             clean_pycache_chk = gr.Checkbox(label="Python bytecode cache (__pycache__)", value=True)
                             clean_hf_chk = gr.Checkbox(label="Hugging Face model cache (~/.cache/huggingface)", value=False)
-                            gr.HTML("<span style='color: #f87171; font-size: 0.85rem; display: block; margin-top: -8px; margin-bottom: 8px;'>⚠️ WARNING: Hugging Face deletion will require re-downloading model weights (approx 10-30GB).</span>")
+                            gr.HTML("<span class='inline-warning-text'>⚠️ WARNING: Hugging Face deletion will require re-downloading model weights (approx 10-30GB).</span>")
                             
                             reset_cleanup_btn = gr.Button("🧹 Clean & Reset", variant="stop")
                             reset_cleanup_status = gr.Markdown()
@@ -394,11 +406,11 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                     with gr.Column(scale=3):
                         with gr.Row():
                             with gr.Column(scale=1, elem_classes=["glass-panel"]):
-                                gr.HTML("<h3 style='margin:0 0 15px 0; color:#c7d2fe; font-size:1.1rem; font-weight:600;'>⚡ Backing Services Health</h3>")
+                                gr.HTML("<h3 class='inline-section-header'>⚡ Backing Services Health</h3>")
                                 backing_services_html = gr.HTML(value="Loading backing services status...")
                             
                             with gr.Column(scale=1, elem_classes=["glass-panel"]):
-                                gr.HTML("<h3 style='margin:0 0 15px 0; color:#c7d2fe; font-size:1.1rem; font-weight:600;'>🖥️ Hardware & Resource Utilization</h3>")
+                                gr.HTML("<h3 class='inline-section-header'>🖥️ Hardware & Resource Utilization</h3>")
                                 hardware_utilization_html = gr.HTML(value="Loading hardware utilization...")
 
     # Extra hidden buttons for backwards compatibility / test suite (since tests patch header buttons)
@@ -409,27 +421,7 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
     # ── Event handlers ─────────────────────────────────────────────
 
     # Sidebar Navigation View Toggling
-    def select_view(active_view_idx):
-        titles = [
-            "<h1 style='margin:0; font-size:1.8rem; color:#e2e8f0;'>Ingestion Pipeline</h1><p style='color:#9ca3af; margin:4px 0 0 0; font-size:1rem;'>Upload and process documents through the OCR pipeline</p>",
-            "<h1 style='margin:0; font-size:1.8rem; color:#e2e8f0;'>Layout Inspector</h1><p style='color:#9ca3af; margin:4px 0 0 0; font-size:1rem;'>Verify visual text extraction accuracy side-by-side</p>",
-            "<h1 style='margin:0; font-size:1.8rem; color:#e2e8f0;'>Case Dashboard</h1><p style='color:#9ca3af; margin:4px 0 0 0; font-size:1rem;'>Overview of ingested case folders and databases</p>",
-            "<h1 style='margin:0; font-size:1.8rem; color:#e2e8f0;'>RAG Processing (Query & Cite)</h1><p style='color:#9ca3af; margin:4px 0 0 0; font-size:1rem;'>Query, summarize, and retrieve matching citations</p>",
-            "<h1 style='margin:0; font-size:1.8rem; color:#e2e8f0;'>System Diagnostics</h1><p style='color:#9ca3af; margin:4px 0 0 0; font-size:1rem;'>Backing services health status and hardware metrics</p>"
-        ]
-        
-        btn_updates = []
-        for i in range(5):
-            if i == active_view_idx:
-                btn_updates.append(gr.update(elem_classes=["nav-btn", "active-nav-btn"]))
-            else:
-                btn_updates.append(gr.update(elem_classes=["nav-btn"]))
-                
-        view_updates = []
-        for i in range(5):
-            view_updates.append(gr.update(visible=(i == active_view_idx)))
-            
-        return [gr.update(value=titles[active_view_idx])] + btn_updates + view_updates
+
 
     nav_outputs = [
         page_title,
@@ -484,21 +476,6 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
         js="() => { const rawContainer = document.getElementById('raw-scroll-container'); const text = rawContainer ? rawContainer.innerText : ''; navigator.clipboard.writeText(text); }"
     )
 
-    def trigger_save_settings(url, model, wrk, concat, dim, retries, guided, d_port, d_gpu, d_maxlen, d_token):
-        user_config = {
-            "server_url": url,
-            "model_name": model,
-            "workers": int(wrk),
-            "max_concurrent_requests": int(concat),
-            "target_longest_image_dim": int(dim),
-            "max_page_retries": int(retries),
-            "guided_decoding": guided,
-            "docker_port": int(d_port),
-            "docker_gpu_mem": float(d_gpu),
-            "docker_max_model_len": int(d_maxlen),
-            "hf_token": d_token
-        }
-        return save_settings(user_config)
 
     save_config_btn.click(
         trigger_save_settings,
@@ -514,7 +491,7 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
     )
 
     start_btn.click(
-        process_pdfs,
+        process_pdfs_ui_wrapper,
         inputs=[
             pdf_uploader, server_url_input, model_name_input,
             workers_input, max_concurrent_input, max_retries_input,
@@ -590,11 +567,6 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
         ]
     )
 
-    def go_prev_page(current_page):
-        return max(1, current_page - 1)
-
-    def go_next_page(current_page, total_pages):
-        return min(total_pages, current_page + 1)
 
     prev_page_btn.click(
         go_prev_page,
@@ -608,33 +580,6 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
         outputs=[page_selector]
     )
 
-    # Docker event handlers
-    def ui_start_container(port):
-        success, msg = start_docker_container()
-        _, badge = get_docker_status_str(port)
-        return msg, badge
-
-    def ui_stop_container(port):
-        success, msg = stop_docker_container()
-        _, badge = get_docker_status_str(port)
-        return msg, badge
-
-    def ui_recreate_container(hf_token, port, model, gpu_mem, max_model_len):
-        success, msg = create_docker_container(hf_token, port, model, gpu_mem, max_model_len)
-        _, badge = get_docker_status_str(port)
-        
-        settings = load_settings()
-        settings.update({
-            "hf_token": hf_token,
-            "docker_port": int(port),
-            "model_name": model,
-            "docker_gpu_mem": float(gpu_mem),
-            "docker_max_model_len": int(max_model_len),
-            "server_url": f"http://localhost:{int(port)}/v1"
-        })
-        save_settings(settings)
-        new_url = f"http://localhost:{int(port)}/v1"
-        return msg, badge, new_url
 
     # Sidebar Docker buttons
     docker_start_btn.click(
@@ -659,6 +604,17 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
     )
 
     model_name_input.change(lambda x: x, inputs=[model_name_input], outputs=[docker_model_name_input])
+    
+    def update_max_content_length(model_name, current_val):
+        max_len = MODEL_MAX_CONTENT_LENGTHS.get(model_name, 131072)
+        new_val = min(current_val, max_len)
+        return gr.update(maximum=max_len, value=new_val)
+
+    docker_model_name_input.change(
+        update_max_content_length,
+        inputs=[docker_model_name_input, docker_max_model_len_input],
+        outputs=[docker_max_model_len_input]
+    )
     docker_model_name_input.change(lambda x: x, inputs=[docker_model_name_input], outputs=[model_name_input])
 
     reset_cleanup_btn.click(
@@ -667,16 +623,7 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
         outputs=[reset_cleanup_status]
     )
 
-    # Header Docker buttons (same handlers, for tests compatibility)
-    def ui_header_start(port):
-        start_docker_container()
-        _, badge = get_docker_status_str(port)
-        return badge
 
-    def ui_header_stop(port):
-        stop_docker_container()
-        _, badge = get_docker_status_str(port)
-        return badge
 
     header_docker_start_btn.click(
         ui_header_start,
@@ -693,18 +640,7 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
     # Periodic Backend Status Check
     status_timer = gr.Timer(value=5)
     
-    def periodic_status_check(port_val):
-        if port_val is None:
-            port_val = 8000
-        _, badge_html = get_docker_status_str(int(port_val))
-        return badge_html
 
-    def periodic_diagnostics_check(port_val):
-        if port_val is None:
-            port_val = 8000
-        backing_services, header_health_badge = check_backing_services(vllm_port=int(port_val))
-        gpu_stats = get_gpu_metrics()
-        return backing_services, gpu_stats, header_health_badge
 
     status_timer.tick(
         periodic_status_check,

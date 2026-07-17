@@ -227,6 +227,145 @@ class TestRAGEmbeddingAll(unittest.TestCase):
         vec = rag_emb.encode_query("my query", "model_name")
         self.assertEqual(vec, [0.1, 0.2, 0.3])
 
+    def test_double_checked_locks_embedding(self):
+        # Test double checked lock inner path for embedding model
+        rag_emb._embedding_model = None
+        class MockLock:
+            def __enter__(self):
+                rag_emb._embedding_model = "fake_inner_model"
+                rag_emb._embedding_model_name = "my_model"
+                return self
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+        
+        with patch("rag.embedding._embedding_model_lock", MockLock()):
+            res = rag_emb.load_embedding_model("my_model")
+            self.assertEqual(res, "fake_inner_model")
+
+        # Test double checked lock inner path for reranker model
+        rag_emb._reranker_model = None
+        class MockLockRerank:
+            def __enter__(self):
+                rag_emb._reranker_model = "fake_inner_reranker"
+                rag_emb._reranker_model_name = "my_reranker"
+                return self
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+        
+        with patch("rag.embedding._reranker_model_lock", MockLockRerank()):
+            res = rag_emb.load_reranker_model("my_reranker")
+            self.assertEqual(res, "fake_inner_reranker")
+
+    @patch("rag.cache.is_healthy")
+    @patch("rag.cache.get_cached_embedding")
+    @patch("rag.cache.cache_embedding")
+    @patch("sentence_transformers.SentenceTransformer")
+    def test_encode_texts_caching_and_exceptions(self, mock_transformer, mock_cache_write, mock_cache_read, mock_cache_healthy):
+        # Setup mock model
+        mock_model = mock_transformer.return_value
+        mock_tolist = MagicMock()
+        mock_tolist.tolist.return_value = [[0.9, 0.9]]
+        mock_model.encode.return_value = mock_tolist
+
+        # Baseline: Redis is down
+        mock_cache_healthy.return_value = False
+        mock_cache_read.return_value = None
+
+        # 1. cache.is_healthy raises Exception (lines 160-161)
+        mock_cache_healthy.side_effect = Exception("Redis crash")
+        rag_emb._embedding_model = None
+        res = rag_emb.encode_texts(["text1"], "my_model")
+        self.assertEqual(res, [[0.9, 0.9]])
+
+        # 2. redis_healthy is True, but cache read returns None (miss) (lines 174-175)
+        mock_cache_healthy.side_effect = None
+        mock_cache_healthy.return_value = True
+        mock_cache_read.return_value = None
+        rag_emb._embedding_model = None
+        res = rag_emb.encode_texts(["text1"], "my_model")
+        mock_cache_write.assert_called_with("text1", [0.9, 0.9], "my_model")
+
+        # 3. redis_healthy is True, but cache read raises Exception (lines 176-178)
+        mock_cache_read.side_effect = Exception("Read failed")
+        rag_emb._embedding_model = None
+        res = rag_emb.encode_texts(["text1"], "my_model")
+        self.assertEqual(res, [[0.9, 0.9]])
+
+        # 4. redis_healthy is True, but cache write raises Exception (lines 199-200)
+        mock_cache_read.side_effect = None
+        mock_cache_read.return_value = None
+        mock_cache_write.side_effect = Exception("Write failed")
+        rag_emb._embedding_model = None
+        res = rag_emb.encode_texts(["text1"], "my_model")
+        self.assertEqual(res, [[0.9, 0.9]])
+
+    @patch("rag.cache.is_healthy")
+    @patch("rag.cache.get_cached_embedding")
+    @patch("rag.cache.cache_embedding")
+    @patch("sentence_transformers.SentenceTransformer")
+    @patch("rag.embedding.load_settings")
+    def test_encode_query_caching_and_exceptions(self, mock_load_settings, mock_transformer, mock_cache_write, mock_cache_read, mock_cache_healthy):
+        mock_model = mock_transformer.return_value
+        mock_tolist = MagicMock()
+        mock_tolist.tolist.return_value = [0.9, 0.9]
+        mock_model.encode.return_value = mock_tolist
+
+        # Baseline: Redis is down
+        mock_cache_healthy.return_value = False
+        mock_cache_read.return_value = None
+
+        # 1. load_settings raises Exception (lines 218-219)
+        mock_load_settings.side_effect = Exception("disk error")
+        rag_emb._embedding_model = None
+        res = rag_emb.encode_query("query1", None)
+        self.assertEqual(res, [0.9, 0.9])
+
+        # 2. cache.is_healthy raises Exception (lines 227-228)
+        mock_load_settings.side_effect = None
+        mock_load_settings.return_value = {}
+        mock_cache_healthy.side_effect = Exception("Redis error")
+        rag_emb._embedding_model = None
+        res = rag_emb.encode_query("query1", None)
+        self.assertEqual(res, [0.9, 0.9])
+
+        # 3. redis_healthy is True, cache read raises Exception (lines 235-236)
+        mock_cache_healthy.side_effect = None
+        mock_cache_healthy.return_value = True
+        mock_cache_read.side_effect = Exception("read error")
+        rag_emb._embedding_model = None
+        res = rag_emb.encode_query("query1", "my_model")
+        self.assertEqual(res, [0.9, 0.9])
+
+        # 4. redis_healthy is True, cache write raises Exception (lines 248-249)
+        mock_cache_read.side_effect = None
+        mock_cache_read.return_value = None
+        mock_cache_write.side_effect = Exception("write error")
+        rag_emb._embedding_model = None
+        res = rag_emb.encode_query("query1", "my_model")
+        self.assertEqual(res, [0.9, 0.9])
+
+        # 5. redis_healthy is True, cache hits (line 233-234)
+        mock_cache_read.return_value = [0.8, 0.8]
+        rag_emb._embedding_model = None
+        res = rag_emb.encode_query("query1", "my_model")
+        self.assertEqual(res, [0.8, 0.8])
+
+    @patch("sentence_transformers.CrossEncoder")
+    @patch("rag.embedding.load_settings")
+    def test_load_reranker_model_branches(self, mock_load_settings, mock_cross_encoder):
+        # Reset cached reference
+        rag_emb._reranker_model = None
+        rag_emb._reranker_model_name = None
+
+        # 1. load_settings exception path for model and device
+        mock_load_settings.side_effect = Exception("disk error")
+        res = rag_emb.load_reranker_model(None, None)
+        self.assertIsNotNone(res)
+
+        # 2. Singleton caching hit path
+        res2 = rag_emb.load_reranker_model(None, None)
+        self.assertEqual(res, res2)
+
 
 if __name__ == "__main__":
     unittest.main()

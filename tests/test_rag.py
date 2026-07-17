@@ -231,6 +231,31 @@ A/Prof. Eugene T. Ek
         res2 = "".join(rag_anal.analyze("query", stream=True))
         self.assertEqual(res2, "response content")
 
+    @patch("rag.analyzer.search_similar")
+    @patch("rag.analyzer.query_llm_streaming")
+    def test_analyze_pipeline_analytical_mode(self, mock_query_stream, mock_search):
+        mock_search.return_value = [
+            {
+                "original_filename": "report.pdf",
+                "page_number": 1,
+                "text": "sample text"
+            }
+        ]
+        mock_query_stream.return_value = ["timeline content"]
+        
+        list(rag_anal.analyze(
+            query="generate timeline",
+            mode="timeline",
+            top_k=5,
+            run_id_filter="case_123",
+            stream=True
+        ))
+        
+        mock_search.assert_called_once()
+        called_args, called_kwargs = mock_search.call_args
+        self.assertEqual(called_kwargs["top_k"], 50)
+        self.assertEqual(called_kwargs["score_threshold"], 0.05)
+
     # ── DB Layer Expansion ──────────────────────────────────────
 
     @patch("rag.db.get_connection")

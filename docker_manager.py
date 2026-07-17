@@ -91,8 +91,7 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len):
         "vllm/vllm-openai:cu130-nightly",
         "--model", model,
         "--gpu_memory_utilization", f"{float(gpu_mem):.2f}",
-        "--max_model_len", str(int(max_model_len)),
-        "--enforce-eager"
+        "--max_model_len", str(int(max_model_len))
     ]
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)

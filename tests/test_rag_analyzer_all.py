@@ -219,6 +219,157 @@ class TestRAGAnalyzerAll(unittest.TestCase):
             mock_stream_llm.assert_called_once()
             self.assertEqual(mock_stream_llm.call_args[0][2], "allenai/olmOCR-2-7B-1025-FP8")
 
+    @patch("httpx.stream")
+    def test_query_llm_streaming_reasoning_model(self, mock_stream):
+        lines = [
+            "data: {\"choices\": [{\"delta\": {\"content\": \"hello\"}}]}",
+            "data: [DONE]"
+        ]
+        mock_stream.return_value = MockStreamResponse(200, lines)
+        
+        # Using a model name that contains "reasoning"
+        gen = rag_anz.query_llm_streaming([], "http://localhost:8000/v1", "Phi-4-reasoning-plus")
+        res = "".join(list(gen))
+        self.assertEqual(res, "hello")
+        
+        # Verify repetition_penalty was added to payload
+        mock_stream.assert_called_once()
+        payload = mock_stream.call_args[1]["json"]
+        self.assertEqual(payload["repetition_penalty"], 1.05)
+
+    @patch("httpx.post")
+    def test_query_llm_reasoning_model(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": "static answer"}}]
+        }
+        mock_post.return_value = mock_resp
+
+        # Using a model name containing "reasoning"
+        res = rag_anz.query_llm([], "http://localhost:8000/v1", "Phi-4-reasoning-plus")
+        self.assertEqual(res, "static answer")
+        
+        # Verify repetition_penalty was added to payload
+        mock_post.assert_called_once()
+        payload = mock_post.call_args[1]["json"]
+        self.assertEqual(payload["repetition_penalty"], 1.05)
+
+    @patch("rag.analyzer.search_similar")
+    @patch("rag.analyzer.format_context_for_llm")
+    @patch("rag.analyzer.query_llm_streaming")
+    @patch("httpx.get")
+    def test_analyze_preflight_variants(self, mock_get, mock_stream_llm, mock_format, mock_search):
+        mock_search.return_value = [{"chunk_id": "c1"}]
+        mock_format.return_value = "formatted context"
+        mock_stream_llm.return_value = iter(["answer"])
+
+        # Variant 1: model_name in loaded_models
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "data": [{"id": "my_model"}]
+        }
+        mock_get.return_value = mock_response
+
+        with patch.dict(os.environ, {"TESTING": "false"}):
+            list(rag_anz.analyze("query", model_name="my_model", stream=True))
+            mock_stream_llm.assert_called_once()
+            self.assertEqual(mock_stream_llm.call_args[0][2], "my_model")
+            mock_stream_llm.reset_mock()
+
+        # Variant 2: model_name is equivalent to loaded model
+        # Equivalents defined: equivalents = {"microsoft/Phi-4-reasoning-plus": "nvidia/Phi-4-reasoning-plus-NVFP4"}
+        # Case A: request microsoft/Phi-4-reasoning-plus, loaded nvidia/Phi-4-reasoning-plus-NVFP4
+        mock_response.json.return_value = {
+            "data": [{"id": "nvidia/Phi-4-reasoning-plus-NVFP4"}]
+        }
+        with patch.dict(os.environ, {"TESTING": "false"}):
+            list(rag_anz.analyze("query", model_name="microsoft/Phi-4-reasoning-plus", stream=True))
+            # Should resolve to equivalent "nvidia/Phi-4-reasoning-plus-NVFP4"
+            self.assertEqual(mock_stream_llm.call_args[0][2], "nvidia/Phi-4-reasoning-plus-NVFP4")
+
+        # Case B: request nvidia/Phi-4-reasoning-plus-NVFP4, loaded microsoft/Phi-4-reasoning-plus
+        mock_response.json.return_value = {
+            "data": [{"id": "microsoft/Phi-4-reasoning-plus"}]
+        }
+        with patch.dict(os.environ, {"TESTING": "false"}):
+            list(rag_anz.analyze("query", model_name="nvidia/Phi-4-reasoning-plus-NVFP4", stream=True))
+            self.assertEqual(mock_stream_llm.call_args[0][2], "microsoft/Phi-4-reasoning-plus")
+
+        # Variant 3: json decoding exception
+        mock_response.json.side_effect = Exception("Malformed JSON")
+        with patch.dict(os.environ, {"TESTING": "false"}):
+            list(rag_anz.analyze("query", model_name="my_model", stream=True))
+            # Falls back to query model as resolves exception
+            self.assertEqual(mock_stream_llm.call_args[0][2], "my_model")
+
+    @patch("rag.analyzer.search_similar")
+    @patch("rag.analyzer.query_llm_streaming")
+    @patch("settings_manager.load_settings")
+    def test_analyze_context_truncation_streaming(self, mock_load, mock_stream, mock_search):
+        # Setup settings with small max model len to force truncation
+        mock_load.return_value = {"docker_max_model_len": 5200}
+        
+        # Setup 3 chunks of results, each long enough to exceed the 2048 prompt limit
+        mock_search.return_value = [
+            {"text": "very long text " * 1000, "chunk_id": "c1"},
+            {"text": "very long text " * 1000, "chunk_id": "c2"},
+            {"text": "very long text " * 1000, "chunk_id": "c3"},
+        ]
+        mock_stream.return_value = iter(["answer"])
+        
+        # Execute analyze
+        gen = rag_anz.analyze("query", stream=True)
+        res = list(gen)
+        
+        # Verify it yielded a warning message
+        self.assertTrue(any("too large for the model's context window" in item for item in res))
+        self.assertIn("answer", res)
+
+    @patch("rag.analyzer.search_similar")
+    @patch("rag.analyzer.query_llm")
+    @patch("settings_manager.load_settings")
+    def test_analyze_context_truncation_non_streaming(self, mock_load, mock_query, mock_search):
+        # Setup settings with small max model len
+        mock_load.return_value = {"docker_max_model_len": 5200}
+        
+        mock_search.return_value = [
+            {"text": "very long text " * 1000, "chunk_id": "c1"},
+            {"text": "very long text " * 1000, "chunk_id": "c2"},
+            {"text": "very long text " * 1000, "chunk_id": "c3"},
+        ]
+        mock_query.return_value = "answer"
+        
+        # Execute analyze
+        gen = rag_anz.analyze("query", stream=False)
+        res = list(gen)
+        
+        # Yields a single item with warning + answer
+        self.assertEqual(len(res), 1)
+        self.assertTrue("too large for the model's context window" in res[0])
+        self.assertTrue("answer" in res[0])
+
+    @patch("rag.analyzer.search_similar")
+    @patch("rag.analyzer.query_llm_streaming")
+    @patch("settings_manager.load_settings")
+    @patch("tiktoken.get_encoding")
+    def test_analyze_context_truncation_fallback(self, mock_get_enc, mock_load, mock_stream, mock_search):
+        mock_get_enc.side_effect = Exception("No internet or file not cached")
+        mock_load.return_value = {"docker_max_model_len": 5200}
+        
+        mock_search.return_value = [
+            {"text": "very long text " * 1000, "chunk_id": "c1"},
+            {"text": "very long text " * 1000, "chunk_id": "c2"},
+            {"text": "very long text " * 1000, "chunk_id": "c3"},
+        ]
+        mock_stream.return_value = iter(["answer"])
+        
+        gen = rag_anz.analyze("query", stream=True)
+        res = list(gen)
+        
+        self.assertTrue(any("too large for the model's context window" in item for item in res))
+        self.assertIn("answer", res)
 
 
 if __name__ == "__main__":

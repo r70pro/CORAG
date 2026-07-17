@@ -1,30 +1,33 @@
 """
 RAG Analysis UI — Gradio components for the document analysis tab.
 
-Builds the UI layout and event handlers for:
-- RAG infrastructure management
-- Document indexing (single run + multi-run corpus)
-- Chat interface with streaming responses
-- Analysis mode selection (Free Q&A, Timeline, Summary, etc.)
-- Source citation display
+Slimmed layout builder module. All business logic and handlers have been 
+extracted to sub-modules. Exposes all functions and globals via a dynamic 
+module class to guarantee full compatibility with the existing test suites.
 """
 
 import os
+import sys
+import types
 import gradio as gr
 
-from settings_manager import WORKSPACE_DIR, load_settings
+# Re-expose settings helpers for testing/compatibility
+from settings_manager import WORKSPACE_DIR, load_settings  # noqa: F401
 
+# Re-expose RAG logs and shared state dynamically via RagUiModule below
+from rag_ui_state import log_to_rag, get_rag_logs, extract_text_content  # noqa: F401
 
-# ── Indexing functions ─────────────────────────────────────────
+# Import state, handlers, and dashboard components to delegate calls
+import rag_ui_state  # noqa: F401
+import rag_ui_handlers  # noqa: F401
+import rag_ui_dashboard  # noqa: F401
+
 
 def get_available_runs():
-    """Scan workspace for completed OCR runs that have markdown output.
-
-    Returns:
-        List of (display_name, run_dir_path) tuples for the dropdown.
-    """
+    import sys
+    rag_ui = sys.modules[__name__]
+    workspace = getattr(rag_ui, "WORKSPACE_DIR", WORKSPACE_DIR)
     runs = []
-    workspace = WORKSPACE_DIR
     if not os.path.exists(workspace):
         return runs
 
@@ -36,154 +39,400 @@ def get_available_runs():
         if os.path.exists(md_dir):
             md_files = [f for f in os.listdir(md_dir) if f.endswith(".md")]
             if md_files:
-                # Format: "run_20260711_092213 (1 file, 9 pages)"
                 display = f"{name} ({len(md_files)} file{'s' if len(md_files) != 1 else ''})"
                 runs.append((display, run_dir))
-
     return runs
 
 
+# --- Forwarding wrappers to keep functions in rag_ui namespace for patching ---
+
 def index_run(run_dir, progress=None):
-    """Index a single OCR run into the RAG system.
-
-    Chunks all markdown files, embeds them, and stores in Qdrant + PostgreSQL.
-
-    Args:
-        run_dir: Path to the OCR run directory.
-        progress: Optional Gradio progress tracker.
-
-    Yields:
-        Status update strings.
-    """
-    from indexing_service import CorpusIndexingService
-    for update in CorpusIndexingService.index_run(run_dir):
-        yield update
+    yield from rag_ui_handlers.index_run(run_dir, progress)
 
 
-def index_all_runs():
-    """Index all available OCR runs into the RAG corpus.
-
-    Yields:
-        Status update strings.
-    """
-    from indexing_service import CorpusIndexingService
-    for update in CorpusIndexingService.index_all_runs():
-        yield update
+def index_all_runs(get_available_runs_fn=None):
+    import sys
+    rag_ui = sys.modules[__name__]
+    if get_available_runs_fn is None:
+        get_available_runs_fn = rag_ui.get_available_runs
+    yield from rag_ui_handlers.index_all_runs(get_available_runs_fn)
 
 
-RAG_LOG_BUFFER = []
-LAST_CREATED_RUN_ID = None
+def start_rag_infra_ui():
+    return rag_ui_handlers.start_rag_infra_ui()
 
-def log_to_rag(message: str):
-    """Log a message to the RAG system log buffer with a timestamp."""
-    import datetime
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # Clean message of markdown formatting for console
-    clean_msg = message.replace("**", "").replace("`", "").strip()
-    if clean_msg:
-        RAG_LOG_BUFFER.append(f"[{timestamp}] {clean_msg}")
-        if len(RAG_LOG_BUFFER) > 500:
-            RAG_LOG_BUFFER.pop(0)
 
-def get_rag_logs() -> str:
-    """Get all accumulated RAG logs as a single string."""
-    return "\n".join(RAG_LOG_BUFFER)
+def stop_rag_infra_ui():
+    return rag_ui_handlers.stop_rag_infra_ui()
+
+
+def refresh_rag_status():
+    return rag_ui_handlers.refresh_rag_status()
+
+
+def refresh_runs_dropdown():
+    import sys
+    rag_ui = sys.modules[__name__]
+    runs = rag_ui.get_available_runs()
+    if runs:
+        return gr.update(choices=runs, value=runs[0][1])
+    return gr.update(choices=[], value=None)
+
+
+def get_corpus_info():
+    return rag_ui_handlers.get_corpus_info()
+
+
+def refresh_corpus_display():
+    import sys
+    rag_ui = sys.modules[__name__]
+    return rag_ui.get_corpus_info()
 
 
 def start_rag_infra_ui_wrapper():
-    log_to_rag("Starting RAG infrastructure services...")
-    msg, status_html = start_rag_infra_ui()
-    log_to_rag(f"Start infrastructure result: {msg}")
-    return msg, status_html, get_rag_logs()
+    import sys
+    rag_ui = sys.modules[__name__]
+    rag_ui.log_to_rag("Starting RAG infrastructure services...")
+    msg, status_html = rag_ui.start_rag_infra_ui()
+    rag_ui.log_to_rag(f"Start infrastructure result: {msg}")
+    return msg, status_html, rag_ui.get_rag_logs()
 
 
 def stop_rag_infra_ui_wrapper():
-    log_to_rag("Stopping RAG infrastructure services...")
-    msg, status_html = stop_rag_infra_ui()
-    log_to_rag(f"Stop infrastructure result: {msg}")
-    return msg, status_html, get_rag_logs()
+    import sys
+    rag_ui = sys.modules[__name__]
+    rag_ui.log_to_rag("Stopping RAG infrastructure services...")
+    msg, status_html = rag_ui.stop_rag_infra_ui()
+    rag_ui.log_to_rag(f"Stop infrastructure result: {msg}")
+    return msg, status_html, rag_ui.get_rag_logs()
 
 
-def index_run_ui_wrapper(run_dir):
+def parse_progress_state(accumulated_status: str):
+    import re
+    stages = [
+        {"id": "prepare", "label": "📁 Creating case & preparing storage", "status": "pending", "details": ""},
+        {"id": "upload", "label": "☁️ Uploading files to object store", "status": "pending", "details": ""},
+        {"id": "chunk", "label": "🧩 Chunking documents", "status": "pending", "details": ""},
+        {"id": "embed", "label": "🧠 Embedding chunks (Dense vector)", "status": "pending", "details": ""},
+        {"id": "index", "label": "⚡ Indexing into Qdrant & Database", "status": "pending", "details": ""},
+    ]
+    
+    # Analyze accumulated_status line by line
+    lines = accumulated_status.split("\n")
+    
+    total_chunks = 0
+    embed_current = 0
+    embed_total = 0
+    index_current = 0
+    index_total = 0
+    
+    active_stage = "prepare"
+    
+    for line in lines:
+        if "Initiated" in line or "Creating new case" in line or "Adding to existing case" in line:
+            active_stage = "prepare"
+        if "Copied" in line or "Registering case metadata" in line:
+            active_stage = "prepare"
+        if "Uploaded" in line or "Uploading to object storage" in line:
+            active_stage = "upload"
+        if "Created" in line or "Chunking documents" in line:
+            active_stage = "chunk"
+            if "Created" in line:
+                match = re.search(r"Created \*\*?(\d+)\*\*? chunk", line)
+                if match:
+                    total_chunks += int(match.group(1))
+        if "Embedding and indexing" in line or "Embedding chunks" in line:
+            active_stage = "embed"
+            match = re.search(r"indexing \*\*?(\d+)\*\*? chunks", line)
+            if match:
+                embed_total = int(match.group(1))
+                index_total = embed_total
+        if "[PROGRESS:embedding:" in line:
+            active_stage = "embed"
+            match = re.search(r"\[PROGRESS:embedding:(\d+)/(\d+)\]", line)
+            if match:
+                embed_current = int(match.group(1))
+                embed_total = int(match.group(2))
+        if "[PROGRESS:indexing:" in line:
+            active_stage = "index"
+            match = re.search(r"\[PROGRESS:indexing:(\d+)/(\d+)\]", line)
+            if match:
+                index_current = int(match.group(1))
+                index_total = int(match.group(2))
+        if "Successfully indexed" in line or "Successfully uploaded" in line or "✅ Done." in line:
+            active_stage = "done"
+
+    # Set statuses based on active_stage
+    stage_sequence = ["prepare", "upload", "chunk", "embed", "index"]
+    try:
+        active_idx = stage_sequence.index(active_stage)
+    except ValueError:
+        active_idx = len(stage_sequence)
+        
+    for idx, stage in enumerate(stages):
+        if idx < active_idx:
+            stage["status"] = "success"
+        elif idx == active_idx:
+            stage["status"] = "running"
+        else:
+            stage["status"] = "pending"
+            
+    if active_stage == "done":
+        for s in stages:
+            s["status"] = "success"
+            
+    # Add details
+    if embed_total > 0:
+        stages[3]["details"] = f"{embed_current}/{embed_total} chunks"
+        if active_stage == "embed":
+            stages[3]["progress"] = int((embed_current / embed_total) * 100)
+    if index_total > 0:
+        stages[4]["details"] = f"{index_current}/{index_total} chunks"
+        if active_stage == "index":
+            stages[4]["progress"] = int((index_current / index_total) * 100)
+            stages[3]["status"] = "success" # ensure previous is marked success
+            
+    return stages, active_stage
+
+
+def make_indexing_progress_card(stages, active_stage):
+    html = """
+    <div style='background: rgba(30, 41, 59, 0.4); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 12px; padding: 20px; font-family: "Outfit", sans-serif; box-shadow: 0 4px 20px rgba(0,0,0,0.3);'>
+        <h3 style='margin-top:0; margin-bottom: 15px; color: #f3f4f6; font-size: 1.1rem; display: flex; align-items: center; gap: 8px;'>
+            <span style='animation: pulse 2s infinite;'>⏳</span> RAG Indexing Progress
+        </h3>
+        <div style='display: flex; flex-direction: column; gap: 12px;'>
+    """
+    
+    for s in stages:
+        badge_style = ""
+        icon = ""
+        desc_color = "#9ca3af"
+        
+        if s["status"] == "success":
+            badge_style = "background-color: #064e3b; color: #34d399;"
+            icon = "✅"
+            desc_color = "#34d399"
+        elif s["status"] == "running":
+            badge_style = "background-color: #1e3a8a; color: #60a5fa; animation: pulse 2s infinite;"
+            icon = "🔄"
+            desc_color = "#e2e8f0"
+        else: # pending
+            badge_style = "background-color: #1e293b; color: #94a3b8;"
+            icon = "💤"
+            desc_color = "#4b5563"
+            
+        details_str = f" <span style='font-size:0.8rem; font-weight:normal; color:#94a3b8;'>({s['details']})</span>" if s["details"] else ""
+        
+        progress_bar_html = ""
+        if s["status"] == "running" and "progress" in s:
+            pct = s["progress"]
+            progress_bar_html = f"""
+            <div style='width: 100%; background: #1e293b; border-radius: 4px; height: 6px; margin-top: 6px; overflow: hidden;'>
+                <div style='width: {pct}%; height: 100%; background: linear-gradient(90deg, #60a5fa, #3b82f6); transition: width 0.3s ease;'></div>
+            </div>
+            """
+            
+        html += f"""
+        <div style='display: flex; flex-direction: column;'>
+            <div style='display: flex; align-items: center; justify-content: space-between;'>
+                <span style='font-weight: 500; color: {desc_color}; display: flex; align-items: center; gap: 8px;'>
+                    <span style='font-size: 1.1rem;'>{icon}</span> {s['label']} {details_str}
+                </span>
+                <span style='font-size: 0.75rem; font-weight: 600; padding: 2px 8px; border-radius: 9999px; {badge_style}'>
+                    {s['status'].upper()}
+                </span>
+            </div>
+            {progress_bar_html}
+        </div>
+        """
+        
+    html += """
+        </div>
+    </div>
+    """
+    return html
+
+
+def index_run_ui_wrapper(run_dir, progress=gr.Progress()):
+    import sys
+    rag_ui = sys.modules[__name__]
     accumulated_status = ""
-    log_to_rag(f"Initiated manual indexing for run directory: {run_dir}")
-    for update in index_run(run_dir):
+    rag_ui.log_to_rag(f"Initiated manual indexing for run directory: {run_dir}")
+    
+    if progress is not None:
+        progress(0.0, desc="Starting manual indexing...")
+        
+    for update in rag_ui.index_run(run_dir):
+        if not update.startswith("[PROGRESS:"):
+            rag_ui.log_to_rag(update)
         accumulated_status += update
-        log_to_rag(update)
-        yield accumulated_status, get_rag_logs()
+        
+        stages, active = parse_progress_state(accumulated_status)
+        progress_html = make_indexing_progress_card(stages, active)
+        
+        if progress is not None:
+            if active == "prepare":
+                progress(0.1, desc="Preparing indexing...")
+            elif active == "upload":
+                progress(0.2, desc="Uploading to storage...")
+            elif active == "chunk":
+                progress(0.4, desc="Chunking documents...")
+            elif active == "embed":
+                embed_pct = stages[3].get("progress", 0) / 100.0
+                progress(0.4 + 0.4 * embed_pct, desc=f"Embedding chunks ({stages[3]['details']})...")
+            elif active == "index":
+                index_pct = stages[4].get("progress", 0) / 100.0
+                progress(0.8 + 0.2 * index_pct, desc=f"Indexing chunks ({stages[4]['details']})...")
+            elif active == "done":
+                progress(1.0, desc="Indexing completed successfully!")
+                
+        yield progress_html, rag_ui.get_rag_logs()
 
 
-def index_all_runs_ui_wrapper():
+def index_all_runs_ui_wrapper(progress=gr.Progress()):
+    import sys
+    rag_ui = sys.modules[__name__]
     accumulated_status = ""
-    log_to_rag("Initiated bulk indexing for all runs")
-    for update in index_all_runs():
+    rag_ui.log_to_rag("Initiated bulk indexing for all runs")
+    
+    if progress is not None:
+        progress(0.0, desc="Starting bulk indexing...")
+        
+    for update in rag_ui.index_all_runs(get_available_runs_fn=rag_ui.get_available_runs):
+        if not update.startswith("[PROGRESS:"):
+            rag_ui.log_to_rag(update)
         accumulated_status += update
-        log_to_rag(update)
-        yield accumulated_status, get_rag_logs()
+        
+        stages, active = parse_progress_state(accumulated_status)
+        progress_html = make_indexing_progress_card(stages, active)
+        
+        if progress is not None:
+            if active == "prepare":
+                progress(0.1, desc="Preparing bulk indexing...")
+            elif active == "upload":
+                progress(0.2, desc="Uploading to storage...")
+            elif active == "chunk":
+                progress(0.4, desc="Chunking documents...")
+            elif active == "embed":
+                embed_pct = stages[3].get("progress", 0) / 100.0
+                progress(0.4 + 0.4 * embed_pct, desc=f"Embedding chunks ({stages[3]['details']})...")
+            elif active == "index":
+                index_pct = stages[4].get("progress", 0) / 100.0
+                progress(0.8 + 0.2 * index_pct, desc=f"Indexing chunks ({stages[4]['details']})...")
+            elif active == "done":
+                progress(1.0, desc="Bulk indexing completed successfully!")
+                
+        yield progress_html, rag_ui.get_rag_logs()
 
 
 def upload_and_index_markdown(files, case_option, new_case_name):
-    global LAST_CREATED_RUN_ID
-    from indexing_service import CorpusIndexingService
-    for update in CorpusIndexingService.add_markdown_to_case(files, case_option, new_case_name):
-        yield update
-    LAST_CREATED_RUN_ID = CorpusIndexingService.last_created_run_id
+    yield from rag_ui_handlers.upload_and_index_markdown(files, case_option, new_case_name)
 
 
-def upload_and_index_markdown_ui_wrapper(files, case_option, new_case_name):
+def upload_and_index_markdown_ui_wrapper(files, case_option, new_case_name, progress=gr.Progress()):
+    import sys
+    rag_ui = sys.modules[__name__]
     accumulated_status = ""
-    log_to_rag("Initiated external markdown upload and indexing")
-    for update in upload_and_index_markdown(files, case_option, new_case_name):
+    rag_ui.log_to_rag("Initiated external markdown upload and indexing")
+    
+    if progress is not None:
+        progress(0.0, desc="Preparing upload and case directories...")
+        
+    for update in rag_ui.upload_and_index_markdown(files, case_option, new_case_name):
+        if not update.startswith("[PROGRESS:"):
+            rag_ui.log_to_rag(update)
         accumulated_status += update
-        log_to_rag(update)
-        yield accumulated_status, get_rag_logs()
+        
+        stages, active = parse_progress_state(accumulated_status)
+        progress_html = make_indexing_progress_card(stages, active)
+        
+        if progress is not None:
+            if active == "prepare":
+                progress(0.1, desc="Creating case & prepping storage...")
+            elif active == "upload":
+                progress(0.2, desc="Uploading markdown files to object storage...")
+            elif active == "chunk":
+                progress(0.4, desc="Chunking markdown files...")
+            elif active == "embed":
+                embed_pct = stages[3].get("progress", 0) / 100.0
+                progress(0.4 + 0.4 * embed_pct, desc=f"Embedding chunks ({stages[3]['details']})...")
+            elif active == "index":
+                index_pct = stages[4].get("progress", 0) / 100.0
+                progress(0.8 + 0.2 * index_pct, desc=f"Indexing chunks ({stages[4]['details']})...")
+            elif active == "done":
+                progress(1.0, desc="Upload and indexing completed successfully!")
+                
+        yield progress_html, rag_ui.get_rag_logs()
 
 
+def user_message_submit(message, history):
+    return rag_ui_handlers.user_message_submit(message, history)
 
 
-def extract_text_content(content) -> str:
-    """Extract plain text from potential Gradio 6 chatbot content format."""
-    if not content:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        text_parts = []
-        for item in content:
-            if isinstance(item, str):
-                text_parts.append(item)
-            elif isinstance(item, dict):
-                # Gradio 6 format: {'text': "...", 'type': 'text'}
-                if "text" in item:
-                    text_parts.append(item["text"])
-        return "".join(text_parts)
-    if isinstance(content, dict):
-        if "text" in content:
-            return content["text"]
-    return str(content)
+def bot_respond(history, mode, model_url, model_name, top_k,
+                active_case, doc_type, author, date_from, date_to,
+                use_reranker_val=None, reranker_model_val=None, reranker_device_val=None,
+                progress=gr.Progress()):
+    yield from rag_ui_handlers.bot_respond(
+        history, mode, model_url, model_name, top_k,
+        active_case, doc_type, author, date_from, date_to,
+        use_reranker_val, reranker_model_val, reranker_device_val,
+        progress=progress
+    )
 
 
-# ── Chat functions ─────────────────────────────────────────────
+def save_analysis_settings(url, name, top_k, emb_model, use_reranker_val=None, reranker_model_val=None, reranker_device_val=None):
+    return rag_ui_handlers.save_analysis_settings(
+        url, name, top_k, emb_model, use_reranker_val, reranker_model_val, reranker_device_val
+    )
+
+
+def _do_export_md(history, mode, active_case):
+    return rag_ui_handlers._do_export_md(history, mode, active_case)
+
+
+def _do_export_txt(history, mode, active_case):
+    return rag_ui_handlers._do_export_txt(history, mode, active_case)
+
+
+def _do_export_csv(history, active_case):
+    return rag_ui_handlers._do_export_csv(history, active_case)
+
+
+def _build_dashboard_html():
+    return rag_ui_dashboard._build_dashboard_html()
+
+
+def _get_indexed_run_choices():
+    return rag_ui_dashboard._get_indexed_run_choices()
+
+
+def _refresh_active_case_after_upload():
+    import sys
+    import gradio as gr
+    rag_ui = sys.modules[__name__]
+    choices = rag_ui._get_indexed_run_choices()
+    val = rag_ui.LAST_CREATED_RUN_ID if rag_ui.LAST_CREATED_RUN_ID else ""
+    return gr.update(choices=choices, value=val)
+
+
+def _get_case_banner_html(active_case_label):
+    return rag_ui_dashboard._get_case_banner_html(active_case_label)
+
+
+def build_case_dashboard_ui():
+    return rag_ui_dashboard.build_case_dashboard_ui()
+
+
+# --- Deprecated/Compatibility wrappers for test cases ---
 
 def chat_respond(message, history, analysis_mode, analysis_model_url, analysis_model_name, top_k):
-    """Handle a chat message with RAG-augmented response.
-
-    Args:
-        message: User's message.
-        history: Chat history (list of [user, assistant] pairs).
-        analysis_mode: Selected analysis mode key.
-        analysis_model_url: vLLM server URL.
-        analysis_model_name: Model name.
-        top_k: Number of chunks to retrieve.
-
-    Yields:
-        Partial response strings for streaming display.
-    """
+    """Legacy chat_respond wrapper for backwards compatibility with tests."""
     if not message or not message.strip():
         yield ""
         return
 
-    # Convert Gradio chat history to OpenAI message format
     chat_history = []
     if history:
         for user_msg, assistant_msg in history:
@@ -192,19 +441,11 @@ def chat_respond(message, history, analysis_mode, analysis_model_url, analysis_m
             if assistant_msg:
                 chat_history.append({"role": "assistant", "content": extract_text_content(assistant_msg)})
 
-    # Map display mode to internal key
-    mode_map = {
-        "💬 Free Q&A": "free_qa",
-        "📅 Timeline Generator": "timeline",
-        "🏥 Injury Summary": "injury_summary",
-        "🔍 Inconsistency Finder": "inconsistency_finder",
-        "💊 Medication Tracker": "medication_tracker",
-    }
-    mode_key = mode_map.get(analysis_mode, "free_qa")
+    from rag.analyzer import ANALYSIS_MODE_MAP
+    mode_key = ANALYSIS_MODE_MAP.get(analysis_mode, "free_qa")
 
+    from rag.analyzer import analyze
     try:
-        from rag.analyzer import analyze
-
         partial_response = ""
         for chunk in analyze(
             query=message,
@@ -217,234 +458,65 @@ def chat_respond(message, history, analysis_mode, analysis_model_url, analysis_m
         ):
             partial_response += chunk
             yield partial_response
-
     except Exception as e:
         yield f"⚠️ Error: {str(e)}"
 
 
-def get_corpus_info():
-    """Get formatted corpus statistics for display.
-
-    Returns:
-        Markdown string with corpus stats.
-    """
-    try:
-        from rag.db import get_corpus_stats
-        from rag.embedding import get_collection_info
-
-        db_stats = get_corpus_stats()
-        qdrant_info = get_collection_info()
-
-        runs = db_stats.get("indexed_runs", 0)
-        docs = db_stats.get("indexed_documents", 0)
-        chunks = db_stats.get("total_chunks", 0)
-        authors = db_stats.get("unique_authors", 0)
-        earliest = db_stats.get("earliest_date", "—")
-        latest = db_stats.get("latest_date", "—")
-        vectors = qdrant_info.get("points_count", 0)
-
-        return (
-            f"**📊 Corpus Statistics**\n\n"
-            f"| Metric | Value |\n"
-            f"|---|---|\n"
-            f"| Indexed Runs | {runs} |\n"
-            f"| Documents | {docs} |\n"
-            f"| Chunks | {chunks} |\n"
-            f"| Vectors | {vectors} |\n"
-            f"| Unique Authors | {authors} |\n"
-            f"| Date Range | {earliest} → {latest} |\n"
-        )
-    except Exception as e:
-        return f"⚠️ Could not fetch corpus stats: {e}"
-
-
-# ── Infrastructure management ─────────────────────────────────
-
-def start_rag_infra_ui():
-    """Start RAG infrastructure and return status."""
-    try:
-        from rag_infra_manager import start_and_init_rag, get_rag_status_html
-        success, msg = start_and_init_rag()
-        status_html = get_rag_status_html()
-        return msg, status_html
-    except Exception as e:
-        return f"❌ Error: {e}", "<span class='badge-failed'>Error</span>"
-
-
-def stop_rag_infra_ui():
-    """Stop RAG infrastructure and return status."""
-    try:
-        from rag_infra_manager import stop_rag_infrastructure, get_rag_status_html
-        success, msg = stop_rag_infrastructure()
-        status_html = get_rag_status_html()
-        return msg, status_html
-    except Exception as e:
-        return f"❌ Error: {e}", "<span class='badge-failed'>Error</span>"
-
-
-def refresh_rag_status():
-    """Refresh RAG infrastructure status badges."""
-    try:
-        from rag_infra_manager import get_rag_status_html
-        return get_rag_status_html()
-    except Exception:
-        return "<span class='badge-idle'>Unknown</span>"
-
-
-def refresh_runs_dropdown():
-    """Refresh the available runs dropdown."""
-    runs = get_available_runs()
-    if runs:
-        return gr.update(choices=runs, value=runs[0][1])
-    return gr.update(choices=[], value=None)
-
-
-def refresh_corpus_display():
-    """Refresh the corpus statistics display."""
-    return get_corpus_info()
-
-
-# ── UI Builder ─────────────────────────────────────────────────
-
-# ── Dashboard rendering helpers ────────────────────────────────
-
-def _build_dashboard_html():
-    """Build HTML card grid for the Case Dashboard tab.
-
-    Returns:
-        HTML string with styled case cards.
-    """
-    try:
-        from rag.db import get_runs_with_stats
-        runs = get_runs_with_stats()
-    except Exception as e:
-        return f"<div class='dashboard-empty'>⚠️ Cannot load cases: {e}</div>"
-
-    from html_utils import make_case_dashboard_html
-    return make_case_dashboard_html(runs)
-
-
-def _get_indexed_run_choices():
-    """Get indexed runs as dropdown choices for the Active Case Selector.
-
-    Returns:
-        List of (display_label, run_id) tuples, plus an 'All Cases' option.
-    """
-    choices = [("🌐 All Cases (no filter)", "")]
-    try:
-        from rag.db import get_runs_with_stats
-        runs = get_runs_with_stats()
-        for run in runs:
-            run_dir = run.get("run_dir", "")
-            run_name = os.path.basename(run_dir) if run_dir else "unknown"
-            run_id = run.get("run_id", "")
-            docs = run.get("total_documents", 0)
-            chunks = run.get("total_chunks", 0)
-            label = f"📁 {run_name} ({docs} docs, {chunks} chunks)"
-            choices.append((label, run_id))
-    except Exception:
-        pass
-    return choices
-
-
-def _refresh_active_case_after_upload():
-    global LAST_CREATED_RUN_ID
-    choices = _get_indexed_run_choices()
-    val = LAST_CREATED_RUN_ID if LAST_CREATED_RUN_ID else ""
-    return gr.update(choices=choices, value=val)
-
-
-def _get_case_banner_html(active_case_label):
-    """Generate the active case indicator banner HTML."""
-    from html_utils import make_case_banner_html
-    return make_case_banner_html(active_case_label)
-
-
-def build_case_dashboard_ui():
-    """Build the Case Dashboard UI components.
-    
-    Returns:
-        Dict of component references.
-    """
-    with gr.Row():
-        gr.HTML(
-            "<div class='dashboard-header'>"
-            "<h2 style='margin:0; color:#c7d2fe; font-size:1.2rem;'>📊 Indexed Cases</h2>"
-            "</div>"
-        )
-    with gr.Row():
-        dashboard_refresh_btn = gr.Button("🔄 Refresh Dashboard", variant="secondary", size="sm")
-        dashboard_delete_selector = gr.Dropdown(
-            label="Select case to delete",
-            choices=[],
-            interactive=True,
-            scale=3,
-        )
-        dashboard_delete_btn = gr.Button("🗑️ Delete Case", variant="stop", size="sm")
-    dashboard_html = gr.HTML(value=_build_dashboard_html())
-    dashboard_status = gr.Markdown("")
-
-    def _refresh_dashboard():
-        html = _build_dashboard_html()
-        choices = _get_indexed_run_choices()
-        # Build delete selector choices (skip "All Cases")
-        del_choices = [(lbl, rid) for lbl, rid in choices if rid]
-        return html, gr.update(choices=del_choices, value=None), ""
-
-    dashboard_refresh_btn.click(
-        _refresh_dashboard,
-        outputs=[dashboard_html, dashboard_delete_selector, dashboard_status],
+def build_analysis_ui():
+    """Build the Gradio UI components for the RAG analysis section (for backwards compatibility/testing)."""
+    gr.HTML("<hr class='section-divider'>")
+    gr.HTML(
+        "<h1 class='gradient-title inline-header-title'>🧠 Document Analysis (RAG)</h1>"
+        "<p class='inline-rag-subtitle'>"
+        "Query, summarise, and cross-reference indexed medicolegal documents using local LLMs</p>"
     )
 
-    def _delete_case(run_id):
-        if not run_id:
-            return _build_dashboard_html(), gr.update(), "⚠️ No case selected."
-        try:
-            from rag.db import delete_run_data
-            delete_run_data(run_id)
-            log_to_rag(f"Deleted case data from PostgreSQL: {run_id[:12]}...")
-        except Exception as e:
-            log_to_rag(f"DB delete warning: {e}")
+    with gr.Tabs() as rag_tabs:
+        with gr.Tab("📊 Case Dashboard", id="tab-dashboard") as tab_dashboard:
+            dash = build_case_dashboard_ui()
+            dashboard_html = dash["dashboard_html"]
+            dashboard_delete_selector = dash["dashboard_delete_selector"]
+            dashboard_status = dash["dashboard_status"]
+            _refresh_dashboard = dash["refresh_fn"]
 
-        try:
-            from rag.embedding import delete_run_vectors
-            delete_run_vectors(run_id)
-            log_to_rag(f"Deleted vectors from Qdrant: {run_id[:12]}...")
-        except Exception as e:
-            log_to_rag(f"Vector delete warning: {e}")
+        with gr.Tab("💬 Analysis", id="tab-analysis") as tab_analysis:
+            chat = build_rag_chat_ui()
+            rag_infra_status = chat["rag_infra_status"]
+            chatbot = chat["chatbot"]
+            analysis_mode = chat["analysis_mode"]
+            corpus_stats = chat["corpus_stats"]
+            rag_log_viewer = chat["rag_log_viewer"]
+            active_case_selector = chat["active_case_selector"]
+            target_case_dropdown = chat.get("target_case_dropdown")
+            _refresh_case_selector = chat["refresh_fn"]
 
-        try:
-            from rag.storage import delete_run_objects
-            delete_run_objects(run_id)
-            log_to_rag(f"Deleted blobs from MinIO: {run_id[:12]}...")
-        except Exception as e:
-            log_to_rag(f"Storage delete warning: {e}")
+    tab_dashboard.select(
+        _refresh_dashboard,
+        outputs=[dashboard_html, dashboard_delete_selector, dashboard_status]
+    )
 
-        try:
-            from rag.cache import invalidate_query_cache
-            invalidate_query_cache()
-        except Exception:
-            pass
-
-        html = _build_dashboard_html()
+    def _refresh_analysis_tab_selectors():
         choices = _get_indexed_run_choices()
-        del_choices = [(lbl, rid) for lbl, rid in choices if rid]
-        return html, gr.update(choices=del_choices, value=None), "✅ Case deleted successfully."
+        target_choices = [("🆕 Create New Case", "new")] + [choice for choice in choices if choice[1] != ""]
+        return gr.update(choices=choices), gr.update(choices=target_choices, value="new")
 
-    dashboard_delete_btn.click(
-        _delete_case,
-        inputs=[dashboard_delete_selector],
-        outputs=[dashboard_html, dashboard_delete_selector, dashboard_status],
+    tab_analysis.select(
+        _refresh_analysis_tab_selectors,
+        outputs=[active_case_selector, target_case_dropdown]
     )
 
     return {
-        "dashboard_html": dashboard_html,
-        "dashboard_delete_selector": dashboard_delete_selector,
-        "dashboard_status": dashboard_status,
-        "refresh_btn": dashboard_refresh_btn,
-        "refresh_fn": _refresh_dashboard,
+        "rag_infra_status": rag_infra_status,
+        "chatbot": chatbot,
+        "analysis_mode": analysis_mode,
+        "corpus_stats": corpus_stats,
+        "rag_log_viewer": rag_log_viewer,
+        "active_case_selector": active_case_selector,
+        "rag_tabs": rag_tabs,
     }
 
+
+# --- UI Builder ---
 
 def build_rag_chat_ui():
     """Build the Gradio UI components for RAG Analysis Chat.
@@ -515,14 +587,9 @@ def build_rag_chat_ui():
                     value=settings.get("analysis_server_url", "http://localhost:8000/v1"),
                     placeholder="http://localhost:8000/v1",
                 )
+                from settings_manager import SUPPORTED_MODELS
                 current_analysis_model = settings.get("analysis_model_name", "nvidia/Phi-4-reasoning-plus-NVFP4")
-                analysis_choices = [
-                    "allenai/olmOCR-2-7B-1025-FP8",
-                    "nvidia/Qwen3.6-35B-A3B-NVFP4",
-                    "nvidia/Phi-4-reasoning-plus-NVFP4",
-                    "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
-                    "nvidia/Llama-3.3-70B-Instruct-NVFP4"
-                ]
+                analysis_choices = list(SUPPORTED_MODELS)
                 if current_analysis_model not in analysis_choices:
                     analysis_choices.append(current_analysis_model)
 
@@ -536,7 +603,7 @@ def build_rag_chat_ui():
                 retrieval_top_k = gr.Slider(
                     label="Retrieval Top-K",
                     minimum=3,
-                    maximum=20,
+                    maximum=500,
                     step=1,
                     value=settings.get("retrieval_top_k", 8),
                 )
@@ -555,7 +622,7 @@ def build_rag_chat_ui():
                     allow_custom_value=False,
                 )
 
-                gr.HTML("<hr style='border-color: rgba(255,255,255,0.06); margin: 8px 0;'>")
+                gr.HTML("<hr class='inline-section-divider'>")
                 gr.Markdown("**🔄 Cross-Encoder Reranker Settings**")
 
                 use_reranker = gr.Checkbox(
@@ -591,7 +658,7 @@ def build_rag_chat_ui():
                 save_analysis_btn = gr.Button("💾 Save Analysis Configuration", variant="secondary")
                 analysis_config_status = gr.Markdown()
 
-            # ── NEW: Search Filters ──
+            # ── Search Filters ──
             with gr.Accordion("🔍 Search Filters", open=True):
                 gr.Markdown("**🎯 Active Case** *(isolates queries to a single case)*")
                 active_case_selector = gr.Dropdown(
@@ -600,8 +667,7 @@ def build_rag_chat_ui():
                     value="",
                     interactive=True,
                 )
-
-                gr.HTML("<hr style='border-color: rgba(255,255,255,0.06); margin: 8px 0;'>")
+                gr.HTML("<hr class='inline-section-divider'>")
                 gr.Markdown("**📋 Metadata Filters** *(narrow search scope)*")
 
                 filter_doc_type = gr.Dropdown(
@@ -677,6 +743,7 @@ def build_rag_chat_ui():
                     lines=2,
                 )
                 chat_submit_btn = gr.Button("🚀 Ask", variant="primary", scale=1)
+                chat_stop_btn = gr.Button("⏹️ Stop", variant="stop", scale=1)
 
             with gr.Row():
                 clear_chat_btn = gr.Button("🗑️ Clear Chat", variant="secondary", size="sm")
@@ -813,7 +880,6 @@ def build_rag_chat_ui():
 
     def on_case_selected(run_id):
         """When a case is selected, update the banner and populate filter dropdowns."""
-        # Find the label for this run_id
         choices = _get_indexed_run_choices()
         label = None
         for lbl, rid in choices:
@@ -823,7 +889,6 @@ def build_rag_chat_ui():
 
         banner_html = _get_case_banner_html(label)
 
-        # Populate authors
         author_choices = [("All Authors", "")]
         if run_id:
             try:
@@ -834,7 +899,6 @@ def build_rag_chat_ui():
             except Exception:
                 pass
 
-        # Populate date range hints
         date_from_val = ""
         date_to_val = ""
         if run_id:
@@ -863,106 +927,6 @@ def build_rag_chat_ui():
 
     # ── Chat submission with filters ──
 
-    def user_message_submit(message, history):
-        """Append user message to chat history and clear input."""
-        if not message or not message.strip():
-            return "", history
-        history = history or []
-        history.append({"role": "user", "content": message})
-        return "", history
-
-    def bot_respond(history, mode, model_url, model_name, top_k,
-                    active_case, doc_type, author, date_from, date_to,
-                    use_reranker_val=None, reranker_model_val=None, reranker_device_val=None):
-        """Generate bot response with streaming, applying all active filters."""
-        if not history:
-            yield history, get_rag_logs()
-            return
-
-        last_user_msg = None
-        for msg in reversed(history):
-            if msg.get("role") == "user":
-                last_user_msg = extract_text_content(msg.get("content"))
-                break
-
-        if not last_user_msg:
-            yield history, get_rag_logs()
-            return
-
-        # Convert history to pairs for the analyze function
-        chat_pairs = []
-        for msg in history[:-1]:  # Exclude the last user message
-            role = msg.get("role")
-            content = extract_text_content(msg.get("content", ""))
-            chat_pairs.append({"role": role, "content": content})
-
-        # Resolve filter values (empty string → None)
-        run_id_f = active_case if active_case else None
-        doc_type_f = doc_type if doc_type else None
-        author_f = author if author else None
-        date_from_f = date_from.strip() if date_from and date_from.strip() else None
-        date_to_f = date_to.strip() if date_to and date_to.strip() else None
-
-        # Stream the response
-        history.append({"role": "assistant", "content": ""})
-
-        log_to_rag(f"RAG query received: '{last_user_msg}'")
-        filter_desc = []
-        if run_id_f:
-            filter_desc.append(f"case={run_id_f[:8]}...")
-        if doc_type_f:
-            filter_desc.append(f"type={doc_type_f}")
-        if author_f:
-            filter_desc.append(f"author={author_f}")
-        if date_from_f:
-            filter_desc.append(f"from={date_from_f}")
-        if date_to_f:
-            filter_desc.append(f"to={date_to_f}")
-        if filter_desc:
-            log_to_rag(f"Active filters: {', '.join(filter_desc)}")
-        log_to_rag(f"Retrieving top {top_k} matching chunks from vector database...")
-
-        try:
-            mode_map = {
-                "💬 Free Q&A": "free_qa",
-                "📅 Timeline Generator": "timeline",
-                "🏥 Injury Summary": "injury_summary",
-                "🔍 Inconsistency Finder": "inconsistency_finder",
-                "💊 Medication Tracker": "medication_tracker",
-            }
-            mode_key = mode_map.get(mode, "free_qa")
-
-            from rag.analyzer import analyze
-
-            partial = ""
-            for chunk in analyze(
-                query=last_user_msg,
-                mode=mode_key,
-                server_url=model_url,
-                model_name=model_name,
-                top_k=int(top_k),
-                chat_history=chat_pairs,
-                run_id_filter=run_id_f,
-                doc_type_filter=doc_type_f,
-                author_filter=author_f,
-                date_from=date_from_f,
-                date_to=date_to_f,
-                stream=True,
-                use_reranker=use_reranker_val,
-                reranker_model=reranker_model_val,
-                reranker_device=reranker_device_val,
-            ):
-                partial += chunk
-                history[-1]["content"] = partial
-                yield history, get_rag_logs()
-
-            log_to_rag("LLM response generation finished successfully.")
-
-        except Exception as e:
-            history[-1]["content"] = f"⚠️ Error: {str(e)}"
-            log_to_rag(f"RAG query error: {str(e)}")
-            yield history, get_rag_logs()
-
     _bot_inputs = [
         chatbot, analysis_mode, analysis_model_url, analysis_model_name,
         retrieval_top_k, active_case_selector, filter_doc_type,
@@ -970,7 +934,7 @@ def build_rag_chat_ui():
         use_reranker, reranker_model, reranker_device,
     ]
 
-    chat_input.submit(
+    submit_event1 = chat_input.submit(
         user_message_submit,
         inputs=[chat_input, chatbot],
         outputs=[chat_input, chatbot],
@@ -980,7 +944,7 @@ def build_rag_chat_ui():
         outputs=[chatbot, rag_log_viewer],
     )
 
-    chat_submit_btn.click(
+    submit_event2 = chat_submit_btn.click(
         user_message_submit,
         inputs=[chat_input, chatbot],
         outputs=[chat_input, chatbot],
@@ -988,34 +952,20 @@ def build_rag_chat_ui():
         bot_respond,
         inputs=_bot_inputs,
         outputs=[chatbot, rag_log_viewer],
+    )
+
+    def handle_chat_stop():
+        log_to_rag("RAG chat and model inference stopped by user.")
+        return get_rag_logs()
+
+    chat_stop_btn.click(
+        fn=handle_chat_stop,
+        inputs=None,
+        outputs=[rag_log_viewer],
+        cancels=[submit_event1, submit_event2],
     )
 
     # ── Analysis settings save ──
-
-    def save_analysis_settings(url, name, top_k, emb_model, use_reranker_val=None, reranker_model_val=None, reranker_device_val=None):
-        try:
-            from settings_manager import save_settings
-            settings = load_settings()
-            if use_reranker_val is None:
-                use_reranker_val = settings.get("use_reranker", True)
-            if reranker_model_val is None:
-                reranker_model_val = settings.get("reranker_model", "BAAI/bge-reranker-large")
-            if reranker_device_val is None:
-                reranker_device_val = settings.get("reranker_device", "cuda")
-
-            settings.update({
-                "analysis_server_url": url,
-                "analysis_model_name": name,
-                "retrieval_top_k": int(top_k),
-                "embedding_model": emb_model,
-                "use_reranker": bool(use_reranker_val),
-                "reranker_model": reranker_model_val,
-                "reranker_device": reranker_device_val,
-            })
-            save_settings(settings)
-            return "✅ Analysis configuration saved successfully."
-        except Exception as e:
-            return f"❌ Error: {e}"
 
     save_analysis_btn.click(
         save_analysis_settings,
@@ -1037,61 +987,6 @@ def build_rag_chat_ui():
     )
 
     # ── Export handlers ──
-
-    def _do_export_md(history, mode, active_case):
-        try:
-            from rag_export import export_chat_markdown
-            choices = _get_indexed_run_choices()
-            case_label = "All Cases"
-            for lbl, rid in choices:
-                if rid == active_case:
-                    case_label = lbl
-                    break
-            path = export_chat_markdown(history, mode, case_label)
-            if path:
-                log_to_rag(f"Exported chat as Markdown: {os.path.basename(path)}")
-                return gr.update(value=path, visible=True)
-            return gr.update(visible=False)
-        except Exception as e:
-            log_to_rag(f"Export error: {e}")
-            return gr.update(visible=False)
-
-    def _do_export_txt(history, mode, active_case):
-        try:
-            from rag_export import export_chat_text
-            choices = _get_indexed_run_choices()
-            case_label = "All Cases"
-            for lbl, rid in choices:
-                if rid == active_case:
-                    case_label = lbl
-                    break
-            path = export_chat_text(history, mode, case_label)
-            if path:
-                log_to_rag(f"Exported chat as Text: {os.path.basename(path)}")
-                return gr.update(value=path, visible=True)
-            return gr.update(visible=False)
-        except Exception as e:
-            log_to_rag(f"Export error: {e}")
-            return gr.update(visible=False)
-
-    def _do_export_csv(history, active_case):
-        try:
-            from rag_export import export_timeline_csv
-            choices = _get_indexed_run_choices()
-            case_label = "All Cases"
-            for lbl, rid in choices:
-                if rid == active_case:
-                    case_label = lbl
-                    break
-            path = export_timeline_csv(history, case_label)
-            if path:
-                log_to_rag(f"Exported timeline as CSV: {os.path.basename(path)}")
-                return gr.update(value=path, visible=True)
-            log_to_rag("CSV export: no table data found in chat history.")
-            return gr.update(visible=False)
-        except Exception as e:
-            log_to_rag(f"Export error: {e}")
-            return gr.update(visible=False)
 
     export_md_btn.click(
         _do_export_md,
@@ -1115,6 +1010,7 @@ def build_rag_chat_ui():
         "analysis_mode": analysis_mode,
         "corpus_stats": corpus_stats,
         "rag_log_viewer": rag_log_viewer,
+        "chat_stop_btn": chat_stop_btn,
         "active_case_selector": active_case_selector,
         "target_case_dropdown": target_case_dropdown,
         "refresh_corpus_btn": refresh_corpus_btn,
@@ -1128,63 +1024,24 @@ def build_rag_chat_ui():
     }
 
 
-def build_analysis_ui():
-    """Build the Gradio UI components for the RAG analysis section (for backwards compatibility/testing).
+# --- Dynamic properties module setup ---
 
-    Returns:
-        Dict of component references.
-    """
-    gr.HTML("<hr class='section-divider'>")
-    gr.HTML(
-        "<h1 class='gradient-title' style='margin:0; font-size:1.8rem;'>🧠 Document Analysis (RAG)</h1>"
-        "<p style='color:#9ca3af; margin:4px 0 12px 0; font-size:0.95rem;'>"
-        "Query, summarise, and cross-reference indexed medicolegal documents using local LLMs</p>"
-    )
+class RagUiModule(types.ModuleType):
+    @property
+    def LAST_CREATED_RUN_ID(self):
+        return rag_ui_state.LAST_CREATED_RUN_ID
 
-    with gr.Tabs() as rag_tabs:
-        with gr.Tab("📊 Case Dashboard", id="tab-dashboard") as tab_dashboard:
-            dash = build_case_dashboard_ui()
-            dashboard_html = dash["dashboard_html"]
-            dashboard_delete_selector = dash["dashboard_delete_selector"]
-            dashboard_status = dash["dashboard_status"]
-            _refresh_dashboard = dash["refresh_fn"]
+    @LAST_CREATED_RUN_ID.setter
+    def LAST_CREATED_RUN_ID(self, value):
+        rag_ui_state.LAST_CREATED_RUN_ID = value
 
-        with gr.Tab("💬 Analysis", id="tab-analysis") as tab_analysis:
-            chat = build_rag_chat_ui()
-            rag_infra_status = chat["rag_infra_status"]
-            chatbot = chat["chatbot"]
-            analysis_mode = chat["analysis_mode"]
-            corpus_stats = chat["corpus_stats"]
-            rag_log_viewer = chat["rag_log_viewer"]
-            active_case_selector = chat["active_case_selector"]
-            target_case_dropdown = chat.get("target_case_dropdown")
-            _refresh_case_selector = chat["refresh_fn"]
+    @property
+    def RAG_LOG_BUFFER(self):
+        return rag_ui_state.RAG_LOG_BUFFER
 
-    # Automatically refresh dashboard on tab select
-    tab_dashboard.select(
-        _refresh_dashboard,
-        outputs=[dashboard_html, dashboard_delete_selector, dashboard_status]
-    )
+    @RAG_LOG_BUFFER.setter
+    def RAG_LOG_BUFFER(self, value):
+        rag_ui_state.RAG_LOG_BUFFER = value
 
-    def _refresh_analysis_tab_selectors():
-        choices = _get_indexed_run_choices()
-        target_choices = [("🆕 Create New Case", "new")] + [choice for choice in choices if choice[1] != ""]
-        return gr.update(choices=choices), gr.update(choices=target_choices, value="new")
-
-    # Automatically refresh case choices on tab select
-    tab_analysis.select(
-        _refresh_analysis_tab_selectors,
-        outputs=[active_case_selector, target_case_dropdown]
-    )
-
-    return {
-        "rag_infra_status": rag_infra_status,
-        "chatbot": chatbot,
-        "analysis_mode": analysis_mode,
-        "corpus_stats": corpus_stats,
-        "rag_log_viewer": rag_log_viewer,
-        "active_case_selector": active_case_selector,
-        "rag_tabs": rag_tabs,
-    }
-
-
+# Substitute current entry in sys.modules to trigger descriptor lookups on references
+sys.modules[__name__].__class__ = RagUiModule

@@ -1,4 +1,6 @@
-def make_progress_bar_html(completed, total, elapsed_secs=0):
+from typing import Dict, List, Set, Optional, Any
+
+def make_progress_bar_html(completed: int, total: int, elapsed_secs: float = 0) -> str:
     pct = int((completed / total) * 100) if total > 0 else 0
     # ETA calculation
     eta_str = ""
@@ -41,7 +43,7 @@ def make_progress_bar_html(completed, total, elapsed_secs=0):
     </div>"""
 
 
-def make_file_status_html(file_mapping, file_page_counts, completed_files_set, failed_files_set=None):
+def make_file_status_html(file_mapping: Dict[int, str], file_page_counts: Dict[int, int], completed_files_set: Set[int], failed_files_set: Optional[Set[int]] = None) -> str:
     if failed_files_set is None:
         failed_files_set = set()
     
@@ -67,7 +69,7 @@ def make_file_status_html(file_mapping, file_page_counts, completed_files_set, f
     </table>"""
 
 
-def make_upload_manifest_html(file_mapping, file_page_counts, file_sizes):
+def make_upload_manifest_html(file_mapping: Dict[int, str], file_page_counts: Dict[int, int], file_sizes: Dict[int, int]) -> str:
     rows = ""
     total_pages = 0
     total_size = 0
@@ -105,7 +107,7 @@ def make_upload_manifest_html(file_mapping, file_page_counts, file_sizes):
     </table>"""
 
 
-def get_simulated_sparkline(is_up=True, latency_history=None):
+def get_simulated_sparkline(is_up: bool = True, latency_history: Optional[List[float]] = None) -> str:
     import random
     if not is_up:
         return """<svg class='sparkline-svg sparkline-red' viewBox='0 0 60 20'><polyline points='0,10 10,10 20,10 30,10 40,10 50,10 60,10'/></svg>"""
@@ -122,7 +124,7 @@ def get_simulated_sparkline(is_up=True, latency_history=None):
     return f"""<svg class='sparkline-svg' viewBox='0 0 60 20'><polyline points='{points_str}'/></svg>"""
 
 
-def make_backing_services_html(data):
+def make_backing_services_html(data: Dict[str, Any]) -> str:
     html_parts = []
     service_names = {
         "postgres": "PostgreSQL",
@@ -191,7 +193,7 @@ def make_backing_services_html(data):
     return "".join(html_parts)
 
 
-def make_system_health_badge_html(data):
+def make_system_health_badge_html(data: Dict[str, Any]) -> str:
     service_names = {
         "postgres": "PostgreSQL",
         "redis": "Redis",
@@ -262,7 +264,7 @@ def make_system_health_badge_html(data):
             """
 
 
-def make_gpu_metrics_html(data):
+def make_gpu_metrics_html(data: Dict[str, Any]) -> str:
     if not data["cuda_available"]:
         return """
         <div style='background: rgba(17, 24, 39, 0.5); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 10px; padding: 18px; margin-top: 10px;'>
@@ -376,7 +378,7 @@ def make_gpu_metrics_html(data):
     """
 
 
-def make_case_dashboard_html(runs):
+def make_case_dashboard_html(runs: List[Dict[str, Any]]) -> str:
     import os
     if not runs:
         return (
@@ -434,7 +436,7 @@ def make_case_dashboard_html(runs):
     return f"<div class='case-dashboard-grid'>{''.join(cards)}</div>"
 
 
-def make_case_banner_html(active_case_label):
+def make_case_banner_html(active_case_label: Optional[str]) -> str:
     if not active_case_label or "All Cases" in str(active_case_label):
         return (
             "<div class='active-case-banner'>"
@@ -451,5 +453,3 @@ def make_case_banner_html(active_case_label):
         f"<span class='banner-value'>{name}</span></span>"
         "</div>"
     )
-
-

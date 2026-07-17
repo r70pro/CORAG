@@ -1,0 +1,164 @@
+import gradio as gr
+from settings_manager import load_settings, save_settings
+from docker_manager import (
+    get_docker_status_str,
+    start_docker_container,
+    stop_docker_container,
+    create_docker_container,
+)
+from html_utils import (
+    make_backing_services_html,
+    make_system_health_badge_html,
+    make_gpu_metrics_html,
+)
+from system_diagnostics import (
+    check_backing_services_data,
+    get_gpu_metrics_data,
+)
+
+# Service health check latency history (keeps last 8 data points)
+service_history = {
+    "postgres": [1.2, 1.1, 1.3, 1.2, 1.4, 1.2, 1.3],
+    "redis": [0.8, 0.7, 0.9, 0.8, 0.8, 0.7, 0.8],
+    "minio": [3.0, 3.2, 2.9, 3.1, 3.0, 2.8, 3.0],
+    "qdrant": [2.1, 2.3, 2.0, 2.2, 2.1, 1.9, 2.1],
+    "vllm": [15.8, 15.2, 16.1, 15.5, 15.9, 14.8, 15.8]
+}
+
+
+def get_app_fn(name, fallback):
+    import sys
+    app = sys.modules.get('app')
+    return getattr(app, name, fallback) if app else fallback
+
+
+def check_backing_services(vllm_port=8000):
+    data = check_backing_services_data(service_history, vllm_port)
+    return make_backing_services_html(data), make_system_health_badge_html(data)
+
+
+def get_gpu_metrics():
+    data = get_gpu_metrics_data()
+    return make_gpu_metrics_html(data)
+
+
+def select_view(active_view_idx):
+    titles = [
+        "<h1 class='inline-header-title'>Ingestion Pipeline</h1><p class='inline-header-subtitle'>Upload and process documents through the OCR pipeline</p>",
+        "<h1 class='inline-header-title'>Layout Inspector</h1><p class='inline-header-subtitle'>Verify visual text extraction accuracy side-by-side</p>",
+        "<h1 class='inline-header-title'>Case Dashboard</h1><p class='inline-header-subtitle'>Overview of ingested case folders and databases</p>",
+        "<h1 class='inline-header-title'>RAG Processing (Query & Cite)</h1><p class='inline-header-subtitle'>Query, summarize, and retrieve matching citations</p>",
+        "<h1 class='inline-header-title'>System Diagnostics</h1><p class='inline-header-subtitle'>Backing services health status and hardware metrics</p>"
+    ]
+    
+    btn_updates = []
+    for i in range(5):
+        if i == active_view_idx:
+            btn_updates.append(gr.update(elem_classes=["nav-btn", "active-nav-btn"]))
+        else:
+            btn_updates.append(gr.update(elem_classes=["nav-btn"]))
+            
+    view_updates = []
+    for i in range(5):
+        view_updates.append(gr.update(visible=(i == active_view_idx)))
+        
+    return [gr.update(value=titles[active_view_idx])] + btn_updates + view_updates
+
+
+def trigger_save_settings(url, model, wrk, concat, dim, retries, guided, d_port, d_gpu, d_maxlen, d_token):
+    save_settings_fn = get_app_fn('save_settings', save_settings)
+    settings = load_settings()
+    settings.update({
+        "server_url": url,
+        "model_name": model,
+        "workers": int(wrk),
+        "max_concurrent_requests": int(concat),
+        "target_longest_image_dim": int(dim),
+        "max_page_retries": int(retries),
+        "guided_decoding": guided,
+        "docker_port": int(d_port),
+        "docker_gpu_mem": float(d_gpu),
+        "docker_max_model_len": int(d_maxlen),
+        "hf_token": d_token
+    })
+    return save_settings_fn(settings)
+
+
+def go_prev_page(current_page):
+    return max(1, current_page - 1)
+
+
+def go_next_page(current_page, total_pages):
+    return min(total_pages, current_page + 1)
+
+
+def ui_start_container(port):
+    start_fn = get_app_fn('start_docker_container', start_docker_container)
+    status_fn = get_app_fn('get_docker_status_str', get_docker_status_str)
+    success, msg = start_fn()
+    _, badge = status_fn(port)
+    return msg, badge
+
+
+def ui_stop_container(port):
+    stop_fn = get_app_fn('stop_docker_container', stop_docker_container)
+    status_fn = get_app_fn('get_docker_status_str', get_docker_status_str)
+    success, msg = stop_fn()
+    _, badge = status_fn(port)
+    return msg, badge
+
+
+def ui_recreate_container(hf_token, port, model, gpu_mem, max_model_len):
+    create_fn = get_app_fn('create_docker_container', create_docker_container)
+    status_fn = get_app_fn('get_docker_status_str', get_docker_status_str)
+    save_settings_fn = get_app_fn('save_settings', save_settings)
+    
+    success, msg = create_fn(hf_token, port, model, gpu_mem, max_model_len)
+    _, badge = status_fn(port)
+    
+    settings = load_settings()
+    settings.update({
+        "hf_token": hf_token,
+        "docker_port": int(port),
+        "model_name": model,
+        "docker_gpu_mem": float(gpu_mem),
+        "docker_max_model_len": int(max_model_len),
+        "server_url": f"http://localhost:{int(port)}/v1"
+    })
+    save_settings_fn(settings)
+    new_url = f"http://localhost:{int(port)}/v1"
+    return msg, badge, new_url
+
+
+def ui_header_start(port):
+    start_fn = get_app_fn('start_docker_container', start_docker_container)
+    status_fn = get_app_fn('get_docker_status_str', get_docker_status_str)
+    start_fn()
+    _, badge = status_fn(port)
+    return badge
+
+
+def ui_header_stop(port):
+    stop_fn = get_app_fn('stop_docker_container', stop_docker_container)
+    status_fn = get_app_fn('get_docker_status_str', get_docker_status_str)
+    stop_fn()
+    _, badge = status_fn(port)
+    return badge
+
+
+def periodic_status_check(port_val):
+    status_fn = get_app_fn('get_docker_status_str', get_docker_status_str)
+    if port_val is None:
+        port_val = 8000
+    _, badge_html = status_fn(int(port_val))
+    return badge_html
+
+
+def periodic_diagnostics_check(port_val):
+    check_backing = get_app_fn('check_backing_services', check_backing_services)
+    get_gpu = get_app_fn('get_gpu_metrics', get_gpu_metrics)
+    if port_val is None:
+        port_val = 8000
+    backing_services, header_health_badge = check_backing(vllm_port=int(port_val))
+    gpu_stats = get_gpu()
+    return backing_services, gpu_stats, header_health_badge

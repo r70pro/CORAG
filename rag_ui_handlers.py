@@ -1,0 +1,351 @@
+import os
+import gradio as gr
+from settings_manager import load_settings
+from rag_ui_state import log_to_rag, get_rag_logs, extract_text_content, get_available_runs
+import rag_ui_state
+
+# Forward declarations / imports to avoid circular reference issues
+def _get_indexed_run_choices():
+    from rag_ui_dashboard import _get_indexed_run_choices as get_choices
+    return get_choices()
+
+def _build_dashboard_html():
+    from rag_ui_dashboard import _build_dashboard_html as build_html
+    return build_html()
+
+
+def index_run(run_dir, progress=None):
+    """Index a single OCR run into the RAG system."""
+    from indexing_service import CorpusIndexingService
+    for update in CorpusIndexingService.index_run(run_dir):
+        yield update
+
+
+def index_all_runs(get_available_runs_fn=None):
+    """Index all available OCR runs into the RAG corpus."""
+    from indexing_service import CorpusIndexingService
+    for update in CorpusIndexingService.index_all_runs(get_available_runs_fn):
+        yield update
+
+
+def start_rag_infra_ui():
+    """Start RAG infrastructure and return status."""
+    try:
+        from rag_infra_manager import start_and_init_rag, get_rag_status_html
+        success, msg = start_and_init_rag()
+        status_html = get_rag_status_html()
+        return msg, status_html
+    except Exception as e:
+        return f"❌ Error: {e}", "<span class='badge-failed'>Error</span>"
+
+
+def stop_rag_infra_ui():
+    """Stop RAG infrastructure and return status."""
+    try:
+        from rag_infra_manager import stop_rag_infrastructure, get_rag_status_html
+        success, msg = stop_rag_infrastructure()
+        status_html = get_rag_status_html()
+        return msg, status_html
+    except Exception as e:
+        return f"❌ Error: {e}", "<span class='badge-failed'>Error</span>"
+
+
+def refresh_rag_status():
+    """Refresh RAG infrastructure status badges."""
+    try:
+        from rag_infra_manager import get_rag_status_html
+        return get_rag_status_html()
+    except Exception:
+        return "<span class='badge-idle'>Unknown</span>"
+
+
+def refresh_runs_dropdown():
+    """Refresh the available runs dropdown."""
+    runs = get_available_runs()
+    if runs:
+        return gr.update(choices=runs, value=runs[0][1])
+    return gr.update(choices=[], value=None)
+
+
+def get_corpus_info():
+    """Get formatted corpus statistics for display."""
+    try:
+        from rag.db import get_corpus_stats
+        from rag.embedding import get_collection_info
+
+        db_stats = get_corpus_stats()
+        qdrant_info = get_collection_info()
+
+        runs = db_stats.get("indexed_runs", 0)
+        docs = db_stats.get("indexed_documents", 0)
+        chunks = db_stats.get("total_chunks", 0)
+        authors = db_stats.get("unique_authors", 0)
+        earliest = db_stats.get("earliest_date", "—")
+        latest = db_stats.get("latest_date", "—")
+        vectors = qdrant_info.get("points_count", 0)
+
+        return (
+            f"**📊 Corpus Statistics**\n\n"
+            f"| Metric | Value |\n"
+            f"|---|---|\n"
+            f"| Indexed Runs | {runs} |\n"
+            f"| Documents | {docs} |\n"
+            f"| Chunks | {chunks} |\n"
+            f"| Vectors | {vectors} |\n"
+            f"| Unique Authors | {authors} |\n"
+            f"| Date Range | {earliest} → {latest} |\n"
+        )
+    except Exception as e:
+        return f"⚠️ Could not fetch corpus stats: {e}"
+
+
+def refresh_corpus_display():
+    """Refresh the corpus statistics display."""
+    return get_corpus_info()
+
+
+def start_rag_infra_ui_wrapper():
+    log_to_rag("Starting RAG infrastructure services...")
+    msg, status_html = start_rag_infra_ui()
+    log_to_rag(f"Start infrastructure result: {msg}")
+    return msg, status_html, get_rag_logs()
+
+
+def stop_rag_infra_ui_wrapper():
+    log_to_rag("Stopping RAG infrastructure services...")
+    msg, status_html = stop_rag_infra_ui()
+    log_to_rag(f"Stop infrastructure result: {msg}")
+    return msg, status_html, get_rag_logs()
+
+
+def index_run_ui_wrapper(run_dir):
+    accumulated_status = ""
+    log_to_rag(f"Initiated manual indexing for run directory: {run_dir}")
+    for update in index_run(run_dir):
+        accumulated_status += update
+        log_to_rag(update)
+        yield accumulated_status, get_rag_logs()
+
+
+def index_all_runs_ui_wrapper():
+    accumulated_status = ""
+    log_to_rag("Initiated bulk indexing for all runs")
+    for update in index_all_runs():
+        accumulated_status += update
+        log_to_rag(update)
+        yield accumulated_status, get_rag_logs()
+
+
+def upload_and_index_markdown(files, case_option, new_case_name):
+    from indexing_service import CorpusIndexingService
+    for update in CorpusIndexingService.add_markdown_to_case(files, case_option, new_case_name):
+        yield update
+    rag_ui_state.LAST_CREATED_RUN_ID = CorpusIndexingService.last_created_run_id
+
+
+def upload_and_index_markdown_ui_wrapper(files, case_option, new_case_name):
+    accumulated_status = ""
+    log_to_rag("Initiated external markdown upload and indexing")
+    for update in upload_and_index_markdown(files, case_option, new_case_name):
+        accumulated_status += update
+        log_to_rag(update)
+        yield accumulated_status, get_rag_logs()
+
+
+def user_message_submit(message, history):
+    """Append user message to chat history and clear input."""
+    if not message or not message.strip():
+        return "", history
+    history = history or []
+    history.append({"role": "user", "content": message})
+    return "", history
+
+
+def bot_respond(history, mode, model_url, model_name, top_k,
+                active_case, doc_type, author, date_from, date_to,
+                use_reranker_val=None, reranker_model_val=None, reranker_device_val=None,
+                progress=None):
+    """Generate bot response with streaming, applying all active filters."""
+    if not history:
+        yield history, get_rag_logs()
+        return
+
+    last_user_msg = None
+    for msg in reversed(history):
+        if msg.get("role") == "user":
+            last_user_msg = extract_text_content(msg.get("content"))
+            break
+
+    if not last_user_msg:
+        yield history, get_rag_logs()
+        return
+
+    # Convert history to pairs for the analyze function
+    chat_pairs = []
+    for msg in history[:-1]:  # Exclude the last user message
+        role = msg.get("role")
+        content = extract_text_content(msg.get("content", ""))
+        chat_pairs.append({"role": role, "content": content})
+
+    # Resolve filter values (empty string → None)
+    run_id_f = active_case if active_case else None
+    doc_type_f = doc_type if doc_type else None
+    author_f = author if author else None
+    date_from_f = date_from.strip() if date_from and date_from.strip() else None
+    date_to_f = date_to.strip() if date_to and date_to.strip() else None
+
+    # Stream the response
+    history.append({"role": "assistant", "content": "🔍 Retrieving and reranking matching chunks..."})
+    yield history, get_rag_logs()
+
+    log_to_rag(f"RAG query received: '{last_user_msg}'")
+    filter_desc = []
+    if run_id_f:
+        filter_desc.append(f"case={run_id_f[:8]}...")
+    if doc_type_f:
+        filter_desc.append(f"type={doc_type_f}")
+    if author_f:
+        filter_desc.append(f"author={author_f}")
+    if date_from_f:
+        filter_desc.append(f"from={date_from_f}")
+    if date_to_f:
+        filter_desc.append(f"to={date_to_f}")
+    if filter_desc:
+        log_to_rag(f"Active filters: {', '.join(filter_desc)}")
+    log_to_rag(f"Retrieving top {top_k} matching chunks from vector database...")
+
+    try:
+        from rag.analyzer import ANALYSIS_MODE_MAP
+        mode_key = ANALYSIS_MODE_MAP.get(mode, "free_qa")
+
+        from rag.analyzer import analyze
+
+        def retrieve_progress(pct, desc):
+            if progress is not None:
+                progress(pct * 0.7, desc=desc)
+
+        if progress is not None:
+            progress(0.0, desc="Initiating RAG pipeline...")
+
+        partial = ""
+        first_chunk = True
+        for chunk in analyze(
+            query=last_user_msg,
+            mode=mode_key,
+            server_url=model_url,
+            model_name=model_name,
+            top_k=int(top_k),
+            chat_history=chat_pairs,
+            run_id_filter=run_id_f,
+            doc_type_filter=doc_type_f,
+            author_filter=author_f,
+            date_from=date_from_f,
+            date_to=date_to_f,
+            stream=True,
+            use_reranker=use_reranker_val,
+            reranker_model=reranker_model_val,
+            reranker_device=reranker_device_val,
+            progress_callback=retrieve_progress,
+        ):
+            if first_chunk:
+                first_chunk = False
+                partial = ""
+                if progress is not None:
+                    progress(0.8, desc="Synthesizing response...")
+            partial += chunk
+            history[-1]["content"] = partial
+            yield history, get_rag_logs()
+
+        if progress is not None:
+            progress(1.0, desc="Finished.")
+
+        log_to_rag("LLM response generation finished successfully.")
+
+    except Exception as e:
+        history[-1]["content"] = f"⚠️ Error: {str(e)}"
+        log_to_rag(f"RAG query error: {str(e)}")
+        yield history, get_rag_logs()
+
+
+def save_analysis_settings(url, name, top_k, emb_model, use_reranker_val=None, reranker_model_val=None, reranker_device_val=None):
+    try:
+        from settings_manager import save_settings
+        settings = load_settings()
+        if use_reranker_val is None:
+            use_reranker_val = settings.get("use_reranker", True)
+        if reranker_model_val is None:
+            reranker_model_val = settings.get("reranker_model", "BAAI/bge-reranker-large")
+        if reranker_device_val is None:
+            reranker_device_val = settings.get("reranker_device", "cuda")
+
+        settings.update({
+            "analysis_server_url": url,
+            "analysis_model_name": name,
+            "retrieval_top_k": int(top_k),
+            "embedding_model": emb_model,
+            "use_reranker": bool(use_reranker_val),
+            "reranker_model": reranker_model_val,
+            "reranker_device": reranker_device_val,
+        })
+        save_settings(settings)
+        return "✅ Analysis configuration saved successfully."
+    except Exception as e:
+        return f"❌ Error: {e}"
+
+
+def _do_export_md(history, mode, active_case):
+    try:
+        from rag_export import export_chat_markdown
+        choices = _get_indexed_run_choices()
+        case_label = "All Cases"
+        for lbl, rid in choices:
+            if rid == active_case:
+                case_label = lbl
+                break
+        path = export_chat_markdown(history, mode, case_label)
+        if path:
+            log_to_rag(f"Exported chat as Markdown: {os.path.basename(path)}")
+            return gr.update(value=path, visible=True)
+        return gr.update(visible=False)
+    except Exception as e:
+        log_to_rag(f"Export error: {e}")
+        return gr.update(visible=False)
+
+
+def _do_export_txt(history, mode, active_case):
+    try:
+        from rag_export import export_chat_text
+        choices = _get_indexed_run_choices()
+        case_label = "All Cases"
+        for lbl, rid in choices:
+            if rid == active_case:
+                case_label = lbl
+                break
+        path = export_chat_text(history, mode, case_label)
+        if path:
+            log_to_rag(f"Exported chat as Text: {os.path.basename(path)}")
+            return gr.update(value=path, visible=True)
+        return gr.update(visible=False)
+    except Exception as e:
+        log_to_rag(f"Export error: {e}")
+        return gr.update(visible=False)
+
+
+def _do_export_csv(history, active_case):
+    try:
+        from rag_export import export_timeline_csv
+        choices = _get_indexed_run_choices()
+        case_label = "All Cases"
+        for lbl, rid in choices:
+            if rid == active_case:
+                case_label = lbl
+                break
+        path = export_timeline_csv(history, case_label)
+        if path:
+            log_to_rag(f"Exported timeline as CSV: {os.path.basename(path)}")
+            return gr.update(value=path, visible=True)
+        log_to_rag("CSV export: no table data found in chat history.")
+        return gr.update(visible=False)
+    except Exception as e:
+        log_to_rag(f"Export error: {e}")
+        return gr.update(visible=False)

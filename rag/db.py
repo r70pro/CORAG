@@ -8,10 +8,13 @@ Manages:
 """
 
 import os
+import sys
 import json
 import psycopg2
 import psycopg2.extras
+import threading
 from contextlib import contextmanager
+from psycopg2.pool import ThreadedConnectionPool
 
 # Default connection parameters
 DEFAULT_DB_CONFIG = {
@@ -19,8 +22,20 @@ DEFAULT_DB_CONFIG = {
     "port": 5432,
     "dbname": "olmocr_rag",
     "user": "olmocr",
-    "password": "pg_pass_5c6d3284f18b90a6e2d8",
+    "password": "",
 }
+
+_connection_pool = None
+_pool_lock = threading.Lock()
+
+def get_pool():
+    global _connection_pool
+    if _connection_pool is None:
+        with _pool_lock:
+            if _connection_pool is None:
+                config = get_db_config()
+                _connection_pool = ThreadedConnectionPool(1, 10, **config)
+    return _connection_pool
 
 
 def get_db_config():
@@ -36,18 +51,31 @@ def get_db_config():
 
 @contextmanager
 def get_connection(config=None):
-    """Context manager for database connections."""
-    if config is None:
-        config = get_db_config()
-    conn = psycopg2.connect(**config)
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    """Context manager for database connections, using connection pooling in production."""
+    is_testing = os.environ.get("TESTING") == "true" or "pytest" in sys.modules
+    if config is not None or is_testing:
+        if config is None:
+            config = get_db_config()
+        conn = psycopg2.connect(**config)
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    else:
+        pool = get_pool()
+        conn = pool.getconn()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            pool.putconn(conn)
 
 
 def init_schema():

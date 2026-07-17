@@ -143,6 +143,57 @@ class TestRAGDBErrors(unittest.TestCase):
         res = rag_db.is_run_indexed("r1", check_vector_store=True)
         self.assertTrue(res)
 
+    @patch("rag.db.ThreadedConnectionPool")
+    def test_connection_pooling(self, mock_pool_cls):
+        import sys
+        mock_pool = MagicMock()
+        mock_pool_cls.return_value = mock_pool
+        mock_conn = MagicMock()
+        mock_pool.getconn.return_value = mock_conn
+
+        # Reset global state to ensure pool is recreated
+        rag_db._connection_pool = None
+
+        with patch.dict(os.environ, {"TESTING": "false"}):
+            with patch.dict("sys.modules"):
+                if "pytest" in sys.modules:
+                    del sys.modules["pytest"]
+                
+                # Trigger pooling path
+                with rag_db.get_connection():
+                    pass
+                
+                mock_pool.getconn.assert_called_once()
+                mock_pool.putconn.assert_called_once_with(mock_conn)
+
+        # Reset global state back to None after testing
+        rag_db._connection_pool = None
+
+    @patch("rag.db.ThreadedConnectionPool")
+    def test_connection_pooling_rollback_on_exception(self, mock_pool_cls):
+        import sys
+        mock_pool = MagicMock()
+        mock_pool_cls.return_value = mock_pool
+        mock_conn = MagicMock()
+        mock_pool.getconn.return_value = mock_conn
+
+        rag_db._connection_pool = None
+
+        with patch.dict(os.environ, {"TESTING": "false"}):
+            with patch.dict("sys.modules"):
+                if "pytest" in sys.modules:
+                    del sys.modules["pytest"]
+                
+                with self.assertRaises(ValueError):
+                    with rag_db.get_connection():
+                        raise ValueError("Rollback in pool")
+                
+                mock_pool.getconn.assert_called_once()
+                mock_conn.rollback.assert_called_once()
+                mock_pool.putconn.assert_called_once_with(mock_conn)
+
+        rag_db._connection_pool = None
+
 
 if __name__ == "__main__":
     unittest.main()

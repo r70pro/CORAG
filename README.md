@@ -190,7 +190,7 @@ The application uses a persistent **left navigation sidebar** with 5 content pan
 | Section | Contents | Key Features |
 |:---|:---|:---|
 | **Panel Navigation** | 5 radio buttons: 📄 PDF Ingestion, 🔍 Layout Inspector, 📊 Case Dashboard, 💬 RAG Processing, 🖥️ System Diagnostics | `gr.Radio` with visibility toggling via `.change()` callbacks |
-| **🐳 Inference Server (Docker)** | HF token, Docker port, GPU memory slider (0.1–1.0), max model length (2048–32768), Start/Stop/Recreate buttons | Creates and manages the `vllm/vllm-openai` Docker container |
+| **🐳 Inference Server (Docker)** | HF token, Docker port, GPU memory slider (0.1–1.0), max content length (up to 1M, model-dependent), Start/Stop/Recreate buttons | Creates and manages the `vllm/vllm-openai` Docker container |
 | **⚙️ Pipeline Settings** | Model selector, workers (1–64), concurrency (1–2000), image dimension (512–2048px), retries (1–20), guided decoding | 💾 Save Configuration button persists to `settings.json` |
 | **Active Role** | Dynamic badge showing current panel context | Updates as user navigates between panels |
 

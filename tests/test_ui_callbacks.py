@@ -115,7 +115,7 @@ class TestUICallbacks(unittest.TestCase):
     @patch("rag.db.register_run")
     @patch("rag.db.register_document")
     @patch("rag.storage.upload_markdown")
-    @patch("rag.embedding.upsert_chunks")
+    @patch("rag.embedding.upsert_chunks_generator")
     @patch("rag.db.insert_chunks")
     @patch("rag.db.mark_document_indexed")
     @patch("rag.db.mark_run_indexed")
@@ -126,7 +126,12 @@ class TestUICallbacks(unittest.TestCase):
     ):
         mock_chunk.return_value = {"doc_1": {"md_file": "report.md", "md_path": "/tmp/report.md", "chunks": []}}
         mock_upload.side_effect = Exception("Storage upload error")
-        mock_upsert.return_value = []
+        def mock_upsert_side_effect(chunks, *args, **kwargs):
+            for i, c in enumerate(chunks):
+                c["qdrant_point_id"] = f"p{i+1}"
+            yield {"stage": "embedding", "current": len(chunks), "total": len(chunks)}
+            yield {"stage": "indexing", "current": len(chunks), "total": len(chunks)}
+        mock_upsert.side_effect = mock_upsert_side_effect
         updates = list(rag_ui.index_run("/mock/run"))
         full_text = "".join(updates)
         self.assertTrue("Storage upload warning" in full_text)
@@ -139,7 +144,7 @@ class TestUICallbacks(unittest.TestCase):
     @patch("rag.db.register_run")
     @patch("rag.db.register_document")
     @patch("rag.storage.upload_markdown")
-    @patch("rag.embedding.upsert_chunks")
+    @patch("rag.embedding.upsert_chunks_generator")
     def test_index_run_embeddings_exception(self, mock_upsert, mock_upload, mock_reg_doc, mock_reg_run, mock_chunk, mock_settings, mock_is_indexed, mock_exists):
         mock_chunk.return_value = {"doc_1": {"md_file": "report.md", "md_path": "/tmp/report.md", "chunks": [{"text": "chunk"}]}}
         mock_upsert.side_effect = Exception("Embedding computation failure")
@@ -153,11 +158,16 @@ class TestUICallbacks(unittest.TestCase):
     @patch("rag.db.register_run")
     @patch("rag.db.register_document")
     @patch("rag.storage.upload_markdown")
-    @patch("rag.embedding.upsert_chunks")
+    @patch("rag.embedding.upsert_chunks_generator")
     @patch("rag.db.insert_chunks")
     def test_index_run_db_insert_chunks_exception(self, mock_insert, mock_upsert, mock_upload, mock_reg_doc, mock_reg_run, mock_chunk, mock_settings, mock_is_indexed, mock_exists):
         mock_chunk.return_value = {"doc_1": {"md_file": "report.md", "md_path": "/tmp/report.md", "chunks": [{"text": "chunk"}]}}
-        mock_upsert.return_value = [{"qdrant_point_id": "p1"}]
+        def mock_upsert_side_effect(chunks, *args, **kwargs):
+            for i, c in enumerate(chunks):
+                c["qdrant_point_id"] = f"p{i+1}"
+            yield {"stage": "embedding", "current": len(chunks), "total": len(chunks)}
+            yield {"stage": "indexing", "current": len(chunks), "total": len(chunks)}
+        mock_upsert.side_effect = mock_upsert_side_effect
         mock_insert.side_effect = Exception("DB chunk insertion fail")
         updates = list(rag_ui.index_run("/mock/run"))
         self.assertTrue("Embedding/indexing failed" in "".join(updates))
@@ -298,10 +308,12 @@ class TestUICallbacks(unittest.TestCase):
         user_submit = registered_fns.get("user_message_submit")
         bot_respond = registered_fns.get("bot_respond")
         save_settings = registered_fns.get("save_analysis_settings")
+        handle_chat_stop = registered_fns.get("handle_chat_stop")
 
         self.assertIsNotNone(user_submit)
         self.assertIsNotNone(bot_respond)
         self.assertIsNotNone(save_settings)
+        self.assertIsNotNone(handle_chat_stop)
 
         # 1. Test user_message_submit
         self.assertEqual(user_submit("", []), ("", []))
@@ -333,6 +345,11 @@ class TestUICallbacks(unittest.TestCase):
             mock_save.side_effect = Exception("Disk full")
             status2 = save_settings("url", "name", 5, "emb")
             self.assertIn("Error", status2)
+
+        # 6. Test handle_chat_stop
+        rag_ui.RAG_LOG_BUFFER.clear()
+        logs_res = handle_chat_stop()
+        self.assertIn("stopped by user", logs_res)
 
     @patch("os.path.exists")
     @patch("rag.db.is_run_indexed", return_value=False)
@@ -480,7 +497,7 @@ class TestUICallbacks(unittest.TestCase):
         res = list(rag_ui.index_run_ui_wrapper("/path/to/run"))
         self.assertEqual(len(res), 2)
         accumulated_status, logs = res[-1]
-        self.assertEqual(accumulated_status, "Step 1\nStep 2\n")
+        self.assertIn("RAG Indexing Progress", accumulated_status)
         self.assertTrue("manual indexing" in logs)
 
     @patch("rag_ui.index_all_runs")
@@ -489,7 +506,7 @@ class TestUICallbacks(unittest.TestCase):
         res = list(rag_ui.index_all_runs_ui_wrapper())
         self.assertEqual(len(res), 2)
         accumulated_status, logs = res[-1]
-        self.assertEqual(accumulated_status, "Start\nDone\n")
+        self.assertIn("RAG Indexing Progress", accumulated_status)
         self.assertTrue("bulk indexing" in logs)
 
     @patch("rag.db.get_runs_with_stats")
@@ -740,6 +757,19 @@ class TestUICallbacks(unittest.TestCase):
 
             res_tab = _refresh_analysis_tab_selectors()
             self.assertEqual(res_tab[0].get("choices"), [("lbl", "r1")])
+
+    def test_rag_ui_buffer_descriptor(self):
+        import sys
+        import rag_ui_state
+
+        # Get original log buffer
+        orig = rag_ui_state.RAG_LOG_BUFFER
+        try:
+            rag_ui_module = sys.modules['rag_ui']
+            rag_ui_module.RAG_LOG_BUFFER = ["mock_log_val"]
+            self.assertEqual(rag_ui_module.RAG_LOG_BUFFER, ["mock_log_val"])
+        finally:
+            rag_ui_state.RAG_LOG_BUFFER = orig
 
 
 if __name__ == "__main__":

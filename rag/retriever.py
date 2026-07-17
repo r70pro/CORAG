@@ -5,7 +5,7 @@ and Maximal Marginal Relevance (MMR) re-ranking.
 This module connects user queries to the most relevant document chunks.
 """
 
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 
 from qdrant_client.models import (
     Filter,
@@ -36,6 +36,7 @@ def search_similar(
     use_reranker: Optional[bool] = None,
     reranker_model: Optional[str] = None,
     reranker_device: Optional[str] = None,
+    progress_callback: Optional[Any] = None,
 ) -> List[Dict]:
     """Search for chunks similar to the query with optional metadata filters.
 
@@ -70,6 +71,9 @@ def search_similar(
     search_limit = top_k * 3 if use_reranker else top_k * 2
     if search_limit < 20 and use_reranker:
         search_limit = 20
+
+    if progress_callback:
+        progress_callback(0.1, "Encoding query and searching vector store...")
 
     # Encode the query
     query_vector = encode_query(query)
@@ -178,6 +182,8 @@ def search_similar(
 
     # Apply Reranker if enabled
     if use_reranker and enriched_results:
+        if progress_callback:
+            progress_callback(0.4, f"Reranking {len(enriched_results)} chunks using {reranker_model}...")
         try:
             import math
             from rag.embedding import load_reranker_model
@@ -194,14 +200,21 @@ def search_similar(
             # Sort by new scores descending
             enriched_results.sort(key=lambda x: x["score"], reverse=True)
             print(f"Reranking completed successfully for {len(enriched_results)} chunks using {reranker_model}.")
+            if progress_callback:
+                progress_callback(0.8, "Rerank completed. Applying diversity filters...")
         except Exception as e:
             print(f"Error during reranking: {e}. Falling back to default retrieval.")
+            if progress_callback:
+                progress_callback(0.8, f"Reranking failed: {e}. Falling back to default retrieval...")
 
     # Apply MMR re-ranking for diversity
     if len(enriched_results) > top_k:
         enriched_results = _mmr_rerank(enriched_results, query_vector, top_k)
     else:
         enriched_results = enriched_results[:top_k]
+
+    if progress_callback:
+        progress_callback(1.0, "Retrieval & reranking complete.")
 
     return enriched_results
 
@@ -230,7 +243,10 @@ def _mmr_rerank(
     if len(results) <= top_k:
         return results
 
-    # Use scores as proxy for relevance (already computed by Qdrant)
+    # Pre-calculate token sets and their lengths to avoid millions of allocations inside the loop
+    token_sets = [set((res["text"] or "").lower().split()) for res in results]
+    set_lengths = [len(s) for s in token_sets]
+
     selected = []
     candidates = list(range(len(results)))
 
@@ -248,10 +264,20 @@ def _mmr_rerank(
             relevance = results[cand_idx]["score"]
 
             # Diversity component — max similarity to any selected result
-            max_sim_to_selected = max(
-                _text_similarity(results[cand_idx]["text"], results[sel_idx]["text"])
-                for sel_idx in selected
-            )
+            cand_set = token_sets[cand_idx]
+            cand_len = set_lengths[cand_idx]
+            max_sim_to_selected = 0.0
+            if cand_len > 0:
+                for sel_idx in selected:
+                    sel_set = token_sets[sel_idx]
+                    sel_len = set_lengths[sel_idx]
+                    if sel_len == 0:
+                        continue
+                    intersection_len = len(cand_set & sel_set)
+                    union_len = cand_len + sel_len - intersection_len
+                    sim = intersection_len / union_len if union_len > 0 else 0.0
+                    if sim > max_sim_to_selected:
+                        max_sim_to_selected = sim
 
             # MMR score
             mmr_score = lambda_param * relevance - (1 - lambda_param) * max_sim_to_selected

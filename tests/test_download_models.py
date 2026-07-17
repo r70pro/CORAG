@@ -29,17 +29,13 @@ class TestDownloadModels(unittest.TestCase):
     @patch("download_models.time.sleep")
     def test_download_failure_and_retry(self, mock_sleep, mock_snapshot):
         # Fail first 2 attempts, succeed on 3rd for the first model, and succeed immediately for others
+        import download_models
         mock_snapshot.side_effect = [
             Exception("Connection error"),
             Exception("Timeout"),
-            "/path/to/downloaded/model",
-            "/path/to/downloaded/model",
-            "/path/to/downloaded/model",
-            "/path/to/downloaded/model",
-        ]
+        ] + ["/path/to/downloaded/model"] * len(download_models.MODELS)
         
         with patch("builtins.print"):
-            import download_models
             download_models.download_all_models()
             
         self.assertEqual(mock_sleep.call_count, 2)
@@ -54,8 +50,8 @@ class TestDownloadModels(unittest.TestCase):
             import download_models
             download_models.download_all_models()
             
-        self.assertEqual(mock_sleep.call_count, 16)  # 4 retries per model * 4 models
-        self.assertEqual(mock_traceback.call_count, 4)
+        self.assertEqual(mock_sleep.call_count, 4 * len(download_models.MODELS))  # 4 retries per model
+        self.assertEqual(mock_traceback.call_count, len(download_models.MODELS))
 
     @patch("settings_manager.load_settings")
     @patch("download_models.snapshot_download")
@@ -77,6 +73,36 @@ class TestDownloadModels(unittest.TestCase):
             with patch("builtins.print"):
                 importlib.reload(download_models)
                 self.assertEqual(download_models.HF_TOKEN, "settings_token")
+
+    @patch("download_models.snapshot_download")
+    @patch("download_models.time.sleep")
+    def test_token_resolution_missing_settings_manager(self, mock_sleep, mock_snapshot):
+        import sys
+        # Scenario: settings_manager raises ImportError when imported
+        with patch.dict(sys.modules, {"settings_manager": None}):
+            with patch.dict(os.environ, {}):
+                if "HF_TOKEN" in os.environ:
+                    del os.environ["HF_TOKEN"]
+                with patch("builtins.print") as mock_print:
+                    import download_models
+                    importlib.reload(download_models)
+                    self.assertIsNone(download_models.HF_TOKEN)
+                    mock_print.assert_any_call("Warning: HF_TOKEN environment variable not set, and hf_token not configured in settings.json.")
+
+    @patch("download_models.snapshot_download")
+    @patch("download_models.time.sleep")
+    @patch("settings_manager.load_settings")
+    def test_token_resolution_warning(self, mock_load_settings, mock_sleep, mock_snapshot):
+        # Scenario: settings_manager imports successfully but settings has no token, env has no token
+        mock_load_settings.return_value = {}
+        with patch.dict(os.environ, {}):
+            if "HF_TOKEN" in os.environ:
+                del os.environ["HF_TOKEN"]
+            with patch("builtins.print") as mock_print:
+                import download_models
+                importlib.reload(download_models)
+                self.assertIsNone(download_models.HF_TOKEN)
+                mock_print.assert_any_call("Warning: HF_TOKEN environment variable not set, and hf_token not configured in settings.json.")
 
 
 if __name__ == "__main__":

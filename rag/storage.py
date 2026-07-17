@@ -15,7 +15,7 @@ from minio import Minio
 DEFAULT_MINIO_CONFIG = {
     "endpoint": "localhost:9000",
     "access_key": "olmocr_minio",
-    "secret_key": "minio_secret_8a92f03b5d1e4c7678ab",
+    "secret_key": "",
     "secure": False,
 }
 

@@ -113,24 +113,33 @@ class CorpusIndexingService:
             # Non-fatal — indexing can continue without MinIO
 
         # Step 4: Embed and upsert into Qdrant
-        yield "🧠 Embedding chunks and indexing in vector store...\n"
         try:
-            from rag.embedding import upsert_chunks
+            from rag.embedding import upsert_chunks_generator
 
             all_chunks = []
             for doc_id, info in chunk_results.items():
                 all_chunks.extend(info["chunks"])
 
-            # Upsert in batches
-            updated_chunks = upsert_chunks(all_chunks, batch_size=32)
+            total_chunks_count = len(all_chunks)
+            yield f"🧠 Embedding and indexing {total_chunks_count} chunks...\n"
+            
+            for progress_info in upsert_chunks_generator(all_chunks, batch_size=32):
+                stage = progress_info["stage"]
+                current = progress_info["current"]
+                total = progress_info["total"]
+                pct = int((current / total) * 100) if total > 0 else 0
+                if stage == "embedding":
+                    yield f"[PROGRESS:embedding:{current}/{total}] 🧠 Embedding chunks ({pct}%)...\n"
+                else:
+                    yield f"[PROGRESS:indexing:{current}/{total}] ⚡ Indexing chunks in vector store ({pct}%)...\n"
 
             # Store chunk metadata in PostgreSQL
-            insert_chunks(updated_chunks)
+            insert_chunks(all_chunks)
 
             # Mark documents and run as indexed
             for doc_id in chunk_results:
                 mark_document_indexed(doc_id)
-            mark_run_indexed(run_id, total_chunks=len(updated_chunks))
+            mark_run_indexed(run_id, total_chunks=total_chunks_count)
 
         except Exception as e:
             yield f"❌ Embedding/indexing failed: {e}\n"
@@ -146,14 +155,16 @@ class CorpusIndexingService:
         yield f"\n✅ Successfully indexed **{run_name}**: {total_docs} document(s), {total_chunks} chunk(s).\n"
 
     @staticmethod
-    def index_all_runs():
+    def index_all_runs(get_available_runs_fn=None):
         """Index all available OCR runs into the RAG corpus.
 
         Yields:
             Status update strings.
         """
-        from rag_ui import get_available_runs
-        runs = get_available_runs()
+        if get_available_runs_fn is None:
+            from settings_manager import get_available_runs as get_runs
+            get_available_runs_fn = get_runs
+        runs = get_available_runs_fn()
         if not runs:
             yield "⚠️ No completed OCR runs found in workspace.\n"
             return
@@ -341,10 +352,23 @@ class CorpusIndexingService:
             return
 
         # Step 4: Embed and upsert into Qdrant & Postgres
-        yield f"🧠 Embedding {len(all_new_chunks)} chunks and indexing in vector store...\n"
         try:
-            updated_chunks = upsert_chunks(all_new_chunks, batch_size=32)
-            insert_chunks(updated_chunks)
+            from rag.embedding import upsert_chunks_generator
+            
+            total_chunks_count = len(all_new_chunks)
+            yield f"🧠 Embedding and indexing {total_chunks_count} chunks...\n"
+            
+            for progress_info in upsert_chunks_generator(all_new_chunks, batch_size=32):
+                stage = progress_info["stage"]
+                current = progress_info["current"]
+                total = progress_info["total"]
+                pct = int((current / total) * 100) if total > 0 else 0
+                if stage == "embedding":
+                    yield f"[PROGRESS:embedding:{current}/{total}] 🧠 Embedding chunks ({pct}%)...\n"
+                else:
+                    yield f"[PROGRESS:indexing:{current}/{total}] ⚡ Indexing chunks in vector store ({pct}%)...\n"
+
+            insert_chunks(all_new_chunks)
             
             # Mark all documents as indexed
             for filename, md_path in copied_files:
