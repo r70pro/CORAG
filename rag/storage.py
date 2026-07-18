@@ -7,15 +7,18 @@ Provides:
 - Bucket management with auto-creation
 """
 
-import os
 import io
+import os
+
 from minio import Minio
+
+from secrets_config import get_minio_access_key, get_minio_secret_key
 
 # Default configuration
 DEFAULT_MINIO_CONFIG = {
     "endpoint": "localhost:9000",
-    "access_key": "olmocr_minio",
-    "secret_key": "minio_secret_8a92f03b5d1e4c7678ab",
+    "access_key": get_minio_access_key(),
+    "secret_key": get_minio_secret_key(),
     "secure": False,
 }
 

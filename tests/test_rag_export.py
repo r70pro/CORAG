@@ -24,6 +24,8 @@ from rag_export import (
     export_chat_markdown,
     export_chat_text,
     export_timeline_csv,
+    export_chat_docx,
+    export_timeline_docx,
 )
 
 
@@ -33,6 +35,27 @@ class TestRAGExport(unittest.TestCase):
         # We ensure the export directory exists
         os.makedirs(EXPORT_DIR, exist_ok=True)
         self.created_files = []
+        
+        import sys
+        from unittest.mock import MagicMock
+        self.docx_mocked = False
+        try:
+            import docx  # noqa: F401
+        except ImportError:
+            self.docx_mocked = True
+            self.saved_modules = {}
+            for m in ["docx", "docx.shared", "docx.enum.text", "docx.enum.table", "docx.oxml", "docx.oxml.ns"]:
+                if m in sys.modules:
+                    self.saved_modules[m] = sys.modules[m]
+                sys.modules[m] = MagicMock()
+            
+            # Setup Document mock
+            self.mock_doc = MagicMock()
+            def save_mock(path):
+                with open(path, "wb") as f:
+                    f.write(b"mock docx content")
+            self.mock_doc.save.side_effect = save_mock
+            sys.modules["docx"].Document.return_value = self.mock_doc
 
     def tearDown(self):
         # Clean up any files created during the test
@@ -42,6 +65,15 @@ class TestRAGExport(unittest.TestCase):
                     os.remove(path)
                 except OSError:
                     pass
+        
+        # Restore sys.modules if mocked
+        if getattr(self, "docx_mocked", False):
+            import sys
+            for m in ["docx", "docx.shared", "docx.enum.text", "docx.enum.table", "docx.oxml", "docx.oxml.ns"]:
+                if m in self.saved_modules:
+                    sys.modules[m] = self.saved_modules[m]
+                elif m in sys.modules:
+                    del sys.modules[m]
 
     def track_file(self, path):
         if path:
@@ -199,3 +231,111 @@ End of timeline.
         self.assertEqual(rows[0], ["Date", "Event", "Provider"])
         self.assertEqual(rows[1], ["2020-01-01", "Injury", "Employer"])
         self.assertEqual(rows[2], ["2020-01-02", "Surgery", "Dr Smith"])
+
+    def test_export_chat_docx_empty(self):
+        self.assertIsNone(export_chat_docx(None))
+        self.assertIsNone(export_chat_docx([]))
+
+    def test_export_chat_docx_valid(self):
+        history = [
+            {"role": "user", "content": "Help me."},
+            {
+                "role": "assistant",
+                "content": "# Heading 1\n## Heading 2\n### Heading 3\n---\n| Date | Inconsistency |\n|---|---|\n| 2020-01-01 | Patient history inconsistency |\n\n- Bullet 1\n* Bullet 2\n\nDegenerative **changes** *noted*."
+            },
+        ]
+        path = self.track_file(export_chat_docx(history, mode="timeline", active_case="case4"))
+        self.assertIsNotNone(path)
+        self.assertTrue(os.path.exists(path))
+
+    def test_export_timeline_docx_empty(self):
+        self.assertIsNone(export_timeline_docx(None))
+        self.assertIsNone(export_timeline_docx([]))
+
+    def test_export_timeline_docx_no_tables(self):
+        history = [
+            {"role": "user", "content": "Help me."},
+            {"role": "assistant", "content": "No table here."},
+        ]
+        path = self.track_file(export_timeline_docx(history))
+        self.assertIsNone(path)
+
+    def test_export_timeline_docx_valid(self):
+        table_markdown = """
+Here is the timeline:
+
+| Date | Event | Provider |
+|---|---|---|
+| 2020-01-01 | Injury | Employer |
+| 2020-01-02 | Surgery | Dr Smith |
+
+End of timeline.
+"""
+        history = [
+            {"role": "user", "content": "Give me a table"},
+            {"role": "assistant", "content": table_markdown},
+        ]
+        path = self.track_file(export_timeline_docx(history, active_case="case5"))
+        self.assertIsNotNone(path)
+        self.assertTrue(os.path.exists(path))
+
+    def test_export_timeline_docx_no_headers_no_rows(self):
+        # Empty/false table format test to cover lines 494->485
+        history = [
+            {"role": "user", "content": "Empty table"},
+            {"role": "assistant", "content": "|\n|-|"},
+        ]
+        path = self.track_file(export_timeline_docx(history, active_case="case6"))
+        self.assertIsNone(path)
+
+    def test_docx_import_errors(self):
+        # Simulate ImportError inside docx helpers when docx components are missing (sys.modules None)
+        import sys
+        from unittest.mock import patch
+        
+        # We patch sys.modules inside a block to force ImportError
+        with patch.dict(sys.modules, {
+            "docx.shared": None,
+            "docx.enum.text": None,
+            "docx.oxml": None,
+            "docx.oxml.ns": None,
+            "docx.enum.table": None,
+            "docx": None
+        }):
+            from rag_export import _add_letterhead, _set_bottom_border, _add_docx_table
+            # Call helpers to ensure they fail gracefully/return None
+            # Since docx is None, Document() raises or import fails. But let's check functions
+            self.assertIsNone(_add_letterhead(None))
+            self.assertIsNone(_set_bottom_border(None))
+            self.assertIsNone(_add_docx_table(None, ["H"], [["R"]]))
+            self.assertIsNone(export_chat_docx([{"role": "user", "content": "H"}]))
+            self.assertIsNone(export_timeline_docx([{"role": "user", "content": "H"}]))
+
+    def test_firm_logo_handling(self):
+        import docx
+        import rag_export
+        from unittest.mock import patch
+        
+        doc = docx.Document()
+        
+        # Test add_picture success
+        with patch("os.path.exists", return_value=True):
+            with patch.object(doc, "add_picture") as mock_add:
+                with patch("rag_export.FIRM_LOGO", "dummy_logo.png"):
+                    rag_export._add_letterhead(doc)
+                    mock_add.assert_called_once_with("dummy_logo.png", width=unittest.mock.ANY)
+                    
+        # Test add_picture exception (lines 258-262)
+        with patch("os.path.exists", return_value=True):
+            with patch.object(doc, "add_picture", side_effect=Exception("failed to add logo")):
+                with patch("rag_export.FIRM_LOGO", "dummy_logo.png"):
+                    # This should run without raising exception
+                    rag_export._add_letterhead(doc)
+
+    def test_add_docx_table_empty(self):
+        import docx
+        from rag_export import _add_docx_table
+        doc = docx.Document()
+        # Direct call to empty headers and rows (line 380)
+        self.assertIsNone(_add_docx_table(doc, [], []))
+

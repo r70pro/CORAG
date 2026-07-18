@@ -298,6 +298,17 @@ class TestRAGEmbeddingAll(unittest.TestCase):
         rag_emb._embedding_model = None
         res = rag_emb.encode_texts(["text1"], "my_model")
         self.assertEqual(res, [[0.9, 0.9]])
+        mock_cache_write.side_effect = None
+
+        # 5. redis_healthy is True, cache read returns cached value (hit) (line 172)
+        mock_cache_read.return_value = [0.5, 0.5]
+        res = rag_emb.encode_texts(["text1"], "my_model")
+        self.assertEqual(res, [[0.5, 0.5]])
+
+        # 6. redis_healthy is True, all texts are cached (empty uncached_texts, line 183->202 branch)
+        mock_cache_read.return_value = [0.6, 0.6]
+        res = rag_emb.encode_texts(["text1"], "my_model")
+        self.assertEqual(res, [[0.6, 0.6]])
 
     @patch("rag.cache.is_healthy")
     @patch("rag.cache.get_cached_embedding")
@@ -396,6 +407,71 @@ class TestRAGEmbeddingAll(unittest.TestCase):
             res2 = rag_emb.encode_texts(["text2"], None)
             self.assertEqual(res2, [[0.9, 0.9]])
             self.assertEqual(rag_emb._embedding_model_name, "test-env-model")
+
+    @patch("rag.embedding.get_qdrant_client")
+    def test_init_collection_dimension_mismatch_and_error(self, mock_get_client):
+        mock_client = mock_get_client.return_value
+        mock_col = MagicMock()
+        mock_col.name = "olmocr_documents_sentence-transformers_all-minilm-l6-v2"
+        mock_collections_res = MagicMock()
+        mock_collections_res.collections = [mock_col]
+        mock_client.get_collections.return_value = mock_collections_res
+
+        # 1. Test get_collection raises Exception (lines 282-283)
+        mock_client.get_collection.side_effect = Exception("Read failed")
+        rag_emb.init_collection(model_name="sentence-transformers/all-MiniLM-L6-v2", dimension=384)
+        mock_client.create_collection.assert_not_called()
+
+        # 2. Test get_collection returns different dimension (line 290 ValueError)
+        mock_client.get_collection.side_effect = None
+        mock_info = MagicMock()
+        mock_info.config.params.vectors.size = 128  # different from 384
+        mock_client.get_collection.return_value = mock_info
+        with self.assertRaises(ValueError):
+            rag_emb.init_collection(model_name="sentence-transformers/all-MiniLM-L6-v2", dimension=384)
+
+    @patch("rag.embedding.get_qdrant_client")
+    @patch("rag.embedding.get_embedding_dimension")
+    @patch("sentence_transformers.SentenceTransformer")
+    @patch("rag.embedding.delete_run_vectors")
+    def test_upsert_chunks_generator_pre_delete_exception(self, mock_delete, mock_transformer, mock_dim, mock_get_client):
+        mock_dim.return_value = 4
+        mock_client = mock_get_client.return_value
+        
+        # Configure collections list mock
+        mock_collections_res = MagicMock()
+        mock_collections_res.collections = []
+        mock_client.get_collections.return_value = mock_collections_res
+        
+        mock_model = mock_transformer.return_value
+        mock_tolist = MagicMock()
+        mock_tolist.tolist.return_value = [[0.1, 0.2, 0.3, 0.4]]
+        mock_model.encode.return_value = mock_tolist
+
+        chunks = [{
+            "chunk_id": "c1",
+            "doc_id": "d1",
+            "run_id": "r1",
+            "chunk_index": 0,
+            "text": "text",
+            "page_number": 1,
+            "document_type": "type",
+            "author": "author",
+            "date_extracted": "2026-07-11",
+            "section_type": "sec",
+            "patient_name": "patient",
+            "token_count": 5
+        }]
+
+        # Trigger exception in pre-delete (lines 402-403)
+        mock_delete.side_effect = Exception("delete vectors failed")
+        
+        rag_emb._embedding_model = None
+        gen = rag_emb.upsert_chunks_generator(chunks, model_name="sentence-transformers/all-MiniLM-L6-v2", pre_delete_run_ids=["r1"])
+        res = list(gen)
+        # Should complete successfully despite pre_delete failure
+        self.assertEqual(len(res), 2)
+        mock_delete.assert_called_once_with("r1", model_name="sentence-transformers/all-MiniLM-L6-v2")
 
 
 if __name__ == "__main__":

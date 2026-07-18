@@ -7,14 +7,13 @@ Extends the existing docker_manager.py pattern to manage the RAG services.
 import os
 import subprocess
 import time
-from typing import Tuple, Dict
 
 # Path to the docker-compose file
 COMPOSE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docker-compose.rag.yml")
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def _run_compose(args: list, timeout: int = 60) -> Tuple[bool, str]:
+def _run_compose(args: list, timeout: int = 60) -> tuple[bool, str]:
     """Run a docker compose command.
 
     Args:
@@ -43,7 +42,7 @@ def _run_compose(args: list, timeout: int = 60) -> Tuple[bool, str]:
         return False, str(e)
 
 
-def start_rag_infrastructure() -> Tuple[bool, str]:
+def start_rag_infrastructure() -> tuple[bool, str]:
     """Start all RAG infrastructure services (PostgreSQL, Redis, MinIO, Qdrant).
 
     Returns:
@@ -55,7 +54,7 @@ def start_rag_infrastructure() -> Tuple[bool, str]:
     return False, f"Failed to start RAG infrastructure: {msg}"
 
 
-def stop_rag_infrastructure() -> Tuple[bool, str]:
+def stop_rag_infrastructure() -> tuple[bool, str]:
     """Stop all RAG infrastructure services.
 
     Returns:
@@ -67,7 +66,7 @@ def stop_rag_infrastructure() -> Tuple[bool, str]:
     return False, f"Failed to stop: {msg}"
 
 
-def destroy_rag_infrastructure(remove_volumes: bool = False) -> Tuple[bool, str]:
+def destroy_rag_infrastructure(remove_volumes: bool = False) -> tuple[bool, str]:
     """Stop and remove all RAG infrastructure containers.
 
     Args:
@@ -85,7 +84,7 @@ def destroy_rag_infrastructure(remove_volumes: bool = False) -> Tuple[bool, str]
     return False, f"Failed to destroy: {msg}"
 
 
-def get_rag_service_status() -> Dict[str, str]:
+def get_rag_service_status() -> dict[str, str]:
     """Get the status of each RAG service.
 
     Returns:
@@ -108,6 +107,7 @@ def get_rag_service_status() -> Dict[str, str]:
         )
         if result.returncode == 0 and result.stdout.strip():
             import json
+
             # docker compose ps --format json outputs one JSON object per line
             for line in result.stdout.strip().split("\n"):
                 line = line.strip()
@@ -168,9 +168,7 @@ def get_rag_status_html() -> str:
     for service, status in statuses.items():
         css_class, icon = badge_map.get(status, ("badge-idle", "?"))
         label = labels.get(service, service)
-        badges.append(
-            f"<span class='{css_class}' style='margin:2px 4px;'>{icon} {label}</span>"
-        )
+        badges.append(f"<span class='{css_class}' style='margin:2px 4px;'>{icon} {label}</span>")
 
     return "<div style='display:flex; flex-wrap:wrap; gap:4px;'>" + "".join(badges) + "</div>"
 
@@ -197,7 +195,7 @@ def init_rag_database():
         from rag.db import init_schema, is_healthy
 
         # Wait for PostgreSQL to be ready
-        for attempt in range(10):
+        for _ in range(10):
             if is_healthy():
                 break
             time.sleep(1)
@@ -221,7 +219,7 @@ def init_rag_storage():
     try:
         from rag.storage import init_buckets, is_healthy
 
-        for attempt in range(10):
+        for _ in range(10):
             if is_healthy():
                 break
             time.sleep(1)
@@ -245,7 +243,7 @@ def init_rag_vector_store():
     try:
         from rag.embedding import init_collection, is_healthy
 
-        for attempt in range(10):
+        for _ in range(10):
             if is_healthy():
                 break
             time.sleep(1)
@@ -258,7 +256,7 @@ def init_rag_vector_store():
         return False, f"Failed to initialize vector store: {e}"
 
 
-def start_and_init_rag() -> Tuple[bool, str]:
+def start_and_init_rag() -> tuple[bool, str]:
     """Start RAG infrastructure and initialize all services.
 
     This is the main entry point for bringing up the full RAG stack.

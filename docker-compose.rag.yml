@@ -7,7 +7,8 @@ services:
     environment:
       POSTGRES_DB: olmocr_rag
       POSTGRES_USER: olmocr
-      POSTGRES_PASSWORD: pg_pass_5c6d3284f18b90a6e2d8
+      # Resolve from host environment (.env) with a safe placeholder default.
+      POSTGRES_PASSWORD: ${OLMOCR_PG_PASS:-change_me_in_production}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -38,8 +39,8 @@ services:
     container_name: olmocr_minio
     restart: unless-stopped
     environment:
-      MINIO_ROOT_USER: olmocr_minio
-      MINIO_ROOT_PASSWORD: minio_secret_8a92f03b5d1e4c7678ab
+      MINIO_ROOT_USER: ${OLMOCR_MINIO_ACCESS_KEY:-change_me_minio_user}
+      MINIO_ROOT_PASSWORD: ${OLMOCR_MINIO_SECRET_KEY:-change_me_minio_secret}
     ports:
       - "127.0.0.1:9000:9000"
       - "127.0.0.1:9001:9001"

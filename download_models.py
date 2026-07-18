@@ -1,13 +1,15 @@
 import os
-import time
 import socket
+import time
 
 # Force IPv4 DNS resolution to prevent hangs on broken IPv6 routes to Hugging Face
 if getattr(socket.getaddrinfo, "__name__", None) != "_ipv4_getaddrinfo":
     _orig_getaddrinfo = socket.getaddrinfo
+
     def _ipv4_getaddrinfo(*args, **kwargs):
         responses = _orig_getaddrinfo(*args, **kwargs)
         return [r for r in responses if r[0] == socket.AF_INET]
+
     socket.getaddrinfo = _ipv4_getaddrinfo
 
 # Set timeout for Hugging Face Hub operations to prevent infinite hangs
@@ -19,6 +21,7 @@ from huggingface_hub import snapshot_download
 # Load Hugging Face token dynamically from environment or settings.json
 try:
     from settings_manager import load_settings
+
     settings = load_settings()
 except ImportError:
     settings = {}
@@ -28,7 +31,9 @@ if not HF_TOKEN:
     HF_TOKEN = settings.get("hf_token")
 
 if not HF_TOKEN:
-    print("Warning: HF_TOKEN environment variable not set, and hf_token not configured in settings.json.")
+    print(
+        "Warning: HF_TOKEN environment variable not set, and hf_token not configured in settings.json."
+    )
     print("Proceeding without token (some gated/NVFP4 models may fail to download)...")
 
 MODELS = [
@@ -38,8 +43,9 @@ MODELS = [
     "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
     "nvidia/Llama-3.3-70B-Instruct-NVFP4",
     "openai/gpt-oss-120b",
-    "google/gemma-4-31B-it"
+    "google/gemma-4-31B-it",
 ]
+
 
 def download_all_models(models=MODELS, token=HF_TOKEN):
     print("Starting download of NVFP4 models...")
@@ -60,6 +66,7 @@ def download_all_models(models=MODELS, token=HF_TOKEN):
                     time.sleep(10)
                 else:
                     import traceback
+
                     traceback.print_exc()
         if not success:
             print(f"Failed to download {model} after 5 attempts.")
@@ -69,4 +76,3 @@ def download_all_models(models=MODELS, token=HF_TOKEN):
 
 if __name__ == "__main__":
     download_all_models()
-

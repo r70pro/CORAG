@@ -1,7 +1,9 @@
 import os
 import shutil
+
 import process_state
 from settings_manager import WORKSPACE_DIR
+
 
 def get_dir_size(start_path):
     total_size = 0
@@ -9,7 +11,7 @@ def get_dir_size(start_path):
         return 0
     if os.path.isfile(start_path):
         return os.path.getsize(start_path)
-    for dirpath, dirnames, filenames in os.walk(start_path):
+    for dirpath, _, filenames in os.walk(start_path):
         for f in filenames:
             fp = os.path.join(dirpath, f)
             if not os.path.islink(fp):
@@ -18,6 +20,7 @@ def get_dir_size(start_path):
                 except OSError:
                     pass
     return total_size
+
 
 def format_size(size_bytes):
     if size_bytes < 1024:
@@ -28,6 +31,7 @@ def format_size(size_bytes):
         return f"{size_bytes / (1024 * 1024):.2f} MB"
     else:
         return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
+
 
 def perform_reset_cleanup(clean_runs, clean_gradio, clean_pycache, clean_hf, workspace_dir=None):
     freed_space = 0
@@ -46,7 +50,7 @@ def perform_reset_cleanup(clean_runs, clean_gradio, clean_pycache, clean_hf, wor
                     # Check if active
                     is_active = False
                     with process_state.active_runs_lock:
-                        for run_id, run_info in process_state.active_runs.items():
+                        for run_info in process_state.active_runs.values():
                             proc = run_info.get("proc")
                             if run_info.get("run_dir") == dir_path:
                                 if proc and proc.poll() is None:
@@ -60,7 +64,9 @@ def perform_reset_cleanup(clean_runs, clean_gradio, clean_pycache, clean_hf, wor
                         try:
                             shutil.rmtree(dir_path)
                             freed_space += size
-                            deleted_items.append(f"Obsolete run directory: `{name}` ({format_size(size)})")
+                            deleted_items.append(
+                                f"Obsolete run directory: `{name}` ({format_size(size)})"
+                            )
                         except Exception as e:
                             errors.append(f"Failed to delete run directory `{name}`: {e}")
 
@@ -84,7 +90,7 @@ def perform_reset_cleanup(clean_runs, clean_gradio, clean_pycache, clean_hf, wor
     # 3. Clean python bytecode cache
     if clean_pycache:
         repo_dir = os.path.dirname(os.path.abspath(__file__))
-        for root, dirs, files in list(os.walk(repo_dir)):
+        for root, dirs, _ in list(os.walk(repo_dir)):
             for d in list(dirs):
                 if d == "__pycache__":
                     pycache_path = os.path.join(root, d)
@@ -93,7 +99,9 @@ def perform_reset_cleanup(clean_runs, clean_gradio, clean_pycache, clean_hf, wor
                         shutil.rmtree(pycache_path)
                         dirs.remove(d)  # Don't recurse into deleted dir
                         freed_space += size
-                        deleted_items.append(f"Bytecode cache: `{os.path.relpath(pycache_path, repo_dir)}` ({format_size(size)})")
+                        deleted_items.append(
+                            f"Bytecode cache: `{os.path.relpath(pycache_path, repo_dir)}` ({format_size(size)})"
+                        )
                     except Exception as e:
                         errors.append(f"Failed to delete `{pycache_path}`: {e}")
 

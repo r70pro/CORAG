@@ -1,11 +1,11 @@
-import os
 import json
+import os
 
 # Load .env file manually if it exists
 dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 if os.path.exists(dotenv_path):
     try:
-        with open(dotenv_path, "r", encoding="utf-8") as f:
+        with open(dotenv_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("#"):
@@ -19,12 +19,48 @@ if os.path.exists(dotenv_path):
     except Exception as e:
         print(f"Error loading .env file: {e}")
 
-# Redirect Hugging Face cache to writeable workspace directory
+
+# Redirect Hugging Face cache to writeable workspace directory.
+# If the workspace path is not writable (e.g. root-owned by Docker),
+# fall back to a writable default cache location.
+def _resolve_hf_home():
+    workspace_hf = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "workspace", "huggingface"
+    )
+    parent = os.path.dirname(workspace_hf)
+    if os.access(parent, os.W_OK) or (
+        os.path.isdir(workspace_hf) and os.access(workspace_hf, os.W_OK)
+    ):
+        return workspace_hf
+    return os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
+
+
 if "HF_HOME" not in os.environ:
-    os.environ["HF_HOME"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace", "huggingface")
+    os.environ["HF_HOME"] = _resolve_hf_home()
 
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
-WORKSPACE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace")
+
+
+# Use the bundled workspace directory when it is writable; otherwise fall back
+# to a user-owned workspace so the app can still write runs, exports, and the
+# Hugging Face cache (e.g. when Docker has created ./workspace as root).
+def _resolve_workspace_dir():
+    default_ws = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace")
+    if os.access(default_ws, os.W_OK) or (
+        os.path.isdir(default_ws) and os.access(default_ws, os.W_OK)
+    ):
+        return default_ws
+    fallback = os.path.join(os.path.expanduser("~"), ".local", "share", "kirag", "workspace")
+    os.makedirs(fallback, exist_ok=True)
+    return fallback
+
+
+WORKSPACE_DIR = _resolve_workspace_dir()
+
+# Single source of truth for the application version. The Gradio UI sidebar
+# (app.py) and the rag package (__init__.py) both import this so the displayed
+# version can never drift apart.
+VERSION = "2.0.3"
 
 SUPPORTED_MODELS = [
     "allenai/olmOCR-2-7B-1025-FP8",
@@ -34,7 +70,7 @@ SUPPORTED_MODELS = [
     "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
     "nvidia/Llama-3.3-70B-Instruct-NVFP4",
     "openai/gpt-oss-120b",
-    "google/gemma-4-31B-it"
+    "google/gemma-4-31B-it",
 ]
 
 MODEL_MAX_CONTENT_LENGTHS = {
@@ -45,9 +81,8 @@ MODEL_MAX_CONTENT_LENGTHS = {
     "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4": 1048576,
     "nvidia/Llama-3.3-70B-Instruct-NVFP4": 131072,
     "openai/gpt-oss-120b": 131072,
-    "google/gemma-4-31B-it": 262144
+    "google/gemma-4-31B-it": 262144,
 }
-
 
 
 def load_settings():
@@ -78,12 +113,13 @@ def load_settings():
     }
     if os.path.exists(SETTINGS_FILE):
         try:
-            with open(SETTINGS_FILE, "r") as f:
+            with open(SETTINGS_FILE) as f:
                 user_settings = json.load(f)
                 defaults.update(user_settings)
         except Exception as e:
             print(f"Error loading settings: {e}")
     return defaults
+
 
 def save_settings(settings):
     try:
@@ -119,4 +155,3 @@ def get_available_runs():
                 runs.append((display, run_dir))
 
     return runs
-

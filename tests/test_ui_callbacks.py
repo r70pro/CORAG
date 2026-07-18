@@ -509,14 +509,21 @@ class TestUICallbacks(unittest.TestCase):
         self.assertIn("RAG Indexing Progress", accumulated_status)
         self.assertTrue("bulk indexing" in logs)
 
-    @patch("rag.metadata_helper.get_case_metadata")
+    @patch("rag.metadata_helper.get_all_cases_metadata")
     @patch("rag.db.get_runs_with_stats")
     def test_build_case_dashboard_html(self, mock_stats, mock_get_meta):
         import datetime
         mock_get_meta.return_value = {
-            "names": ["Test Patient"],
-            "dob": "01/01/1970",
-            "injuries": ["Test Injury"]
+            "run_123": {
+                "names": ["Test Patient"],
+                "dob": "01/01/1970",
+                "injuries": ["Test Injury"]
+            },
+            "run_456": {
+                "names": [],
+                "dob": "—",
+                "injuries": []
+            }
         }
         # Scenario 1: Case stats returned successfully
         mock_stats.return_value = [
@@ -579,14 +586,21 @@ class TestUICallbacks(unittest.TestCase):
         with patch("rag_ui.load_settings", return_value={"analysis_model_name": "custom-analysis-model", "embedding_model": "custom-emb-model"}):
             importlib.reload(rag_ui)
 
-    @patch("rag.metadata_helper.get_case_metadata")
+    @patch("rag.metadata_helper.get_all_cases_metadata")
     @patch("rag.db.get_runs_with_stats")
     def test_build_dashboard_html_single_bounds(self, mock_stats, mock_get_meta):
         import datetime
         mock_get_meta.return_value = {
-            "names": ["Test Patient"],
-            "dob": "01/01/1970",
-            "injuries": ["Test Injury"]
+            "run_1": {
+                "names": ["Test Patient"],
+                "dob": "01/01/1970",
+                "injuries": ["Test Injury"]
+            },
+            "run_2": {
+                "names": [],
+                "dob": "—",
+                "injuries": []
+            }
         }
         # Scenario 1: earliest set, latest None
         mock_stats.return_value = [

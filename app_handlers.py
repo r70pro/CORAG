@@ -1,17 +1,18 @@
 import gradio as gr
-from settings_manager import load_settings, save_settings
+
 from docker_manager import (
+    create_docker_container,
     get_docker_status_str,
+    shutdown_docker_container,
     start_docker_container,
     stop_docker_container,
-    create_docker_container,
-    shutdown_docker_container,
 )
 from html_utils import (
     make_backing_services_html,
-    make_system_health_badge_html,
     make_gpu_metrics_html,
+    make_system_health_badge_html,
 )
+from settings_manager import load_settings, save_settings
 from system_diagnostics import (
     check_backing_services_data,
     get_gpu_metrics_data,
@@ -23,13 +24,14 @@ service_history = {
     "redis": [0.8, 0.7, 0.9, 0.8, 0.8, 0.7, 0.8],
     "minio": [3.0, 3.2, 2.9, 3.1, 3.0, 2.8, 3.0],
     "qdrant": [2.1, 2.3, 2.0, 2.2, 2.1, 1.9, 2.1],
-    "vllm": [15.8, 15.2, 16.1, 15.5, 15.9, 14.8, 15.8]
+    "vllm": [15.8, 15.2, 16.1, 15.5, 15.9, 14.8, 15.8],
 }
 
 
 def get_app_fn(name, fallback):
     import sys
-    app = sys.modules.get('app')
+
+    app = sys.modules.get("app")
     return getattr(app, name, fallback) if app else fallback
 
 
@@ -49,39 +51,43 @@ def select_view(active_view_idx):
         "<h1 class='inline-header-title'>Layout Inspector</h1><p class='inline-header-subtitle'>Verify visual text extraction accuracy side-by-side</p>",
         "<h1 class='inline-header-title'>Case Dashboard</h1><p class='inline-header-subtitle'>Overview of ingested case folders and databases</p>",
         "<h1 class='inline-header-title'>RAG Processing (Query & Cite)</h1><p class='inline-header-subtitle'>Query, summarize, and retrieve matching citations</p>",
-        "<h1 class='inline-header-title'>System Diagnostics</h1><p class='inline-header-subtitle'>Service health, GPU telemetry & cleanup management.</p>"
+        "<h1 class='inline-header-title'>System Diagnostics</h1><p class='inline-header-subtitle'>Service health, GPU telemetry & cleanup management.</p>",
     ]
-    
+
     btn_updates = []
     for i in range(5):
         if i == active_view_idx:
             btn_updates.append(gr.update(elem_classes=["nav-btn", "active-nav-btn"]))
         else:
             btn_updates.append(gr.update(elem_classes=["nav-btn"]))
-            
+
     view_updates = []
     for i in range(5):
         view_updates.append(gr.update(visible=(i == active_view_idx)))
-        
+
     return [gr.update(value=titles[active_view_idx])] + btn_updates + view_updates
 
 
-def trigger_save_settings(url, model, wrk, concat, dim, retries, guided, d_port, d_gpu, d_maxlen, d_token):
-    save_settings_fn = get_app_fn('save_settings', save_settings)
+def trigger_save_settings(
+    url, model, wrk, concat, dim, retries, guided, d_port, d_gpu, d_maxlen, d_token
+):
+    save_settings_fn = get_app_fn("save_settings", save_settings)
     settings = load_settings()
-    settings.update({
-        "server_url": url,
-        "model_name": model,
-        "workers": int(wrk),
-        "max_concurrent_requests": int(concat),
-        "target_longest_image_dim": int(dim),
-        "max_page_retries": int(retries),
-        "guided_decoding": guided,
-        "docker_port": int(d_port),
-        "docker_gpu_mem": float(d_gpu),
-        "docker_max_model_len": int(d_maxlen),
-        "hf_token": d_token
-    })
+    settings.update(
+        {
+            "server_url": url,
+            "model_name": model,
+            "workers": int(wrk),
+            "max_concurrent_requests": int(concat),
+            "target_longest_image_dim": int(dim),
+            "max_page_retries": int(retries),
+            "guided_decoding": guided,
+            "docker_port": int(d_port),
+            "docker_gpu_mem": float(d_gpu),
+            "docker_max_model_len": int(d_maxlen),
+            "hf_token": d_token,
+        }
+    )
     return save_settings_fn(settings)
 
 
@@ -94,61 +100,70 @@ def go_next_page(current_page, total_pages):
 
 
 def ui_start_container(port):
-    start_fn = get_app_fn('start_docker_container', start_docker_container)
-    status_fn = get_app_fn('get_docker_status_str', get_docker_status_str)
+    start_fn = get_app_fn("start_docker_container", start_docker_container)
+    status_fn = get_app_fn("get_docker_status_str", get_docker_status_str)
     success, msg = start_fn()
     _, badge = status_fn(port)
     return msg, badge
 
 
 def ui_stop_container(port):
-    stop_fn = get_app_fn('stop_docker_container', stop_docker_container)
-    status_fn = get_app_fn('get_docker_status_str', get_docker_status_str)
+    stop_fn = get_app_fn("stop_docker_container", stop_docker_container)
+    status_fn = get_app_fn("get_docker_status_str", get_docker_status_str)
     success, msg = stop_fn()
     _, badge = status_fn(port)
     return msg, badge
 
 
 def ui_recreate_container(hf_token, port, model, gpu_mem, max_model_len):
-    create_fn = get_app_fn('create_docker_container', create_docker_container)
-    status_fn = get_app_fn('get_docker_status_str', get_docker_status_str)
-    save_settings_fn = get_app_fn('save_settings', save_settings)
-    
-    success, msg = create_fn(hf_token, port, model, gpu_mem, max_model_len)
-    _, badge = status_fn(port)
-    
+    create_fn = get_app_fn("create_docker_container", create_docker_container)
+    status_fn = get_app_fn("get_docker_status_str", get_docker_status_str)
+    save_settings_fn = get_app_fn("save_settings", save_settings)
+
+    # Coerce the port defensively: an empty/non-numeric Gradio Number widget
+    # must not raise TypeError here.
+    try:
+        port_int = int(port)
+    except (TypeError, ValueError):
+        port_int = 8000
+
+    success, msg = create_fn(hf_token, port_int, model, gpu_mem, max_model_len)
+    _, badge = status_fn(port_int)
+
     settings = load_settings()
-    settings.update({
-        "hf_token": hf_token,
-        "docker_port": int(port),
-        "model_name": model,
-        "docker_gpu_mem": float(gpu_mem),
-        "docker_max_model_len": int(max_model_len),
-        "server_url": f"http://localhost:{int(port)}/v1"
-    })
+    settings.update(
+        {
+            "hf_token": hf_token,
+            "docker_port": port_int,
+            "model_name": model,
+            "docker_gpu_mem": float(gpu_mem),
+            "docker_max_model_len": int(max_model_len) if max_model_len else 0,
+            "server_url": f"http://localhost:{port_int}/v1",
+        }
+    )
     save_settings_fn(settings)
-    new_url = f"http://localhost:{int(port)}/v1"
+    new_url = f"http://localhost:{port_int}/v1"
     return msg, badge, new_url
 
 
 def ui_header_start(port):
-    start_fn = get_app_fn('start_docker_container', start_docker_container)
-    status_fn = get_app_fn('get_docker_status_str', get_docker_status_str)
+    start_fn = get_app_fn("start_docker_container", start_docker_container)
+    status_fn = get_app_fn("get_docker_status_str", get_docker_status_str)
     start_fn()
     _, badge = status_fn(port)
     return badge
 
 
 def ui_header_stop(port):
-    stop_fn = get_app_fn('stop_docker_container', stop_docker_container)
-    status_fn = get_app_fn('get_docker_status_str', get_docker_status_str)
+    stop_fn = get_app_fn("stop_docker_container", stop_docker_container)
+    status_fn = get_app_fn("get_docker_status_str", get_docker_status_str)
     stop_fn()
     _, badge = status_fn(port)
     return badge
 
 
 def periodic_status_check(port_val):
-    status_fn = get_app_fn('get_docker_status_str', get_docker_status_str)
+    status_fn = get_app_fn("get_docker_status_str", get_docker_status_str)
     if port_val is None:
         port_val = 8000
     _, badge_html = status_fn(int(port_val))
@@ -156,8 +171,8 @@ def periodic_status_check(port_val):
 
 
 def periodic_diagnostics_check(port_val):
-    check_backing = get_app_fn('check_backing_services', check_backing_services)
-    get_gpu = get_app_fn('get_gpu_metrics', get_gpu_metrics)
+    check_backing = get_app_fn("check_backing_services", check_backing_services)
+    get_gpu = get_app_fn("get_gpu_metrics", get_gpu_metrics)
     if port_val is None:
         port_val = 8000
     backing_services, header_health_badge = check_backing(vllm_port=int(port_val))
@@ -166,11 +181,12 @@ def periodic_diagnostics_check(port_val):
 
 
 def ui_shutdown_all_containers(port):
-    shutdown_fn = get_app_fn('shutdown_docker_container', shutdown_docker_container)
-    status_fn = get_app_fn('get_docker_status_str', get_docker_status_str)
+    shutdown_fn = get_app_fn("shutdown_docker_container", shutdown_docker_container)
+    status_fn = get_app_fn("get_docker_status_str", get_docker_status_str)
     success, msg1 = shutdown_fn()
     try:
         from rag_infra_manager import destroy_rag_infrastructure
+
         success2, msg2 = destroy_rag_infrastructure(remove_volumes=False)
         msg = f"{msg1} RAG: {msg2}"
     except Exception as e:
@@ -181,6 +197,7 @@ def ui_shutdown_all_containers(port):
 
 def trigger_download_report(port_val):
     from system_diagnostics import generate_diagnostic_report_file
+
     if port_val is None:
         port_val = 8000
     report_path = generate_diagnostic_report_file(int(port_val))

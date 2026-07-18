@@ -1,9 +1,10 @@
 import os
+
 import gradio as gr
 
 # Load custom CSS from external file
 CSS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "theme.css")
-with open(CSS_FILE, "r", encoding="utf-8") as f:
+with open(CSS_FILE, encoding="utf-8") as f:
     custom_css = f.read()
 
 dark_theme = gr.themes.Base(

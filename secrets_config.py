@@ -1,0 +1,36 @@
+"""
+Centralised secret/configuration resolution for backing services.
+
+All credentials fall back to environment variables (or a .env file loaded by
+settings_manager) and never require hardcoded plaintext in source code.
+Defaults are provided only as a last resort for local single-developer setups.
+"""
+
+import os
+
+# Credentials are resolved from the environment first. These are the same
+# variable names consumed by docker-compose.rag.yml, so the app and the
+# containers stay in sync without duplicating plaintext.
+DEFAULT_DB_PASSWORD = os.environ.get("OLMOCR_PG_PASS", "change_me_in_production")
+DEFAULT_MINIO_ACCESS_KEY = os.environ.get("OLMOCR_MINIO_ACCESS_KEY", "change_me_minio_user")
+DEFAULT_MINIO_SECRET_KEY = os.environ.get("OLMOCR_MINIO_SECRET_KEY", "change_me_minio_secret")
+
+
+def get_db_password() -> str:
+    return os.environ.get("OLMOCR_PG_PASS", DEFAULT_DB_PASSWORD)
+
+
+def get_minio_access_key() -> str:
+    return os.environ.get("OLMOCR_MINIO_ACCESS_KEY", DEFAULT_MINIO_ACCESS_KEY)
+
+
+def get_minio_secret_key() -> str:
+    return os.environ.get("OLMOCR_MINIO_SECRET_KEY", DEFAULT_MINIO_SECRET_KEY)
+
+
+def credentials_are_default() -> bool:
+    """Return True if any backing-service credential is still the unsafe default."""
+    return (
+        get_db_password() == DEFAULT_DB_PASSWORD
+        or get_minio_secret_key() == DEFAULT_MINIO_SECRET_KEY
+    )

@@ -1,31 +1,35 @@
-import os
-import sys
-import re
-import uuid
-import time
-import queue
-import shutil
-import threading
 import datetime
+import os
+import queue
+import re
+import shutil
 import subprocess
-import httpx
-import gradio as gr
-import process_state
-from typing import List, Optional, Any, Generator
+import sys
+import threading
+import time
+import uuid
+from collections.abc import Generator
+from typing import Any
 
-from settings_manager import WORKSPACE_DIR
-from html_utils import make_progress_bar_html, make_file_status_html, make_upload_manifest_html
-from pdf_manager import make_zip
+import gradio as gr
+import httpx
 from pypdf import PdfReader
+
+import process_state
+from html_utils import make_file_status_html, make_progress_bar_html, make_upload_manifest_html
+from pdf_manager import make_zip
+from settings_manager import WORKSPACE_DIR
+
 
 def enqueue_output(out: Any, q: queue.Queue) -> None:
     try:
-        for line in iter(out.readline, ''):
+        for line in iter(out.readline, ""):
             q.put(line)
     except Exception:
         pass
     finally:
         out.close()
+
 
 class PipelineResult(tuple):
     __slots__ = ()
@@ -44,25 +48,28 @@ class PipelineResult(tuple):
         active_run_id: str,
         file_status_table: str = "",
         upload_manifest_display: str = "",
-        stop_btn: Any = None
+        stop_btn: Any = None,
     ) -> "PipelineResult":
         if stop_btn is None:
             stop_btn = gr.update()
-        return tuple.__new__(cls, (
-            log_text,
-            status_badge,
-            progress_bar,
-            completed_pages,
-            failed_pages,
-            file_selector,
-            download_zip,
-            download_individual,
-            start_btn,
-            active_run_id,
-            file_status_table,
-            upload_manifest_display,
-            stop_btn
-        ))
+        return tuple.__new__(
+            cls,
+            (
+                log_text,
+                status_badge,
+                progress_bar,
+                completed_pages,
+                failed_pages,
+                file_selector,
+                download_zip,
+                download_individual,
+                start_btn,
+                active_run_id,
+                file_status_table,
+                upload_manifest_display,
+                stop_btn,
+            ),
+        )
 
     @property
     def log_text(self) -> str:
@@ -117,7 +124,13 @@ class PipelineResult(tuple):
         return self[12]
 
 
-def _make_empty_yield(log_text: str, badge_html: str, progress_html: str, start_interactive: bool = True, run_id: str = "") -> PipelineResult:
+def _make_empty_yield(
+    log_text: str,
+    badge_html: str,
+    progress_html: str,
+    start_interactive: bool = True,
+    run_id: str = "",
+) -> PipelineResult:
     return PipelineResult(
         log_text,
         gr.update(value=badge_html),
@@ -134,15 +147,16 @@ def _make_empty_yield(log_text: str, badge_html: str, progress_html: str, start_
         gr.update(interactive=False),
     )
 
+
 def process_pdfs(
-    files: Optional[List[Any]],
+    files: list[Any] | None,
     server_url: str,
     model_name: str,
     workers: int,
     max_concurrent: int,
     max_retries: int,
     target_dim: int,
-    guided_decoding: bool
+    guided_decoding: bool,
 ) -> Generator[PipelineResult, None, None]:
     if not files:
         yield _make_empty_yield("No files uploaded.", "<span class='badge-idle'>Idle</span>", "")
@@ -168,7 +182,7 @@ def process_pdfs(
                 f"Pre-flight check failed: server at {server_url} returned HTTP {preflight.status_code}.\n"
                 "Please ensure the inference server is running before starting a batch.",
                 "<span class='badge-failed'>Server Unreachable</span>",
-                ""
+                "",
             )
             return
 
@@ -178,14 +192,16 @@ def process_pdfs(
             if isinstance(res_json, dict) and "data" in res_json:
                 models_data = res_json["data"]
                 if isinstance(models_data, list):
-                    loaded_models = [m.get("id") for m in models_data if isinstance(m, dict) and m.get("id")]
+                    loaded_models = [
+                        m.get("id") for m in models_data if isinstance(m, dict) and m.get("id")
+                    ]
                     if loaded_models and model_name not in loaded_models:
                         yield _make_empty_yield(
                             f"Pre-flight check failed: The requested model '{model_name}' is not loaded on the server at {server_url}.\n"
                             f"Currently loaded model(s): {', '.join(loaded_models)}.\n\n"
                             "Please switch the model in the Settings or recreate the Docker container with the correct model.",
                             "<span class='badge-failed'>Model Mismatch</span>",
-                            ""
+                            "",
                         )
                         return
         except Exception as e:
@@ -197,7 +213,7 @@ def process_pdfs(
             f"Error: {e}\n\n"
             "Please ensure the inference server is running (check 🐳 Inference Status in the header).",
             "<span class='badge-failed'>Server Unreachable</span>",
-            ""
+            "",
         )
         return
 
@@ -246,36 +262,36 @@ def process_pdfs(
             "stop": False,
             "proc": None,
             "run_dir": run_dir,
-            "file_mapping": file_mapping
+            "file_mapping": file_mapping,
         }
 
     python_exe = sys.executable or "python"
-    cmd = [
-        python_exe, "-u",
-        "-m", "olmocr.pipeline",
-        ".",
-        "--pdfs"
-    ] + copied_relative_paths + [
-        "--server", server_url,
-        "--model", model_name,
-        "--workers", str(int(workers)),
-        "--max_concurrent_requests", str(int(max_concurrent)),
-        "--target_longest_image_dim", str(int(target_dim)),
-        "--max_page_retries", str(int(max_retries)),
-        "--markdown"
-    ]
-    
+    cmd = (
+        [python_exe, "-u", "-m", "olmocr.pipeline", ".", "--pdfs"]
+        + copied_relative_paths
+        + [
+            "--server",
+            server_url,
+            "--model",
+            model_name,
+            "--workers",
+            str(int(workers)),
+            "--max_concurrent_requests",
+            str(int(max_concurrent)),
+            "--target_longest_image_dim",
+            str(int(target_dim)),
+            "--max_page_retries",
+            str(int(max_retries)),
+            "--markdown",
+        ]
+    )
+
     if guided_decoding:
         cmd.append("--guided_decoding")
 
     try:
         proc = subprocess.Popen(
-            cmd,
-            cwd=run_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1
+            cmd, cwd=run_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
         )
         with process_state.active_runs_lock:
             if run_id in process_state.active_runs:
@@ -309,24 +325,30 @@ def process_pdfs(
     completed_file_indices = set()
     failed_file_indices = set()
     start_time = time.monotonic()
-    
+
     current_headers = None
     worker_states = {}
 
-    re.compile(r"completed_pages\s+([\d.]+)")
+    pattern_completed = re.compile(r"completed_pages\s+([\d.]+)")
     pattern_failed = re.compile(r"failed_pages\s+([\d.]+)")
-    pattern_vllm_queue = re.compile(r"vllm running req:\s*(\d+)\s+queue req:\s*(\d+)")
-    pattern_vllm_standalone_queue = re.compile(r"Running:\s*(\d+).*?(?:Waiting|Pending):\s*(\d+)")
 
-    file_status_html = make_file_status_html(file_mapping, file_page_counts, completed_file_indices, failed_file_indices)
+    file_status_html = make_file_status_html(
+        file_mapping, file_page_counts, completed_file_indices, failed_file_indices
+    )
 
     progress_bar_fn = make_progress_bar_html
     yield PipelineResult(
         "Initializing pipeline...",
         gr.update(value="<span class='badge-running'>Running</span>"),
         progress_bar_fn(0, total_pages),
-        gr.update(visible=True, value="<div class='stat-card'><div class='stat-value'>0</div><div class='stat-label'>Completed Pages</div></div>"),
-        gr.update(visible=True, value="<div class='stat-card'><div class='stat-value'>0</div><div class='stat-label'>Failed Pages</div></div>"),
+        gr.update(
+            visible=True,
+            value="<div class='stat-card'><div class='stat-value'>0</div><div class='stat-label'>Completed Pages</div></div>",
+        ),
+        gr.update(
+            visible=True,
+            value="<div class='stat-card'><div class='stat-value'>0</div><div class='stat-label'>Failed Pages</div></div>",
+        ),
         gr.update(choices=[], value=None),
         None,
         None,
@@ -344,7 +366,10 @@ def process_pdfs(
     try:
         while t.is_alive() or not q.empty():
             with process_state.active_runs_lock:
-                if run_id in process_state.active_runs and process_state.active_runs[run_id]["stop"]:
+                if (
+                    run_id in process_state.active_runs
+                    and process_state.active_runs[run_id]["stop"]
+                ):
                     proc.terminate()
                     try:
                         proc.wait(timeout=3)
@@ -352,7 +377,9 @@ def process_pdfs(
                         proc.kill()
                     elapsed = time.monotonic() - start_time
                     if not dropdown_value_set and streaming_choices:
-                        dropdown_val_update = gr.update(choices=streaming_choices, value=streaming_choices[0][1])
+                        dropdown_val_update = gr.update(
+                            choices=streaming_choices, value=streaming_choices[0][1]
+                        )
                         dropdown_value_set = True
                     else:
                         dropdown_val_update = gr.update(choices=streaming_choices)
@@ -360,14 +387,23 @@ def process_pdfs(
                         accumulated_logs + "\n\n[PROCESS TERMINATED BY USER]\n",
                         gr.update(value="<span class='badge-stopped'>Stopped</span>"),
                         progress_bar_fn(completed_pages, total_pages, elapsed),
-                        gr.update(value=f"<div class='stat-card'><div class='stat-value'>{completed_pages}</div><div class='stat-label'>Completed Pages</div></div>"),
-                        gr.update(value=f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"),
+                        gr.update(
+                            value=f"<div class='stat-card'><div class='stat-value'>{completed_pages}</div><div class='stat-label'>Completed Pages</div></div>"
+                        ),
+                        gr.update(
+                            value=f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"
+                        ),
                         dropdown_val_update,
                         None,
                         None,
                         gr.update(interactive=True),
                         "",
-                        make_file_status_html(file_mapping, file_page_counts, completed_file_indices, failed_file_indices),
+                        make_file_status_html(
+                            file_mapping,
+                            file_page_counts,
+                            completed_file_indices,
+                            failed_file_indices,
+                        ),
                         manifest_html,
                         gr.update(interactive=False),
                     )
@@ -380,7 +416,7 @@ def process_pdfs(
                 continue
 
             accumulated_logs += line
-            
+
             if "failed_pages" in line:
                 match_f = pattern_failed.search(line)
                 if match_f:
@@ -398,7 +434,7 @@ def process_pdfs(
                         current_headers = ["Worker ID", "finished", "started"]
                     elif len(parts) == 4:
                         current_headers = ["Worker ID", "errored", "finished", "started"]
-                
+
                 worker_id = int(parts[0])
                 if worker_id not in worker_states:
                     worker_states[worker_id] = {}
@@ -407,22 +443,31 @@ def process_pdfs(
                         state_name = current_headers[i]
                         val = int(parts[i])
                         worker_states[worker_id][state_name] = val
-                
-                total_completed = sum(states.get("finished", 0) for states in worker_states.values())
+
+                total_completed = sum(
+                    states.get("finished", 0) for states in worker_states.values()
+                )
                 total_failed = sum(states.get("errored", 0) for states in worker_states.values())
                 completed_pages = max(completed_pages, total_completed)
                 failed_pages = max(failed_pages, total_failed)
 
-            if "Completed pages:" in line:
+            if "Completed pages:" in line or "completed_pages" in line:
                 match_c = re.search(r"Completed pages:\s*([\d,]+)", line)
                 if match_c:
                     completed_pages = max(completed_pages, int(match_c.group(1).replace(",", "")))
+                else:
+                    match_c = pattern_completed.search(line)
+                    if match_c:
+                        try:
+                            completed_pages = max(completed_pages, int(float(match_c.group(1))))
+                        except (ValueError, TypeError):
+                            pass
 
             if "Failed pages:" in line:
                 match_f = re.search(r"Failed pages:\s*([\d,]+)", line)
                 if match_f:
                     failed_pages = max(failed_pages, int(match_f.group(1).replace(",", "")))
-            
+
             md_inputs_dir = os.path.join(run_dir, "markdown", "inputs")
             if os.path.exists(md_inputs_dir):
                 completed_mds = [f for f in os.listdir(md_inputs_dir) if f.endswith(".md")]
@@ -438,29 +483,23 @@ def process_pdfs(
                     temp_completed_pages += file_page_counts.get(file_idx, 1)
                 completed_pages = max(completed_pages, temp_completed_pages)
 
-            vllm_match = pattern_vllm_queue.search(line)
-            if vllm_match:
-                int(vllm_match.group(1))
-                int(vllm_match.group(2))
-            else:
-                vllm_match_standalone = pattern_vllm_standalone_queue.search(line)
-                if vllm_match_standalone:
-                    int(vllm_match_standalone.group(1))
-                    int(vllm_match_standalone.group(2))
-
             now = time.monotonic()
             if now - last_yield_time >= 0.2:
                 elapsed = now - start_time
                 status_html = f"<div class='stat-card'><div class='stat-value'>{completed_pages}</div><div class='stat-label'>Completed Pages</div></div>"
                 failed_html = f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"
-                file_status_html = make_file_status_html(file_mapping, file_page_counts, completed_file_indices, failed_file_indices)
-                
+                file_status_html = make_file_status_html(
+                    file_mapping, file_page_counts, completed_file_indices, failed_file_indices
+                )
+
                 if not dropdown_value_set and streaming_choices:
-                    dropdown_val_update = gr.update(choices=streaming_choices, value=streaming_choices[0][1])
+                    dropdown_val_update = gr.update(
+                        choices=streaming_choices, value=streaming_choices[0][1]
+                    )
                     dropdown_value_set = True
                 else:
                     dropdown_val_update = gr.update(choices=streaming_choices)
-                
+
                 yield PipelineResult(
                     accumulated_logs,
                     gr.update(value="<span class='badge-running'>Running</span>"),
@@ -495,10 +534,10 @@ def process_pdfs(
                     orig_name = file_mapping.get(idx, md_file)
                     choices.append((orig_name, md_file))
                     completed_file_indices.add(idx)
-            
+
             if choices:
                 dropdown_value = choices[0][1]
-                
+
             zip_file_path = os.path.join(run_dir, "all_markdown_results.zip")
             try:
                 make_zip(md_inputs_dir, zip_file_path)
@@ -515,7 +554,9 @@ def process_pdfs(
         else:
             status_text = "<span class='badge-failed'>Failed</span>"
 
-        file_status_html = make_file_status_html(file_mapping, file_page_counts, completed_file_indices, failed_file_indices)
+        file_status_html = make_file_status_html(
+            file_mapping, file_page_counts, completed_file_indices, failed_file_indices
+        )
 
         if not dropdown_value_set and choices:
             dropdown_val_update = gr.update(choices=choices, value=dropdown_value)
@@ -527,8 +568,12 @@ def process_pdfs(
             accumulated_logs + f"\n\n[PROCESS EXITED WITH CODE {exit_code}]\n",
             gr.update(value=status_text),
             progress_bar_fn(completed_pages, total_pages, elapsed),
-            gr.update(value=f"<div class='stat-card'><div class='stat-value'>{completed_pages}</div><div class='stat-label'>Completed Pages</div></div>"),
-            gr.update(value=f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"),
+            gr.update(
+                value=f"<div class='stat-card'><div class='stat-value'>{completed_pages}</div><div class='stat-label'>Completed Pages</div></div>"
+            ),
+            gr.update(
+                value=f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"
+            ),
             dropdown_val_update,
             zip_file_path,
             None,
@@ -545,8 +590,12 @@ def process_pdfs(
             accumulated_logs + f"\n\nException during processing: {e}\n",
             gr.update(value="<span class='badge-failed'>Error</span>"),
             progress_bar_fn(completed_pages, total_pages, elapsed),
-            gr.update(value=f"<div class='stat-card'><div class='stat-value'>{completed_pages}</div><div class='stat-label'>Completed Pages</div></div>"),
-            gr.update(value=f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"),
+            gr.update(
+                value=f"<div class='stat-card'><div class='stat-value'>{completed_pages}</div><div class='stat-label'>Completed Pages</div></div>"
+            ),
+            gr.update(
+                value=f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"
+            ),
             gr.update(choices=[], value=None),
             None,
             None,
@@ -561,6 +610,7 @@ def process_pdfs(
             if run_id in process_state.active_runs:
                 process_state.active_runs[run_id]["completed"] = True
 
+
 def stop_processing(run_id: str) -> str:
     if not run_id:
         return "<span class='badge-idle'>No active process to stop.</span>"
@@ -573,8 +623,11 @@ def stop_processing(run_id: str) -> str:
             return f"<span class='badge-stopped'>Stop request sent for run {run_id[:8]}.</span>"
     return "<span class='badge-idle'>Process not found or already ended.</span>"
 
+
 def cleanup_active_runs() -> None:
     if os.environ.get("TESTING") == "true":
+        return
+    if os.environ.get("KEEP_CONTAINERS_ON_EXIT") == "true":
         return
     with process_state.active_runs_lock:
         for run_id, run_info in process_state.active_runs.items():

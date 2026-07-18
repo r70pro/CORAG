@@ -71,6 +71,7 @@ class TestRAGRetrieverAll(unittest.TestCase):
         mock_result = MagicMock()
         mock_result.id = "point1"
         mock_result.score = 0.85
+        mock_result.payload = None
         mock_client.search.return_value = [mock_result]
         
         # Configure DB chunks return

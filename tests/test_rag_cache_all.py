@@ -129,6 +129,25 @@ class TestRAGCacheAll(unittest.TestCase):
         # Verify client is reset to None and exception caught
         self.assertIsNone(rag_cache._client)
 
+    @patch("redis.Redis")
+    def test_invalidate_caches(self, mock_redis_class):
+        mock_redis = mock_redis_class.return_value
+        with patch("rag.cache.get_client", return_value=mock_redis):
+            # Test invalidate_embedding_cache with model_name
+            mock_redis.keys.return_value = ["key1", "key2"]
+            rag_cache.invalidate_embedding_cache("my_model")
+            mock_redis.delete.assert_called_with("key1", "key2")
+            
+            # Test invalidate_embedding_cache without model_name
+            mock_redis.keys.return_value = ["key3"]
+            rag_cache.invalidate_embedding_cache(None)
+            mock_redis.delete.assert_called_with("key3")
+            
+            # Test invalidate_query_cache
+            mock_redis.keys.return_value = ["key4"]
+            rag_cache.invalidate_query_cache()
+            mock_redis.delete.assert_called_with("key4")
+
 
 if __name__ == "__main__":
     unittest.main()

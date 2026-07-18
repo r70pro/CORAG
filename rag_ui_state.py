@@ -1,12 +1,13 @@
-import os  # noqa: F401
 import datetime
-from settings_manager import WORKSPACE_DIR, get_available_runs  # noqa: F401
-
+import os  # noqa: F401
 import threading
+
+from settings_manager import WORKSPACE_DIR, get_available_runs  # noqa: F401
 
 RAG_LOG_BUFFER = []
 RAG_LOG_LOCK = threading.Lock()
 LAST_CREATED_RUN_ID = None
+
 
 def log_to_rag(message: str):
     """Log a message to the RAG system log buffer with a timestamp."""
@@ -19,10 +20,12 @@ def log_to_rag(message: str):
             if len(RAG_LOG_BUFFER) > 500:
                 RAG_LOG_BUFFER.pop(0)
 
+
 def get_rag_logs() -> str:
     """Get all accumulated RAG logs as a single string."""
     with RAG_LOG_LOCK:
         return "\n".join(RAG_LOG_BUFFER)
+
 
 def extract_text_content(content) -> str:
     """Extract plain text from potential Gradio 6 chatbot content format."""

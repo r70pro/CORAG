@@ -1,26 +1,36 @@
-import os
-import json
 import base64
+import json
+import os
 import zipfile
 from io import BytesIO
+
+import gradio as gr
 import pypdfium2 as pdfium
 from pypdf import PdfReader
-import gradio as gr
+
 import process_state
+
 
 def is_safe_filename(filename):
     if not filename:
         return False
-    return os.path.basename(filename) == filename and ".." not in filename and "/" not in filename and "\\" not in filename
+    return (
+        os.path.basename(filename) == filename
+        and ".." not in filename
+        and "/" not in filename
+        and "\\" not in filename
+    )
+
 
 def make_zip(markdown_dir, zip_path):
-    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         for root, _, files in os.walk(markdown_dir):
             for file in files:
-                if file.endswith('.md'):
+                if file.endswith(".md"):
                     file_path = os.path.join(root, file)
                     arcname = os.path.relpath(file_path, markdown_dir)
                     zipf.write(file_path, arcname)
+
 
 def load_markdown_content(selected_file, run_id_state):
     if not selected_file or not run_id_state:
@@ -38,12 +48,13 @@ def load_markdown_content(selected_file, run_id_state):
     file_path = os.path.join(run_dir, "markdown", "inputs", selected_file)
     if os.path.exists(file_path):
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 content = f.read()
             return content, content, file_path
         except Exception as e:
             return f"Error reading file: {e}", f"Error reading file: {e}", None
     return "File not found.", "File not found.", None
+
 
 def pil_to_base64(img):
     if img is None:
@@ -52,6 +63,7 @@ def pil_to_base64(img):
     img.save(buffered, format="PNG")
     img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
     return f"data:image/png;base64,{img_str}"
+
 
 def render_pdf_page(pdf_path, page_num):
     if not pdf_path or not os.path.exists(pdf_path):
@@ -66,6 +78,7 @@ def render_pdf_page(pdf_path, page_num):
     except Exception as e:
         print(f"Error rendering PDF page: {e}")
         return None
+
 
 def get_page_mapping_and_pdf_path(selected_file, run_id_state):
     if not selected_file or not run_id_state:
@@ -99,14 +112,17 @@ def get_page_mapping_and_pdf_path(selected_file, run_id_state):
             if f.endswith(".jsonl"):
                 jsonl_path = os.path.join(results_dir, f)
                 try:
-                    with open(jsonl_path, "r", encoding="utf-8") as file:
+                    with open(jsonl_path, encoding="utf-8") as file:
                         for line in file:
                             if not line.strip():
                                 continue
                             data = json.loads(line)
                             source_file = data.get("metadata", {}).get("Source-File", "")
                             expected_source = f"inputs/{pdf_filename}"
-                            if source_file == expected_source or os.path.basename(source_file) == pdf_filename:
+                            if (
+                                source_file == expected_source
+                                or os.path.basename(source_file) == pdf_filename
+                            ):
                                 attributes = data.get("attributes", {})
                                 pdf_page_numbers = attributes.get("pdf_page_numbers", [])
                                 page_ranges = pdf_page_numbers
@@ -117,6 +133,7 @@ def get_page_mapping_and_pdf_path(selected_file, run_id_state):
                     break
 
     return pdf_path, total_pages, page_ranges
+
 
 def get_markdown_for_page(full_markdown, page_ranges, page_num):
     if not full_markdown:
@@ -132,15 +149,23 @@ def get_markdown_for_page(full_markdown, page_ranges, page_num):
 
     return ""
 
+
 def on_file_selected(selected_file, run_id_state):
     if not selected_file or not run_id_state:
         return "", 0, [], "", gr.update(maximum=2, value=1, interactive=False), None
 
     if not is_safe_filename(selected_file):
-        return "", 0, [], "Invalid file path.", gr.update(maximum=2, value=1, interactive=False), None
+        return (
+            "",
+            0,
+            [],
+            "Invalid file path.",
+            gr.update(maximum=2, value=1, interactive=False),
+            None,
+        )
 
     pdf_path, total_pages, page_ranges = get_page_mapping_and_pdf_path(selected_file, run_id_state)
-    
+
     full_markdown = ""
     with process_state.active_runs_lock:
         run_info = process_state.active_runs.get(run_id_state)
@@ -149,7 +174,7 @@ def on_file_selected(selected_file, run_id_state):
             file_path = os.path.join(run_dir, "markdown", "inputs", selected_file)
             if os.path.exists(file_path):
                 try:
-                    with open(file_path, "r", encoding="utf-8") as f:
+                    with open(file_path, encoding="utf-8") as f:
                         full_markdown = f.read()
                 except Exception as e:
                     print(f"Error reading file: {e}")
@@ -161,15 +186,18 @@ def on_file_selected(selected_file, run_id_state):
         page_ranges or [],
         full_markdown,
         gr.update(maximum=max(2, total_pages), value=1, interactive=(total_pages > 1)),
-        pdf_path
+        pdf_path,
     )
 
-def update_view(selected_file, view_mode, page_num, pdf_path, total_pages, page_ranges, full_markdown):
+
+def update_view(
+    selected_file, view_mode, page_num, pdf_path, total_pages, page_ranges, full_markdown
+):
     if not selected_file:
         return (
             "<div id='pdf-scroll-container' class='sync-scroll-target pdf-viewer-placeholder'>Select a processed document to view.</div>",
             "<div id='raw-scroll-container' class='sync-scroll-target raw-markdown-placeholder'>Select a processed document to view.</div>",
-            "Select a processed document to preview."
+            "Select a processed document to preview.",
         )
 
     pdf_html = ""
@@ -206,14 +234,7 @@ def update_view(selected_file, view_mode, page_num, pdf_path, total_pages, page_
     else:
         raw_md_text = get_markdown_for_page(full_markdown, page_ranges, page_num)
 
-    escaped_raw = (
-        raw_md_text
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    escaped_raw = raw_md_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     raw_md_html = f"""<div id="raw-scroll-container" class="sync-scroll-target raw-md-view-container">{escaped_raw}</div>"""
 
     return pdf_html, raw_md_html, raw_md_text
-
-

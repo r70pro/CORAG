@@ -8,12 +8,91 @@ Provides:
 - Pre-built analysis templates (timeline, summary, inconsistencies)
 """
 
-import os
 import json
-import httpx
-from typing import List, Dict, Optional, Generator, Any
+import os
+from collections.abc import Generator
+from typing import Any
 
-from rag.retriever import search_similar, format_context_for_llm
+import httpx
+
+from rag.retriever import format_context_for_llm, search_similar
+
+# ── Loaded-model resolution cache ────────────────────────────
+# The /models probe in analyze() is per-query expensive. Cache the *list of
+# loaded models* per server URL for a short window so consecutive queries in a
+# session don't each pay the HTTP round-trip. Equivalence is resolved at call
+# time from the cached list, so different requested model names against the
+# same server keep returning correct (possibly equivalent) resolutions.
+_MODEL_CACHE_TTL = 30.0
+_model_cache: dict[str, tuple] = {}  # url -> (timestamp, [loaded_model_ids])
+
+# Known-equivalent model IDs: request -> served name.
+_MODEL_EQUIVALENTS = {
+    "microsoft/Phi-4-reasoning-plus": "nvidia/Phi-4-reasoning-plus-NVFP4",
+}
+
+
+def _get_loaded_models(server_url: str) -> list[str]:
+    """Fetch (and cache) the list of model IDs currently loaded in vLLM."""
+    import time
+
+    # Under test runs, skip the cache so each call re-probes (tests mock the
+    # HTTP layer per-call and rely on fresh results).
+    testing = os.environ.get("TESTING") is not None
+    now = time.monotonic()
+    cached = _model_cache.get(server_url)
+    if not testing and cached is not None and now - cached[0] < _MODEL_CACHE_TTL:
+        return cached[1]
+
+    url = server_url.rstrip("/") + "/models"
+    response = httpx.get(url, timeout=2.0)
+    if response.status_code != 200:
+        loaded: list[str] = []
+    else:
+        loaded = [m["id"] for m in response.json().get("data", [])]
+    _model_cache[server_url] = (now, loaded)
+    return loaded
+
+
+def _resolve_loaded_model(server_url: str, model_name: str):
+    """Resolve the model actually loaded in vLLM.
+
+    Returns a ``(resolved_model, fell_back)`` tuple. The resolved model is the
+    requested name when present, a known-equivalent loaded name when applicable,
+    or the first loaded model as a last resort. ``fell_back`` is True only when
+    neither an exact nor equivalent match was found (i.e. a genuine fallback).
+    """
+    loaded_models = _get_loaded_models(server_url)
+    if not loaded_models:
+        return model_name, False
+    if model_name in loaded_models:
+        return model_name, False
+
+    equivalent = _MODEL_EQUIVALENTS.get(model_name)
+    if equivalent in loaded_models:
+        return equivalent, False
+
+    # Reverse lookup: a loaded model that is equivalent to the requested one.
+    for loaded in loaded_models:
+        if _MODEL_EQUIVALENTS.get(loaded) == model_name:
+            return loaded, False
+
+    return loaded_models[0], True
+
+
+def _is_equivalent(m1: str, m2: str) -> bool:
+    return _MODEL_EQUIVALENTS.get(m1) == m2 or _MODEL_EQUIVALENTS.get(m2) == m1
+
+
+def _map_equivalent(model_name: str, loaded_models: list) -> str:
+    """Return ``model_name`` if present in ``loaded_models``, else the first
+    known-equivalent entry, else ``model_name`` unchanged."""
+    if model_name in loaded_models:
+        return model_name
+    for lm in loaded_models:
+        if _MODEL_EQUIVALENTS.get(model_name) == lm or _MODEL_EQUIVALENTS.get(lm) == model_name:
+            return lm
+    return model_name
 
 
 # ── System prompt templates ───────────────────────────────────
@@ -33,7 +112,6 @@ INSTRUCTIONS:
 - Use ISO date format (YYYY-MM-DD) when referencing dates
 - If the answer cannot be determined from the provided excerpts, say so explicitly and suggest what additional documents might help
 - Use clear, professional language appropriate for medicolegal analysis""",
-
     "timeline": """You are a medicolegal chronology specialist. Your task is to extract every dated event from the provided document excerpts and present them in strict chronological order.
 
 INSTRUCTIONS:
@@ -50,7 +128,6 @@ INSTRUCTIONS:
     - Identifying report details (e.g., Ref No: 2024AL0008570-1, Accession Number: 77.50382801)
 - Flag any inconsistencies in dates between different sources
 - Order strictly by date, oldest first""",
-
     "injury_summary": """You are a medicolegal injury analyst. Your task is to produce a structured summary of the patient's injury, treatment, and outcomes from the provided document excerpts.
 
 INSTRUCTIONS:
@@ -72,7 +149,6 @@ For every factual claim or timeline entry in this summary:
   * The exact authoring physician or clinic (e.g., Dr. Gavin Weekes, Capital Radiology)
   * Identifying report details (e.g., Ref No: 2024AL0008570-1, Accession Number: 77.50382801)
 Flag any contradictions between providers.""",
-
     "inconsistency_finder": """You are a medicolegal document auditor specialising in identifying inconsistencies, contradictions, and discrepancies across clinical records.
 
 INSTRUCTIONS:
@@ -85,7 +161,6 @@ INSTRUCTIONS:
 - Rate severity: MINOR (date formatting differences), MODERATE (differing clinical findings), MAJOR (contradictory diagnoses or recommendations)
 - Present findings in a structured table: Issue | Source A Says | Source B Says | Severity
 - Also note any gaps — events referenced but not documented""",
-
     "medication_tracker": """You are a clinical pharmacology analyst. Your task is to extract and track all medication references from the provided document excerpts.
 
 INSTRUCTIONS:
@@ -129,8 +204,8 @@ def build_prompt(
     query: str,
     context: str,
     mode: str = "free_qa",
-    chat_history: Optional[List[Dict]] = None,
-) -> List[Dict]:
+    chat_history: list[dict] | None = None,
+) -> list[dict]:
     """Build the full message list for the LLM API call.
 
     Args:
@@ -167,7 +242,7 @@ USER QUESTION:
 
 
 def query_llm_streaming(
-    messages: List[Dict],
+    messages: list[dict],
     server_url: str,
     model_name: str,
     temperature: float = 0.1,
@@ -241,7 +316,7 @@ def query_llm_streaming(
 
 
 def query_llm(
-    messages: List[Dict],
+    messages: list[dict],
     server_url: str,
     model_name: str,
     temperature: float = 0.1,
@@ -296,57 +371,58 @@ def query_llm(
         return f"⚠️ Error: {str(e)}"
 
 
-def replace_source_tags_in_string(text: str, results: List[Dict]) -> str:
+def replace_source_tags_in_string(text: str, results: list[dict]) -> str:
     """Replace abstract [Source X] references with detailed citations."""
     import re
+
     pattern = re.compile(
-        r'\[[Ss]ources?\s*:?\s*(\d+(?:\s*(?:,|\b)\s*\d+)*)\]|\b[Ss]ources?\s+(\d+(?:\s*(?:,|\b)\s*\d+)*)\b',
-        re.IGNORECASE
+        r"\[[Ss]ources?\s*:?\s*(\d+(?:\s*(?:,|\b)\s*\d+)*)\]|\b[Ss]ources?\s+(\d+(?:\s*(?:,|\b)\s*\d+)*)\b",
+        re.IGNORECASE,
     )
-    
-    def get_citation_for_idx(idx: int) -> Optional[str]:
+
+    def get_citation_for_idx(idx: int) -> str | None:
         if 1 <= idx <= len(results):
             result = results[idx - 1]
             parts = []
-            
+
             # 1. Author
             author = result.get("author") or ""
             if author:
                 parts.append(author)
-                
+
             # 2. Document type
             doc_type = result.get("document_type") or ""
             if doc_type and doc_type != "unknown":
                 doc_type = doc_type.replace("_", " ").title()
                 parts.append(doc_type)
-            
+
             # 3. Date
             date = result.get("date_extracted") or ""
             if date:
                 parts.append(date)
-                
+
             # 4. Page number
             page = result.get("page_number")
             if page:
                 parts.append(f"p. {page}")
-                
+
             # 5. Identifying report details if present in chunk text
             chunk_text = result.get("text", "")
             ref_match = re.search(
-                r'\b(?:Ref(?:\s*No)?\.?\s*:\s*|Accession(?:\s*Number)?\.?\s*:\s*)([A-Z0-9_\-]+(?:\.[A-Z0-9_\-]+)*)',
+                r"\b(?:Ref(?:\s*No)?\.?\s*:\s*|Accession(?:\s*Number)?\.?\s*:\s*)([A-Z0-9_\-]+(?:\.[A-Z0-9_\-]+)*)",
                 chunk_text,
-                re.IGNORECASE
+                re.IGNORECASE,
             )
             if ref_match:
                 ref_val = ref_match.group(0).strip()
-                ref_val = ref_val.rstrip(',.;:')
+                ref_val = ref_val.rstrip(",.;:")
                 parts.append(ref_val)
 
             # Check if original filename is present, and append if details are minimal
             filename = result.get("original_filename") or ""
             if filename and len(parts) < 2 and filename not in parts:
                 parts.append(filename)
-                
+
             if parts:
                 return ", ".join(parts)
             else:
@@ -359,8 +435,8 @@ def replace_source_tags_in_string(text: str, results: List[Dict]) -> str:
         source_str = bracketed_str or word_str
         if not source_str:
             return match.group(0)
-            
-        indices = [int(num) for num in re.findall(r'\d+', source_str)]
+
+        indices = [int(num) for num in re.findall(r"\d+", source_str)]
         citations = []
         for idx in indices:
             cit = get_citation_for_idx(idx)
@@ -375,15 +451,16 @@ def replace_source_tags_in_string(text: str, results: List[Dict]) -> str:
     return pattern.sub(replacer, text)
 
 
-def replace_source_tags_streaming(generator, results: List[Dict]) -> Generator[str, None, None]:
+def replace_source_tags_streaming(generator, results: list[dict]) -> Generator[str, None, None]:
     """Wraps an LLM streaming generator and replaces source tags on the fly."""
     import re
+
     buffer = ""
     for chunk in generator:
         if not chunk:
             continue
         buffer += chunk
-        
+
         while True:
             start_idx = buffer.find("[")
             if start_idx == -1:
@@ -394,23 +471,23 @@ def replace_source_tags_streaming(generator, results: List[Dict]) -> Generator[s
                     idx = lower_buf.rfind(prefix)
                     if idx > last_source_idx:
                         last_source_idx = idx
-                
+
                 if last_source_idx != -1:
                     suffix = buffer[last_source_idx:]
-                    if re.match(r'^[Ss]ources?\s*\d*$', suffix):
+                    if re.match(r"^[Ss]ources?\s*\d*$", suffix):
                         if last_source_idx > 0:
                             yield replace_source_tags_in_string(buffer[:last_source_idx], results)
                             buffer = buffer[last_source_idx:]
                         break
-                
+
                 yield replace_source_tags_in_string(buffer, results)
                 buffer = ""
                 break
-            
+
             if start_idx > 0:
                 yield replace_source_tags_in_string(buffer[:start_idx], results)
                 buffer = buffer[start_idx:]
-            
+
             close_idx = buffer.find("]")
             if close_idx == -1:
                 if len(buffer) > 150:
@@ -418,11 +495,11 @@ def replace_source_tags_streaming(generator, results: List[Dict]) -> Generator[s
                     buffer = ""
                 break
             else:
-                tag = buffer[:close_idx + 1]
+                tag = buffer[: close_idx + 1]
                 replaced_tag = replace_source_tags_in_string(tag, results)
                 yield replaced_tag
-                buffer = buffer[close_idx + 1:]
-                
+                buffer = buffer[close_idx + 1 :]
+
     if buffer:
         yield replace_source_tags_in_string(buffer, results)
 
@@ -433,14 +510,14 @@ def analyze(
     server_url: str = "http://localhost:8000/v1",
     model_name: str = "nvidia/Phi-4-reasoning-plus-NVFP4",
     top_k: int = 8,
-    chat_history: Optional[List[Dict]] = None,
-    run_id_filter: Optional[str] = None,
-    doc_type_filter: Optional[str] = None,
-    author_filter: Optional[str] = None,
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
+    chat_history: list[dict] | None = None,
+    run_id_filter: str | None = None,
+    doc_type_filter: str | None = None,
+    author_filter: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     stream: bool = True,
-    progress_callback: Optional[Any] = None,
+    progress_callback: Any | None = None,
     **search_kwargs,
 ) -> Generator[str, None, None]:
     """Full RAG analysis pipeline: retrieve → prompt → generate.
@@ -467,10 +544,12 @@ def analyze(
         Response text chunks (if streaming) or full response.
     """
     # For structured/analytical modes, automatically increase top_k to at least 50
-    # to guarantee comprehensive document coverage.
+    # to guarantee comprehensive document coverage. A looser score threshold is
+    # used so the expanded candidate pool is actually retrieved (independent of
+    # whether a case filter is active).
     if mode in ["timeline", "injury_summary", "inconsistency_finder", "medication_tracker"]:
         top_k = max(top_k, 50)
-        if run_id_filter and "score_threshold" not in search_kwargs:
+        if "score_threshold" not in search_kwargs:
             search_kwargs["score_threshold"] = 0.05
 
     # Step 1: Retrieve relevant chunks
@@ -491,16 +570,28 @@ def analyze(
         yield "Please ensure documents have been indexed using the 'Build Index' button."
         return
 
-    # Truncate context to fit model's max limit
-    from settings_manager import load_settings
+    # Truncate context to fit the *analysis* model's max context window.
+    # NOTE: we must use the analysis model's limit, not the OCR container's
+    # (docker_max_model_len), which can differ on a shared vLLM server.
+    from settings_manager import MODEL_MAX_CONTENT_LENGTHS, load_settings
+
     settings = load_settings()
-    max_model_len = settings.get("docker_max_model_len", 131072)
-    max_prompt_tokens = max(max_model_len - 5120, 2048)
+    # 1) Best: a known limit for the exact analysis model name.
+    # 2) Fallback: the configured OCR container limit.
+    # 3) Last resort: a conservative default.
+    max_model_len = (
+        settings.get("docker_max_model_len")
+        or MODEL_MAX_CONTENT_LENGTHS.get(model_name)
+        or MODEL_MAX_CONTENT_LENGTHS.get(settings.get("analysis_model_name"))
+        or 131072
+    )
+    max_prompt_tokens = max(int(max_model_len) - 5120, 2048)
 
     # Estimate base prompt and overall tokens
-    def estimate_tokens(msgs: List[Dict]) -> int:
+    def estimate_tokens(msgs: list[dict]) -> int:
         try:
             import tiktoken
+
             encoding = tiktoken.get_encoding("cl100k_base")
         except Exception:
             encoding = None
@@ -544,18 +635,20 @@ def analyze(
 
     warning_msg = None
     if estimated_total > max_prompt_tokens:
+        # Drop the least-relevant chunks (results are pre-sorted by score,
+        # most relevant first) until the prompt fits, keeping at least the
+        # single most relevant chunk. Linear scan from the full set down to 1
+        # preserves as many chunks as the window allows rather than collapsing
+        # to one chunk on the first non-fit.
         truncated_results = list(results)
         while len(truncated_results) > 1:
-            truncated_results.pop()
-            context = format_context_for_llm(truncated_results)
-            messages = build_prompt(query, context, mode, chat_history)
-            if estimate_tokens(messages) <= max_prompt_tokens:
-                results = truncated_results
+            trial = truncated_results[:-1]
+            messages_trial = build_prompt(query, format_context_for_llm(trial), mode, chat_history)
+            if estimate_tokens(messages_trial) <= max_prompt_tokens:
+                truncated_results = trial
                 break
-        else:
-            results = truncated_results[:1]
-            context = format_context_for_llm(results)
-            messages = build_prompt(query, context, mode, chat_history)
+            truncated_results = trial
+        results = truncated_results
 
         warning_msg = (
             f"⚠️ **Note**: The retrieved context was too large for the model's context window "
@@ -573,38 +666,12 @@ def analyze(
     resolved_model = model_name
     if os.environ.get("TESTING") != "true":
         try:
-            url = server_url.rstrip("/") + "/models"
-            response = httpx.get(url, timeout=2.0)
-            if response.status_code == 200:
-                data = response.json()
-                loaded_models = [m["id"] for m in data.get("data", [])]
-                if loaded_models:
-                    # Normalize/map known equivalent models to avoid unnecessary fallbacks
-                    equivalents = {
-                        "microsoft/Phi-4-reasoning-plus": "nvidia/Phi-4-reasoning-plus-NVFP4",
-                    }
-                    def is_equivalent(m1: str, m2: str) -> bool:
-                        if m1 == m2:
-                            return True
-                        if equivalents.get(m1) == m2:
-                            return True
-                        if equivalents.get(m2) == m1:
-                            return True
-                        return False
-
-                    if model_name in loaded_models:
-                        resolved_model = model_name
-                    else:
-                        equivalent_model = None
-                        for lm in loaded_models:
-                            if is_equivalent(model_name, lm):
-                                equivalent_model = lm
-                                break
-                        if equivalent_model:
-                            resolved_model = equivalent_model
-                        else:
-                            resolved_model = loaded_models[0]
-                            yield f"⚠️ **Note**: Model `{model_name}` is not loaded in vLLM. Falling back to `{resolved_model}`.\n\n"
+            resolved_model, fell_back = _resolve_loaded_model(server_url, model_name)
+            if fell_back:
+                yield (
+                    f"⚠️ **Note**: Model `{model_name}` is not loaded in vLLM. "
+                    f"Falling back to `{resolved_model}`.\n\n"
+                )
         except Exception:
             pass
 
@@ -620,4 +687,3 @@ def analyze(
             yield warning_msg + processed_text
         else:
             yield processed_text
-

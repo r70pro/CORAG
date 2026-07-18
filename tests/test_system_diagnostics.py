@@ -289,6 +289,43 @@ class TestSystemDiagnostics(unittest.TestCase):
                 # Process 333 should map to Application
                 self.assertEqual(res["processes"][2]["type_text"], "Application")
 
+    @patch("system_diagnostics.check_backing_services_data")
+    @patch("system_diagnostics.get_gpu_metrics_data")
+    @patch("settings_manager.load_settings")
+    @patch("builtins.open", new_callable=mock_open)
+    @patch("os.makedirs")
+    def test_generate_diagnostic_report_file(self, mock_makedirs, mock_file, mock_load_settings, mock_gpu_data, mock_backing_data):
+        mock_load_settings.return_value = {"hf_token": "some_token", "other_setting": "value"}
+        mock_backing_data.return_value = {
+            "all_healthy": True,
+            "services": {
+                "postgres": {"is_up": True, "latency": 1.5, "extra_info": "Connected"},
+            }
+        }
+        mock_gpu_data.return_value = {
+            "cuda_available": True,
+            "gpu_name": "RTX 4090",
+            "vram_used": 1000.0,
+            "vram_free": 15000.0,
+            "vram_total": 16000.0,
+            "vram_pct": 6.25,
+            "vram_reclaimable": 0.0,
+            "vram_potential_free": 15000.0,
+            "processes": [
+                {"pid": 123, "display_name": "python", "vram": 500.0, "type_text": "Application"}
+            ]
+        }
+        
+        # Test path when CUDA is available
+        path = system_diagnostics.generate_diagnostic_report_file(8000)
+        self.assertTrue(path.endswith("diagnostic_report.md"))
+        mock_file.assert_called_with(path, "w", encoding="utf-8")
+        
+        # Test path when CUDA is not available
+        mock_gpu_data.return_value["cuda_available"] = False
+        path = system_diagnostics.generate_diagnostic_report_file(8000)
+        self.assertTrue(path.endswith("diagnostic_report.md"))
+
 
 if __name__ == "__main__":
     unittest.main()

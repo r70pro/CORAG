@@ -13,177 +13,179 @@ Designed for:
 - TAC/WorkCover correspondence
 """
 
-import re
 import hashlib
-from typing import List, Dict, Optional, Tuple
-
+import re
 
 # ── Date extraction patterns ──────────────────────────────────
 # Covers: DD/MM/YY, DD.MM.YY, DD/MM/YYYY, DD.MM.YYYY, DD-MM-YYYY,
 #         "12 February 2018", "Feb 12, 2018", etc.
 DATE_PATTERNS = [
     # DD/MM/YYYY or DD.MM.YYYY or DD-MM-YYYY
-    re.compile(r'\b(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2,4})\b'),
+    re.compile(r"\b(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2,4})\b"),
     # "12 February 2018" or "February 12, 2018"
     re.compile(
-        r'\b(\d{1,2})\s+'
-        r'(January|February|March|April|May|June|July|August|'
-        r'September|October|November|December)\s+'
-        r'(\d{4})\b',
-        re.IGNORECASE
+        r"\b(\d{1,2})\s+"
+        r"(January|February|March|April|May|June|July|August|"
+        r"September|October|November|December)\s+"
+        r"(\d{4})\b",
+        re.IGNORECASE,
     ),
     re.compile(
-        r'\b(January|February|March|April|May|June|July|August|'
-        r'September|October|November|December)\s+'
-        r'(\d{1,2}),?\s+(\d{4})\b',
-        re.IGNORECASE
+        r"\b(January|February|March|April|May|June|July|August|"
+        r"September|October|November|December)\s+"
+        r"(\d{1,2}),?\s+(\d{4})\b",
+        re.IGNORECASE,
     ),
 ]
 
 MONTH_MAP = {
-    'january': 1, 'february': 2, 'march': 3, 'april': 4,
-    'may': 5, 'june': 6, 'july': 7, 'august': 8,
-    'september': 9, 'october': 10, 'november': 11, 'december': 12,
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
 }
 
 # ── Author extraction patterns ────────────────────────────────
 AUTHOR_PATTERNS = [
     # 1. Signatures at the bottom of letters
     re.compile(
-        r'(?:Yours\s+sincerely|Kind\s+regards|Regards|Yours\s+faithfully|Signed|Dictated\s+by|On\s+behalf\s+of)\s*,?\s*\n+'
-        r'(?:\([^)]*\)\s*\n+)?'
-        r'(?:Dr\.?|A/Prof\.?|Prof\.?|Mr\.?|Ms\.?|Physiotherapist)?\s*'
-        r'([A-Z][a-zA-Z\-\'\.]+(?:[ \t]+[A-Z][a-zA-Z\-\'\.]+){0,3})',
-        re.IGNORECASE | re.MULTILINE
+        r"(?:Yours\s+sincerely|Kind\s+regards|Regards|Yours\s+faithfully|Signed|Dictated\s+by|On\s+behalf\s+of)\s*,?\s*\n+"
+        r"(?:\([^)]*\)\s*\n+)?"
+        r"(?:Dr\.?|A/Prof\.?|Prof\.?|Mr\.?|Ms\.?|Physiotherapist)?\s*"
+        r"([A-Z][a-zA-Z\-\'\.]+(?:[ \t]+[A-Z][a-zA-Z\-\'\.]+){0,3})",
+        re.IGNORECASE | re.MULTILINE,
     ),
     # 2. Clinical Notes headers / Sender tags
     re.compile(
-        r'(?:Clinical\s+Notes\s+of|From:)\s*(?:Dr\.?|A/Prof\.?|Prof\.?|Mr\.?|Ms\.?|Physiotherapist)?\s*'
-        r'([A-Z][a-zA-Z\-\'\.]+(?:[ \t]+[A-Z][a-zA-Z\-\'\.]+){0,3})',
-        re.IGNORECASE
+        r"(?:Clinical\s+Notes\s+of|From:)\s*(?:Dr\.?|A/Prof\.?|Prof\.?|Mr\.?|Ms\.?|Physiotherapist)?\s*"
+        r"([A-Z][a-zA-Z\-\'\.]+(?:[ \t]+[A-Z][a-zA-Z\-\'\.]+){0,3})",
+        re.IGNORECASE,
     ),
     # 3. Fallback: general Dr/Prof matches but explicitly ignore recipients (Dear Dr...)
     re.compile(
-        r'(?<!Dear\s)(?<!Dear\sDr\.\s)(?<!Dear\sDr\s)(?<!Dear\sA/Prof\.\s)(?<!Dear\sA/Prof\s)'
-        r'(?:Dr\.?|A/Prof\.?|Prof\.?|Mr\.?|Ms\.?)\s+'
-        r'([A-Z][a-zA-Z\-\'\.]+(?:[ \t]+[A-Z][a-zA-Z\-\'\.]+){0,3})',
+        r"(?<!Dear\s)(?<!Dear\sDr\.\s)(?<!Dear\sDr\s)(?<!Dear\sA/Prof\.\s)(?<!Dear\sA/Prof\s)"
+        r"(?:Dr\.?|A/Prof\.?|Prof\.?|Mr\.?|Ms\.?)\s+"
+        r"([A-Z][a-zA-Z\-\'\.]+(?:[ \t]+[A-Z][a-zA-Z\-\'\.]+){0,3})",
     ),
 ]
 
 # ── Document type classification patterns ─────────────────────
 DOC_TYPE_PATTERNS = {
     "specialist_letter": re.compile(
-        r'(?:Dear\s+(?:Dr|Sybille|Doctor|Prof))|'
-        r'(?:Re:\s+.*DOB)|'
-        r'(?:Yours\s+sincerely)|'
-        r'(?:Kind\s+regards)',
-        re.IGNORECASE
+        r"(?:Dear\s+(?:Dr|Sybille|Doctor|Prof))|"
+        r"(?:Re:\s+.*DOB)|"
+        r"(?:Yours\s+sincerely)|"
+        r"(?:Kind\s+regards)",
+        re.IGNORECASE,
     ),
     "clinical_notes": re.compile(
-        r'(?:Clinical\s+Notes)|'
-        r'(?:Date\s*\|?\s*Clinical\s*Notes)|'
-        r'(?:<th>Date</th>\s*<th>Clinical)',
-        re.IGNORECASE
+        r"(?:Clinical\s+Notes)|"
+        r"(?:Date\s*\|?\s*Clinical\s*Notes)|"
+        r"(?:<th>Date</th>\s*<th>Clinical)",
+        re.IGNORECASE,
     ),
     "referral_letter": re.compile(
-        r'(?:Thank\s+you\s+for\s+(?:referring|seeing))|'
-        r'(?:Please\s+accept\s+this\s+referral)|'
-        r'(?:I\s+am\s+referring)',
-        re.IGNORECASE
+        r"(?:Thank\s+you\s+for\s+(?:referring|seeing))|"
+        r"(?:Please\s+accept\s+this\s+referral)|"
+        r"(?:I\s+am\s+referring)",
+        re.IGNORECASE,
     ),
     "physiotherapy_report": re.compile(
-        r'(?:Physiotherap)|'
-        r'(?:ROM\b)|'
-        r'(?:range\s+of\s+motion)|'
-        r'(?:exercises?\s+program)',
-        re.IGNORECASE
+        r"(?:Physiotherap)|" r"(?:ROM\b)|" r"(?:range\s+of\s+motion)|" r"(?:exercises?\s+program)",
+        re.IGNORECASE,
     ),
     "medicolegal_report": re.compile(
-        r'(?:medico.?legal)|'
-        r'(?:independent\s+medical)|'
-        r'(?:IME\b)|'
-        r'(?:claim\s+number)',
-        re.IGNORECASE
+        r"(?:medico.?legal)|" r"(?:independent\s+medical)|" r"(?:IME\b)|" r"(?:claim\s+number)",
+        re.IGNORECASE,
     ),
     "radiology_report": re.compile(
-        r'(?:MRI\s+(?:scan|report|findings))|'
-        r'(?:CT\s+scan)|'
-        r'(?:X-ray)|'
-        r'(?:ultrasound\s+report)|'
-        r'(?:imaging\s+findings)',
-        re.IGNORECASE
+        r"(?:MRI\s+(?:scan|report|findings))|"
+        r"(?:CT\s+scan)|"
+        r"(?:X-ray)|"
+        r"(?:ultrasound\s+report)|"
+        r"(?:imaging\s+findings)",
+        re.IGNORECASE,
     ),
 }
 
 # ── Section type classification ───────────────────────────────
 SECTION_PATTERNS = {
     "clinical_findings": re.compile(
-        r'(?:On\s+examination)|'
-        r'(?:Clinical\s+findings)|'
-        r'(?:Physical\s+examination)|'
-        r'(?:range\s+of\s+motion)',
-        re.IGNORECASE
+        r"(?:On\s+examination)|"
+        r"(?:Clinical\s+findings)|"
+        r"(?:Physical\s+examination)|"
+        r"(?:range\s+of\s+motion)",
+        re.IGNORECASE,
     ),
     "history": re.compile(
-        r'(?:Past\s+(?:History|Medical))|'
-        r'(?:Current\s+Problems)|'
-        r'(?:Presenting\s+complaint)|'
-        r'(?:History\s+of\s+(?:present|injury))',
-        re.IGNORECASE
+        r"(?:Past\s+(?:History|Medical))|"
+        r"(?:Current\s+Problems)|"
+        r"(?:Presenting\s+complaint)|"
+        r"(?:History\s+of\s+(?:present|injury))",
+        re.IGNORECASE,
     ),
     "medications": re.compile(
-        r'(?:Current\s+Medications?)|'
-        r'(?:Medications?:)|'
-        r'(?:Prescribed)',
-        re.IGNORECASE
+        r"(?:Current\s+Medications?)|" r"(?:Medications?:)|" r"(?:Prescribed)", re.IGNORECASE
     ),
-    "diagnosis": re.compile(
-        r'(?:Diagnosis|Impression|Assessment|Conclusion)',
-        re.IGNORECASE
-    ),
+    "diagnosis": re.compile(r"(?:Diagnosis|Impression|Assessment|Conclusion)", re.IGNORECASE),
     "treatment_plan": re.compile(
-        r'(?:Treatment\s+Plan)|'
-        r'(?:Recommendations?)|'
-        r'(?:I\s+have\s+recommended)|'
-        r'(?:Management\s+plan)',
-        re.IGNORECASE
+        r"(?:Treatment\s+Plan)|"
+        r"(?:Recommendations?)|"
+        r"(?:I\s+have\s+recommended)|"
+        r"(?:Management\s+plan)",
+        re.IGNORECASE,
     ),
-    "allergies": re.compile(
-        r'(?:Allergies?:?\s)|(?:Nil\s+Known)',
-        re.IGNORECASE
-    ),
+    "allergies": re.compile(r"(?:Allergies?:?\s)|(?:Nil\s+Known)", re.IGNORECASE),
     "correspondence": re.compile(
-        r'(?:Dear\s+)|(?:To\s+whom)|(?:ELECTRONIC\s+TRANSMISSION)',
-        re.IGNORECASE
+        r"(?:Dear\s+)|(?:To\s+whom)|(?:ELECTRONIC\s+TRANSMISSION)", re.IGNORECASE
     ),
 }
 
 # ── Patient name extraction ───────────────────────────────────
 PATIENT_PATTERNS = [
-    re.compile(r'Re:\s+([A-Z][a-zA-Z\-\']+(?:[ \t]+[A-Z][a-zA-Z\-\']+){0,3})\s+DOB', re.IGNORECASE),
-    re.compile(r'Re:\s+(?:Mr|Mrs|Ms|Miss)\.?\s+([A-Z][a-zA-Z\-\']+(?:[ \t]+[A-Z][a-zA-Z\-\']+){0,3})', re.IGNORECASE),
-    re.compile(r'Patient(?:\s+Name)?:\s*([A-Z][a-zA-Z\-\']+(?:[ \t]+[A-Z][a-zA-Z\-\']+){0,3})', re.IGNORECASE),
+    re.compile(r"Re:\s+([A-Z][a-zA-Z\-\']+(?:[ \t]+[A-Z][a-zA-Z\-\']+){0,3})\s+DOB", re.IGNORECASE),
+    re.compile(
+        r"Re:\s+(?:Mr|Mrs|Ms|Miss)\.?\s+([A-Z][a-zA-Z\-\']+(?:[ \t]+[A-Z][a-zA-Z\-\']+){0,3})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"Patient(?:\s+Name)?:\s*([A-Z][a-zA-Z\-\']+(?:[ \t]+[A-Z][a-zA-Z\-\']+){0,3})",
+        re.IGNORECASE,
+    ),
 ]
 
 # ── Letter boundary detection ─────────────────────────────────
 LETTER_BOUNDARY_PATTERNS = [
     # Date + Letter header
-    re.compile(r'^\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}\s+Letter', re.MULTILINE),
+    re.compile(r"^\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}\s+Letter", re.MULTILINE),
     # "Dear Dr..." at start of line
-    re.compile(r'^Dear\s+(?:Dr|Prof|Mr|Ms|Mrs)', re.MULTILINE | re.IGNORECASE),
+    re.compile(r"^Dear\s+(?:Dr|Prof|Mr|Ms|Mrs)", re.MULTILINE | re.IGNORECASE),
     # Transmission headers
-    re.compile(r'^ELECTRONIC\s+TRANSMISSION', re.MULTILINE | re.IGNORECASE),
+    re.compile(r"^ELECTRONIC\s+TRANSMISSION", re.MULTILINE | re.IGNORECASE),
     # "Re: Patient Name DOB:"
-    re.compile(r'^Re:\s+', re.MULTILINE),
+    re.compile(r"^Re:\s+", re.MULTILINE),
     # Clinical Notes header
-    re.compile(r'^Clinical\s+Notes\s+of', re.MULTILINE | re.IGNORECASE),
+    re.compile(r"^Clinical\s+Notes\s+of", re.MULTILINE | re.IGNORECASE),
     # Scanned Document marker
     re.compile(r"Scanned\s+Document\s+\(\s*'", re.IGNORECASE),
 ]
 
 
-def _parse_date(text: str) -> Optional[str]:
+def _parse_date(text: str) -> str | None:
     """Extract and normalise the first date found in text to ISO-8601 format.
+
+    Assumes the **Australian DD/MM/YYYY** convention used throughout
+    medicolegal documents (e.g. ``12/03/2018`` = 12 March 2018). Documents that
+    use US ``MM/DD/YYYY`` ordering will be mis-parsed and the date silently
+    normalised incorrectly. Returns ``None`` if no recognised date is found.
 
     Returns:
         ISO date string (YYYY-MM-DD) or None.
@@ -218,7 +220,7 @@ def _parse_date(text: str) -> Optional[str]:
     return None
 
 
-def _extract_raw_date(text: str) -> Optional[str]:
+def _extract_raw_date(text: str) -> str | None:
     """Extract the raw date string as it appears in the text."""
     for pattern in DATE_PATTERNS:
         match = pattern.search(text)
@@ -227,7 +229,7 @@ def _extract_raw_date(text: str) -> Optional[str]:
     return None
 
 
-def _extract_author(text: str) -> Optional[str]:
+def _extract_author(text: str) -> str | None:
     """Extract the most likely author name from text."""
     for pattern in AUTHOR_PATTERNS:
         match = pattern.search(text)
@@ -257,7 +259,7 @@ def _classify_section_type(text: str) -> str:
     return "general"
 
 
-def _extract_patient_name(text: str) -> Optional[str]:
+def _extract_patient_name(text: str) -> str | None:
     """Extract the patient name from text."""
     for pattern in PATIENT_PATTERNS:
         match = pattern.search(text)
@@ -266,7 +268,7 @@ def _extract_patient_name(text: str) -> Optional[str]:
     return None
 
 
-def _find_page_for_position(char_pos: int, page_ranges: list) -> Optional[int]:
+def _find_page_for_position(char_pos: int, page_ranges: list) -> int | None:
     """Determine which page a character position falls on.
 
     Args:
@@ -290,7 +292,7 @@ def _make_chunk_id(doc_id: str, chunk_index: int) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
-def _split_into_sections(text: str) -> List[Tuple[int, int, str]]:
+def _split_into_sections(text: str) -> list[tuple[int, int, str]]:
     """Split text into sections based on letter/document boundaries.
 
     Returns:
@@ -328,7 +330,7 @@ def _split_section_into_chunks(
     section_start: int,
     max_chunk_size: int = 800,
     overlap: int = 100,
-) -> List[Tuple[int, int, str]]:
+) -> list[tuple[int, int, str]]:
     """Split a section into overlapping chunks at paragraph boundaries.
 
     Tries to split at double-newlines (paragraph breaks) first,
@@ -347,7 +349,7 @@ def _split_section_into_chunks(
         return [(section_start, section_start + len(section_text), section_text)]
 
     # Find natural break points (paragraph boundaries)
-    paragraphs = re.split(r'\n\s*\n', section_text)
+    paragraphs = re.split(r"\n\s*\n", section_text)
 
     chunks = []
     current_chunk = ""
@@ -379,28 +381,28 @@ def _split_section_into_chunks(
             while len(current_chunk) > max_chunk_size:
                 # Split at sentence boundary
                 split_point = max_chunk_size
-                sentence_end = current_chunk.rfind('. ', 0, max_chunk_size)
+                sentence_end = current_chunk.rfind(". ", 0, max_chunk_size)
                 if sentence_end > max_chunk_size // 2:
                     split_point = sentence_end + 2
                 else:
-                    newline_pos = current_chunk.rfind('\n', 0, max_chunk_size)
+                    newline_pos = current_chunk.rfind("\n", 0, max_chunk_size)
                     if newline_pos > max_chunk_size // 2:
                         split_point = newline_pos + 1
 
                 chunk_text = current_chunk[:split_point].strip()
+                # Clamp overlap so the residual slice start never goes negative
+                # (which would wrap to the end of the string and duplicate or
+                # loop forever when split_point is small).
                 actual_overlap = max(0, min(overlap, len(chunk_text) - 1))
+                safe_start = len(chunk_text) - actual_overlap
                 chunk_end = current_start + len(chunk_text)
                 chunks.append((current_start, chunk_end, chunk_text))
                 current_start = chunk_end - actual_overlap
-                current_chunk = current_chunk[split_point - actual_overlap:].strip()
+                current_chunk = current_chunk[safe_start:].strip()
 
     # Don't forget the last chunk
     if current_chunk.strip():
-        chunks.append((
-            current_start,
-            current_start + len(current_chunk),
-            current_chunk.strip()
-        ))
+        chunks.append((current_start, current_start + len(current_chunk), current_chunk.strip()))
 
     return chunks
 
@@ -409,10 +411,10 @@ def chunk_document(
     markdown_text: str,
     doc_id: str,
     run_id: str,
-    page_ranges: Optional[list] = None,
+    page_ranges: list | None = None,
     max_chunk_size: int = 800,
     chunk_overlap: int = 100,
-) -> List[Dict]:
+) -> list[dict]:
     """Chunk a document into semantically meaningful pieces with rich metadata.
 
     This is the main entry point for the chunker.
@@ -445,7 +447,7 @@ def chunk_document(
     all_chunks = []
     chunk_index = 0
 
-    for section_start, section_end, section_text in sections:
+    for section_start, _, section_text in sections:
         # Extract section-level metadata
         section_author = _extract_author(section_text)
         section_date = _parse_date(section_text)
@@ -476,23 +478,25 @@ def chunk_document(
 
             chunk_id = _make_chunk_id(doc_id, chunk_index)
 
-            all_chunks.append({
-                "chunk_id": chunk_id,
-                "doc_id": doc_id,
-                "run_id": run_id,
-                "chunk_index": chunk_index,
-                "text": chunk_text,
-                "char_start": chunk_start,
-                "char_end": chunk_end,
-                "page_number": page_num,
-                "document_type": effective_doc_type,
-                "author": chunk_author,
-                "date_extracted": chunk_date,
-                "date_raw": chunk_date_raw,
-                "section_type": chunk_section_type,
-                "patient_name": section_patient,
-                "token_count": len(chunk_text) // 4,  # Rough token estimate
-            })
+            all_chunks.append(
+                {
+                    "chunk_id": chunk_id,
+                    "doc_id": doc_id,
+                    "run_id": run_id,
+                    "chunk_index": chunk_index,
+                    "text": chunk_text,
+                    "char_start": chunk_start,
+                    "char_end": chunk_end,
+                    "page_number": page_num,
+                    "document_type": effective_doc_type,
+                    "author": chunk_author,
+                    "date_extracted": chunk_date,
+                    "date_raw": chunk_date_raw,
+                    "section_type": chunk_section_type,
+                    "patient_name": section_patient,
+                    "token_count": len(chunk_text) // 4,  # Rough token estimate
+                }
+            )
             chunk_index += 1
 
     return all_chunks
@@ -503,7 +507,7 @@ def chunk_documents_from_run(
     run_id: str,
     max_chunk_size: int = 800,
     chunk_overlap: int = 100,
-) -> Dict[str, List[Dict]]:
+) -> dict[str, list[dict]]:
     """Chunk all documents from a completed OCR run.
 
     Args:
@@ -515,8 +519,8 @@ def chunk_documents_from_run(
     Returns:
         Dict mapping doc_id -> list of chunk dicts.
     """
-    import os
     import json
+    import os
 
     results = {}
     md_inputs_dir = os.path.join(run_dir, "markdown", "inputs")
@@ -532,7 +536,7 @@ def chunk_documents_from_run(
             if f.endswith(".jsonl"):
                 jsonl_path = os.path.join(results_dir, f)
                 try:
-                    with open(jsonl_path, "r", encoding="utf-8") as fh:
+                    with open(jsonl_path, encoding="utf-8") as fh:
                         for line in fh:
                             line = line.strip()
                             if not line:
@@ -554,7 +558,7 @@ def chunk_documents_from_run(
 
         md_path = os.path.join(md_inputs_dir, md_file)
         try:
-            with open(md_path, "r", encoding="utf-8") as f:
+            with open(md_path, encoding="utf-8") as f:
                 markdown_text = f.read()
         except Exception as e:
             print(f"Error reading {md_path}: {e}")

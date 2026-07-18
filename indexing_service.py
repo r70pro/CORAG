@@ -1,9 +1,11 @@
+import datetime
 import hashlib
 import os
 import re
 import shutil
-import datetime
+
 from settings_manager import WORKSPACE_DIR, load_settings
+
 
 class CorpusIndexingService:
     last_created_run_id = None
@@ -34,6 +36,7 @@ class CorpusIndexingService:
         # Check if already indexed
         try:
             from rag.db import is_run_indexed
+
             if is_run_indexed(run_id):
                 yield f"ℹ️ Run **{run_name}** is already indexed. Skipping.\n"
                 yield "✅ Done."
@@ -45,6 +48,7 @@ class CorpusIndexingService:
         yield "📄 Chunking documents...\n"
         try:
             from rag.chunker import chunk_documents_from_run
+
             settings = load_settings()
             chunk_results = chunk_documents_from_run(
                 run_dir=run_dir,
@@ -67,7 +71,14 @@ class CorpusIndexingService:
         # Step 2: Register run in PostgreSQL
         yield "💾 Registering run in database...\n"
         try:
-            from rag.db import register_run, register_document, insert_chunks, mark_run_indexed, mark_document_indexed
+            from rag.db import (
+                insert_chunks,
+                mark_document_indexed,
+                mark_run_indexed,
+                register_document,
+                register_run,
+            )
+
             register_run(run_id, run_dir, total_documents=total_docs)
 
             for doc_id, info in chunk_results.items():
@@ -112,18 +123,28 @@ class CorpusIndexingService:
             yield f"⚠️ Storage upload warning: {e}\n"
             # Non-fatal — indexing can continue without MinIO
 
-        # Step 4: Embed and upsert into Qdrant
+        # Step 4: Embed and upsert into Qdrant.
+        #
+        # Ordering for crash-safety: the PostgreSQL chunk rows are the source of
+        # truth and are written BEFORE the Qdrant vectors. If the process dies
+        # between the two, the run is NOT marked indexed, so a retry will
+        # re-upsert (idempotently — point IDs are derived from chunk_id) and then
+        # persist the chunk rows. Conversely we never end up with vectors that
+        # have no DB row. We also pre-delete any existing points for this run so
+        # a retry after a partial Qdrant write cannot leave stale duplicates.
         try:
             from rag.embedding import upsert_chunks_generator
 
             all_chunks = []
-            for doc_id, info in chunk_results.items():
+            for info in chunk_results.values():
                 all_chunks.extend(info["chunks"])
 
             total_chunks_count = len(all_chunks)
             yield f"🧠 Embedding and indexing {total_chunks_count} chunks...\n"
-            
-            for progress_info in upsert_chunks_generator(all_chunks, batch_size=32):
+
+            for progress_info in upsert_chunks_generator(
+                all_chunks, batch_size=32, pre_delete_run_ids=[run_id]
+            ):
                 stage = progress_info["stage"]
                 current = progress_info["current"]
                 total = progress_info["total"]
@@ -133,7 +154,7 @@ class CorpusIndexingService:
                 else:
                     yield f"[PROGRESS:indexing:{current}/{total}] ⚡ Indexing chunks in vector store ({pct}%)...\n"
 
-            # Store chunk metadata in PostgreSQL
+            # Persist chunk metadata in PostgreSQL (idempotent via chunk_id PK).
             insert_chunks(all_chunks)
 
             # Mark documents and run as indexed
@@ -143,11 +164,19 @@ class CorpusIndexingService:
 
         except Exception as e:
             yield f"❌ Embedding/indexing failed: {e}\n"
+            yield "⏪ Rolling back any vectors written for this run...\n"
+            try:
+                from rag.embedding import delete_run_vectors
+
+                delete_run_vectors(run_id)
+            except Exception as rollback_err:
+                yield f"⚠️ Rollback warning: {rollback_err}\n"
             return
 
         # Step 5: Invalidate query cache
         try:
             from rag.cache import invalidate_query_cache
+
             invalidate_query_cache()
         except Exception:
             pass  # Non-fatal
@@ -163,6 +192,7 @@ class CorpusIndexingService:
         """
         if get_available_runs_fn is None:
             from settings_manager import get_available_runs as get_runs
+
             get_available_runs_fn = get_runs
         runs = get_available_runs_fn()
         if not runs:
@@ -173,8 +203,7 @@ class CorpusIndexingService:
 
         for display_name, run_dir in runs:
             yield f"--- Processing: {display_name} ---\n"
-            for update in CorpusIndexingService.index_run(run_dir):
-                yield update
+            yield from CorpusIndexingService.index_run(run_dir)
             yield "\n"
 
         yield "\n✅ All runs processed."
@@ -190,24 +219,32 @@ class CorpusIndexingService:
             yield "⚠️ No files uploaded.\n"
             return
 
-        from rag.db import register_run, register_document, insert_chunks, mark_run_indexed, mark_document_indexed, get_runs_with_stats, get_connection
-        from rag.chunker import chunk_document
-        from rag.storage import upload_markdown
         from rag.cache import invalidate_query_cache
+        from rag.chunker import chunk_document
+        from rag.db import (
+            get_connection,
+            get_runs_with_stats,
+            insert_chunks,
+            mark_document_indexed,
+            mark_run_indexed,
+            register_document,
+            register_run,
+        )
+        from rag.storage import upload_markdown
 
         if case_option == "new":
             if not new_case_name or not new_case_name.strip():
                 yield "❌ Error: New case name is required.\n"
                 return
-            
+
             # Create a new run/case directory
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            clean_name = re.sub(r'[^a-zA-Z0-9_-]', '_', new_case_name.strip())
+            clean_name = re.sub(r"[^a-zA-Z0-9_-]", "_", new_case_name.strip())
             run_name = f"run_{clean_name}_{timestamp}"
             run_dir = os.path.join(WORKSPACE_DIR, run_name)
             run_id = hashlib.sha256(run_dir.encode()).hexdigest()[:16]
             CorpusIndexingService.last_created_run_id = run_id
-            
+
             yield f"📁 Creating new case: **{new_case_name}**...\n"
         else:
             # Find existing run details
@@ -223,7 +260,7 @@ class CorpusIndexingService:
             except Exception as e:
                 yield f"❌ Failed to fetch case information: {e}\n"
                 return
-            
+
             if not run_dir:
                 # Fallback if get_runs_with_stats fails or doesn't have it
                 # Query ocr_runs directly
@@ -237,11 +274,11 @@ class CorpusIndexingService:
                 except Exception as e:
                     yield f"❌ Failed to retrieve run directory: {e}\n"
                     return
-            
+
             if not run_dir:
                 yield "❌ Error: Could not locate existing case directory.\n"
                 return
-            
+
             run_name = os.path.basename(run_dir)
             yield f"📁 Adding to existing case: **{run_name}**...\n"
 
@@ -282,7 +319,7 @@ class CorpusIndexingService:
                     with conn.cursor() as cur:
                         cur.execute("SELECT COUNT(*) FROM documents WHERE run_id = %s", (run_id,))
                         current_docs_count = cur.fetchone()[0]
-            
+
             new_total_docs = current_docs_count + len(copied_files)
             register_run(run_id, run_dir, total_documents=new_total_docs)
         except Exception as e:
@@ -293,15 +330,15 @@ class CorpusIndexingService:
         settings = load_settings()
         max_chunk_size = settings.get("chunk_size", 800)
         chunk_overlap = settings.get("chunk_overlap", 100)
-        
+
         all_new_chunks = []
 
         for filename, md_path in copied_files:
             yield f"⚙️ Processing **{filename}**...\n"
-            
+
             # Read contents
             try:
-                with open(md_path, "r", encoding="utf-8") as f:
+                with open(md_path, encoding="utf-8") as f:
                     markdown_text = f.read()
             except Exception as e:
                 yield f"⚠️ Error reading {filename}: {e}. Skipping.\n"
@@ -350,14 +387,19 @@ class CorpusIndexingService:
             yield "❌ Error: No chunks generated from the uploaded files.\n"
             return
 
-        # Step 4: Embed and upsert into Qdrant & Postgres
+        # Step 4: Embed and upsert into Qdrant & Postgres.
+        # Postgres chunk rows are written AFTER the vectors (the db rows are the
+        # source of truth and idempotent on chunk_id), and we pre-delete any
+        # existing points for the run so a retry cannot create duplicate vectors.
         try:
-            from rag.embedding import upsert_chunks_generator
-            
+            from rag.embedding import delete_run_vectors, upsert_chunks_generator
+
             total_chunks_count = len(all_new_chunks)
             yield f"🧠 Embedding and indexing {total_chunks_count} chunks...\n"
-            
-            for progress_info in upsert_chunks_generator(all_new_chunks, batch_size=32):
+
+            for progress_info in upsert_chunks_generator(
+                all_new_chunks, batch_size=32, pre_delete_run_ids=[run_id]
+            ):
                 stage = progress_info["stage"]
                 current = progress_info["current"]
                 total = progress_info["total"]
@@ -368,22 +410,29 @@ class CorpusIndexingService:
                     yield f"[PROGRESS:indexing:{current}/{total}] ⚡ Indexing chunks in vector store ({pct}%)...\n"
 
             insert_chunks(all_new_chunks)
-            
+
             # Mark all documents as indexed
-            for filename, md_path in copied_files:
+            for filename, _ in copied_files:
                 doc_id = hashlib.sha256(f"{run_id}:{filename}".encode()).hexdigest()[:24]
                 mark_document_indexed(doc_id)
-                
+
             # Get total chunks for the run to mark run indexed
             with get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute("SELECT COUNT(*) FROM chunks WHERE run_id = %s", (run_id,))
                     total_chunks_in_run = cur.fetchone()[0]
-                    
+
             mark_run_indexed(run_id, total_chunks=total_chunks_in_run)
-            
+
         except Exception as e:
             yield f"❌ Embedding/indexing failed: {e}\n"
+            yield "⏪ Rolling back any vectors written for this case...\n"
+            try:
+                from rag.embedding import delete_run_vectors
+
+                delete_run_vectors(run_id)
+            except Exception as rollback_err:
+                yield f"⚠️ Rollback warning: {rollback_err}\n"
             return
 
         # Step 5: Invalidate query cache

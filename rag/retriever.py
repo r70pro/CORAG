@@ -5,39 +5,39 @@ and Maximal Marginal Relevance (MMR) re-ranking.
 This module connects user queries to the most relevant document chunks.
 """
 
-from typing import List, Dict, Optional, Any
+import datetime
+from typing import Any
 
 from qdrant_client.models import (
-    Filter,
     FieldCondition,
+    Filter,
     MatchValue,
-    DatetimeRange,
 )
 
+from rag import db as rag_db
 from rag.embedding import (
     encode_query,
-    get_qdrant_client,
     get_collection_name,
+    get_qdrant_client,
     init_collection,
 )
-from rag import db as rag_db
 
 
 def search_similar(
     query: str,
     top_k: int = 8,
-    doc_type_filter: Optional[str] = None,
-    author_filter: Optional[str] = None,
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-    run_id_filter: Optional[str] = None,
-    doc_id_filter: Optional[str] = None,
+    doc_type_filter: str | None = None,
+    author_filter: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    run_id_filter: str | None = None,
+    doc_id_filter: str | None = None,
     score_threshold: float = 0.25,
-    use_reranker: Optional[bool] = None,
-    reranker_model: Optional[str] = None,
-    reranker_device: Optional[str] = None,
-    progress_callback: Optional[Any] = None,
-) -> List[Dict]:
+    use_reranker: bool | None = None,
+    reranker_model: str | None = None,
+    reranker_device: str | None = None,
+    progress_callback: Any | None = None,
+) -> list[dict]:
     """Search for chunks similar to the query with optional metadata filters.
 
     Args:
@@ -58,6 +58,7 @@ def search_similar(
         List of result dicts with chunk data, metadata, and similarity score.
     """
     from settings_manager import load_settings
+
     settings = load_settings()
 
     if use_reranker is None:
@@ -86,28 +87,22 @@ def search_similar(
             FieldCondition(key="document_type", match=MatchValue(value=doc_type_filter))
         )
     if author_filter:
-        must_conditions.append(
-            FieldCondition(key="author", match=MatchValue(value=author_filter))
-        )
+        must_conditions.append(FieldCondition(key="author", match=MatchValue(value=author_filter)))
     if run_id_filter:
-        must_conditions.append(
-            FieldCondition(key="run_id", match=MatchValue(value=run_id_filter))
-        )
+        must_conditions.append(FieldCondition(key="run_id", match=MatchValue(value=run_id_filter)))
     if doc_id_filter:
-        must_conditions.append(
-            FieldCondition(key="doc_id", match=MatchValue(value=doc_id_filter))
-        )
+        must_conditions.append(FieldCondition(key="doc_id", match=MatchValue(value=doc_id_filter)))
 
-    # Date range filter
-    if date_from or date_to:
-        range_kwargs = {}
-        if date_from:
-            range_kwargs["gte"] = date_from
-        if date_to:
-            range_kwargs["lte"] = date_to
-        must_conditions.append(
-            FieldCondition(key="date_extracted", match=None, range=DatetimeRange(**range_kwargs))
-        )
+    # Date range filtering is applied in Python after retrieval (see below)
+    # rather than via a Qdrant DatetimeRange. The chunk `date_extracted` is
+    # stored as a plain `YYYY-MM-DD` string in the Qdrant payload, which does
+    # not satisfy Qdrant's RFC3339 datetime range, and a FieldCondition with
+    # `match=None` is rejected by qdrant-client. Filtering post-retrieval keeps
+    # behaviour consistent between the Qdrant payload and the PostgreSQL
+    # `date_extracted` column, and avoids silently dropping date-filtered
+    # queries when a chunk's date is unparseable.
+    date_from_norm = _normalize_iso_date(date_from) if date_from else None
+    date_to_norm = _normalize_iso_date(date_to) if date_to else None
 
     query_filter = Filter(must=must_conditions) if must_conditions else None
 
@@ -164,29 +159,52 @@ def search_similar(
         # Merge Qdrant payload with PostgreSQL metadata
         db_data = db_chunks.get(point_id, {})
 
-        enriched_results.append({
-            "qdrant_point_id": point_id,
-            "score": result.score,
-            "chunk_id": payload.get("chunk_id") or db_data.get("chunk_id"),
-            "doc_id": payload.get("doc_id") or db_data.get("doc_id"),
-            "run_id": payload.get("run_id") or db_data.get("run_id"),
-            "text": db_data.get("text", payload.get("text_preview", "")),
-            "page_number": payload.get("page_number") or db_data.get("page_number"),
-            "document_type": payload.get("document_type") or db_data.get("document_type"),
-            "author": payload.get("author") or db_data.get("author"),
-            "date_extracted": payload.get("date_extracted") or db_data.get("date_extracted"),
-            "section_type": payload.get("section_type") or db_data.get("section_type"),
-            "patient_name": payload.get("patient_name") or db_data.get("patient_name"),
-            "original_filename": db_data.get("original_filename", ""),
-        })
+        enriched_results.append(
+            {
+                "qdrant_point_id": point_id,
+                "score": result.score,
+                "chunk_id": payload.get("chunk_id") or db_data.get("chunk_id"),
+                "doc_id": payload.get("doc_id") or db_data.get("doc_id"),
+                "run_id": payload.get("run_id") or db_data.get("run_id"),
+                "text": db_data.get("text", payload.get("text_preview", "")),
+                "page_number": payload.get("page_number") or db_data.get("page_number"),
+                "document_type": payload.get("document_type") or db_data.get("document_type"),
+                "author": payload.get("author") or db_data.get("author"),
+                "date_extracted": payload.get("date_extracted") or db_data.get("date_extracted"),
+                "section_type": payload.get("section_type") or db_data.get("section_type"),
+                "patient_name": payload.get("patient_name") or db_data.get("patient_name"),
+                "original_filename": db_data.get("original_filename", ""),
+            }
+        )
+
+    # Apply date-range filter in Python (Qdrant payload dates are plain
+    # `YYYY-MM-DD` strings, not RFC3339 datetimes). Chunks with no parsed date
+    # are excluded when a date bound is active.
+    if date_from_norm or date_to_norm:
+
+        def _in_range(res):
+            d = _normalize_iso_date(str(res.get("date_extracted") or ""))
+            if not d:
+                return False
+            if date_from_norm and d < date_from_norm:
+                return False
+            if date_to_norm and d > date_to_norm:
+                return False
+            return True
+
+        enriched_results = [r for r in enriched_results if _in_range(r)]
 
     # Apply Reranker if enabled
     if use_reranker and enriched_results:
         if progress_callback:
-            progress_callback(0.4, f"Reranking {len(enriched_results)} chunks using {reranker_model}...")
+            progress_callback(
+                0.4, f"Reranking {len(enriched_results)} chunks using {reranker_model}..."
+            )
         try:
             import math
+
             from rag.embedding import load_reranker_model
+
             reranker = load_reranker_model(reranker_model, reranker_device)
 
             # Prepare query-chunk pairs
@@ -194,18 +212,22 @@ def search_similar(
             scores = reranker.predict(pairs)
 
             # Map logits to probability range [0, 1] using sigmoid
-            for res, score in zip(enriched_results, scores):
+            for res, score in zip(enriched_results, scores, strict=False):
                 res["score"] = float(1 / (1 + math.exp(-score)))
 
             # Sort by new scores descending
             enriched_results.sort(key=lambda x: x["score"], reverse=True)
-            print(f"Reranking completed successfully for {len(enriched_results)} chunks using {reranker_model}.")
+            print(
+                f"Reranking completed successfully for {len(enriched_results)} chunks using {reranker_model}."
+            )
             if progress_callback:
                 progress_callback(0.8, "Rerank completed. Applying diversity filters...")
         except Exception as e:
             print(f"Error during reranking: {e}. Falling back to default retrieval.")
             if progress_callback:
-                progress_callback(0.8, f"Reranking failed: {e}. Falling back to default retrieval...")
+                progress_callback(
+                    0.8, f"Reranking failed: {e}. Falling back to default retrieval..."
+                )
 
     # Apply MMR re-ranking for diversity
     if len(enriched_results) > top_k:
@@ -220,11 +242,11 @@ def search_similar(
 
 
 def _mmr_rerank(
-    results: List[Dict],
-    query_vector: List[float],
+    results: list[dict],
+    query_vector: list[float],
     top_k: int,
     lambda_param: float = 0.7,
-) -> List[Dict]:
+) -> list[dict]:
     """Maximal Marginal Relevance re-ranking.
 
     Balances relevance (similarity to query) with diversity
@@ -266,7 +288,9 @@ def _mmr_rerank(
             if cand_len > 0:
                 intersection_len = len(cand_set & first_set)
                 union_len = cand_len + first_len - intersection_len
-                max_sim_to_selected[cand_idx] = intersection_len / union_len if union_len > 0 else 0.0
+                max_sim_to_selected[cand_idx] = (
+                    intersection_len / union_len if union_len > 0 else 0.0
+                )
 
     while len(selected) < top_k and candidates:
         best_score = -float("inf")
@@ -309,6 +333,40 @@ def _mmr_rerank(
     return [results[i] for i in selected]
 
 
+def _normalize_iso_date(value) -> str | None:
+    """Normalise a user-supplied date to ``YYYY-MM-DD`` for comparison.
+
+    Accepts ISO strings (``YYYY-MM-DD``, ``YYYY-MM``, ``YYYY``) as well as
+    Unix epoch values (int/float seconds) such as those produced by some
+    callers/tests. Returns ``None`` if it cannot be parsed, so callers can skip
+    an invalid bound instead of crashing the query.
+    """
+    if value is None or value == "":
+        return None
+    # Epoch seconds (int/float) -> date in UTC.
+    if isinstance(value, int | float):
+        try:
+            return datetime.datetime.utcfromtimestamp(float(value)).strftime("%Y-%m-%d")
+        except (ValueError, OverflowError, OSError):
+            return None
+    text = str(value).strip()
+    if not text:
+        return None
+    parts = text.split("-")
+    try:
+        if len(parts) == 3:
+            y, m, d = (int(p) for p in parts)
+            return f"{y:04d}-{m:02d}-{d:02d}"
+        if len(parts) == 2:
+            y, m = (int(p) for p in parts)
+            return f"{y:04d}-{m:02d}-01"
+        if len(parts) == 1:
+            return f"{int(parts[0]):04d}-01-01"
+    except (ValueError, TypeError):
+        return None
+    return None
+
+
 def _text_similarity(text1: str, text2: str) -> float:
     """Simple Jaccard similarity between two texts (for MMR diversity check).
 
@@ -323,7 +381,7 @@ def _text_similarity(text1: str, text2: str) -> float:
     return len(intersection) / len(union)
 
 
-def format_context_for_llm(results: List[Dict]) -> str:
+def format_context_for_llm(results: list[dict]) -> str:
     """Format retrieved chunks into a context string for the LLM prompt.
 
     Each chunk is labelled with its source metadata for grounded responses.
@@ -361,7 +419,7 @@ def format_context_for_llm(results: List[Dict]) -> str:
     return "\n\n---\n\n".join(context_parts)
 
 
-def get_available_filters() -> Dict:
+def get_available_filters() -> dict:
     """Get available filter values from the indexed corpus.
 
     Returns:
@@ -375,7 +433,9 @@ def get_available_filters() -> Dict:
             "total_chunks": stats.get("total_chunks", 0),
             "unique_authors": stats.get("unique_authors", 0),
             "date_range": {
-                "earliest": str(stats.get("earliest_date", "")) if stats.get("earliest_date") else None,
+                "earliest": str(stats.get("earliest_date", ""))
+                if stats.get("earliest_date")
+                else None,
                 "latest": str(stats.get("latest_date", "")) if stats.get("latest_date") else None,
             },
         }

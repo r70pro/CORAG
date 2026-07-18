@@ -7,14 +7,17 @@ Manages:
 - Run tracking (which OCR runs have been indexed)
 """
 
+import json
 import os
 import sys
-import json
-import psycopg2
-import psycopg2.extras
 import threading
 from contextlib import contextmanager
+
+import psycopg2
+import psycopg2.extras
 from psycopg2.pool import ThreadedConnectionPool
+
+from secrets_config import get_db_password
 
 # Default connection parameters
 DEFAULT_DB_CONFIG = {
@@ -22,11 +25,12 @@ DEFAULT_DB_CONFIG = {
     "port": 5432,
     "dbname": "olmocr_rag",
     "user": "olmocr",
-    "password": "pg_pass_5c6d3284f18b90a6e2d8",
+    "password": get_db_password(),
 }
 
 _connection_pool = None
 _pool_lock = threading.Lock()
+
 
 def get_pool():
     global _connection_pool
@@ -151,28 +155,35 @@ def is_healthy():
 
 # ── Run operations ──────────────────────────────────────────────
 
+
 def register_run(run_id, run_dir, total_documents=0):
     """Register a new OCR run in the database."""
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO ocr_runs (run_id, run_dir, total_documents, status)
                 VALUES (%s, %s, %s, 'pending')
                 ON CONFLICT (run_id) DO UPDATE SET
                     run_dir = EXCLUDED.run_dir,
                     total_documents = EXCLUDED.total_documents
-            """, (run_id, run_dir, total_documents))
+            """,
+                (run_id, run_dir, total_documents),
+            )
 
 
 def mark_run_indexed(run_id, total_chunks):
     """Mark a run as fully indexed."""
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 UPDATE ocr_runs
                 SET indexed_at = NOW(), total_chunks = %s, status = 'indexed'
                 WHERE run_id = %s
-            """, (total_chunks, run_id))
+            """,
+                (total_chunks, run_id),
+            )
 
 
 def get_indexed_runs():
@@ -206,26 +217,30 @@ def is_run_indexed(run_id, check_vector_store=True):
     """Check if a run has already been indexed."""
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT status FROM ocr_runs WHERE run_id = %s",
-                (run_id,)
-            )
+            cur.execute("SELECT status FROM ocr_runs WHERE run_id = %s", (run_id,))
             row = cur.fetchone()
-            db_indexed = row is not None and row[0] == 'indexed'
+            db_indexed = row is not None and row[0] == "indexed"
             if not db_indexed:
                 return False
 
             if check_vector_store:
                 try:
-                    from rag.embedding import get_qdrant_client, get_collection_name, Filter, FieldCondition, MatchValue
+                    from rag.embedding import (
+                        FieldCondition,
+                        Filter,
+                        MatchValue,
+                        get_collection_name,
+                        get_qdrant_client,
+                    )
+
                     client = get_qdrant_client()
                     collection_name = get_collection_name()
-                    
+
                     # Check if collection exists
                     collections = client.get_collections().collections
                     if collection_name not in [c.name for c in collections]:
                         return False
-                    
+
                     # Count matching points in Qdrant
                     count_res = client.count(
                         collection_name=collection_name,
@@ -236,7 +251,7 @@ def is_run_indexed(run_id, check_vector_store=True):
                                     match=MatchValue(value=run_id),
                                 )
                             ]
-                        )
+                        ),
                     )
                     if count_res.count == 0:
                         return False
@@ -249,13 +264,23 @@ def is_run_indexed(run_id, check_vector_store=True):
 
 # ── Document operations ────────────────────────────────────────
 
-def register_document(doc_id, run_id, original_filename, pdf_total_pages=0,
-                      markdown_path=None, minio_pdf_key=None, minio_md_key=None,
-                      olmocr_version=None, metadata=None):
+
+def register_document(
+    doc_id,
+    run_id,
+    original_filename,
+    pdf_total_pages=0,
+    markdown_path=None,
+    minio_pdf_key=None,
+    minio_md_key=None,
+    olmocr_version=None,
+    metadata=None,
+):
     """Register a document in the registry."""
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO documents
                     (doc_id, run_id, original_filename, pdf_total_pages,
                      markdown_path, minio_pdf_key, minio_md_key,
@@ -266,34 +291,43 @@ def register_document(doc_id, run_id, original_filename, pdf_total_pages=0,
                     minio_pdf_key = EXCLUDED.minio_pdf_key,
                     minio_md_key = EXCLUDED.minio_md_key,
                     metadata_json = EXCLUDED.metadata_json
-            """, (doc_id, run_id, original_filename, pdf_total_pages,
-                  markdown_path, minio_pdf_key, minio_md_key,
-                  olmocr_version,
-                  json.dumps(metadata or {})))
+            """,
+                (
+                    doc_id,
+                    run_id,
+                    original_filename,
+                    pdf_total_pages,
+                    markdown_path,
+                    minio_pdf_key,
+                    minio_md_key,
+                    olmocr_version,
+                    json.dumps(metadata or {}),
+                ),
+            )
 
 
 def mark_document_indexed(doc_id):
     """Mark a document as indexed."""
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE documents SET indexed_at = NOW() WHERE doc_id = %s",
-                (doc_id,)
-            )
+            cur.execute("UPDATE documents SET indexed_at = NOW() WHERE doc_id = %s", (doc_id,))
 
 
 def get_documents_for_run(run_id):
     """Get all documents for a given run."""
     with get_connection() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT doc_id, original_filename, pdf_total_pages,
                        markdown_path, minio_pdf_key, minio_md_key,
                        olmocr_version, indexed_at, metadata_json
                 FROM documents
                 WHERE run_id = %s
                 ORDER BY original_filename
-            """, (run_id,))
+            """,
+                (run_id,),
+            )
             return cur.fetchall()
 
 
@@ -314,6 +348,7 @@ def get_all_documents():
 
 
 # ── Chunk operations ───────────────────────────────────────────
+
 
 def insert_chunks(chunks_list):
     """Bulk insert chunks into the database.
@@ -339,17 +374,27 @@ def insert_chunks(chunks_list):
                 """,
                 [
                     (
-                        c["chunk_id"], c["doc_id"], c["run_id"], c["chunk_index"],
-                        c["text"], c["char_start"], c["char_end"],
-                        c.get("page_number"), c.get("document_type"),
-                        c.get("author"), c.get("date_extracted"), c.get("date_raw"),
-                        c.get("section_type"), c.get("patient_name"),
-                        c.get("token_count", 0), c.get("embedding_model"),
-                        c.get("qdrant_point_id")
+                        c["chunk_id"],
+                        c["doc_id"],
+                        c["run_id"],
+                        c["chunk_index"],
+                        c["text"],
+                        c["char_start"],
+                        c["char_end"],
+                        c.get("page_number"),
+                        c.get("document_type"),
+                        c.get("author"),
+                        c.get("date_extracted"),
+                        c.get("date_raw"),
+                        c.get("section_type"),
+                        c.get("patient_name"),
+                        c.get("token_count", 0),
+                        c.get("embedding_model"),
+                        c.get("qdrant_point_id"),
                     )
                     for c in chunks_list
                 ],
-                page_size=100
+                page_size=100,
             )
 
 
@@ -357,7 +402,8 @@ def get_chunks_for_document(doc_id):
     """Get all chunks for a document, ordered by position."""
     with get_connection() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT chunk_id, chunk_index, text, char_start, char_end,
                        page_number, document_type, author, date_extracted,
                        date_raw, section_type, patient_name, token_count,
@@ -365,7 +411,9 @@ def get_chunks_for_document(doc_id):
                 FROM chunks
                 WHERE doc_id = %s
                 ORDER BY chunk_index
-            """, (doc_id,))
+            """,
+                (doc_id,),
+            )
             return cur.fetchall()
 
 
@@ -373,7 +421,8 @@ def get_chunk_by_qdrant_id(qdrant_point_id):
     """Retrieve chunk metadata by its Qdrant point ID."""
     with get_connection() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT c.chunk_id, c.doc_id, c.text, c.page_number,
                        c.document_type, c.author, c.date_extracted,
                        c.section_type, c.patient_name,
@@ -381,7 +430,9 @@ def get_chunk_by_qdrant_id(qdrant_point_id):
                 FROM chunks c
                 JOIN documents d ON c.doc_id = d.doc_id
                 WHERE c.qdrant_point_id = %s
-            """, (qdrant_point_id,))
+            """,
+                (qdrant_point_id,),
+            )
             return cur.fetchone()
 
 
@@ -391,7 +442,8 @@ def get_chunks_by_qdrant_ids(qdrant_point_ids):
         return []
     with get_connection() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT c.chunk_id, c.doc_id, c.text, c.page_number,
                        c.document_type, c.author, c.date_extracted,
                        c.date_raw, c.section_type, c.patient_name,
@@ -399,7 +451,9 @@ def get_chunks_by_qdrant_ids(qdrant_point_ids):
                 FROM chunks c
                 JOIN documents d ON c.doc_id = d.doc_id
                 WHERE c.qdrant_point_id = ANY(%s)
-            """, (qdrant_point_ids,))
+            """,
+                (qdrant_point_ids,),
+            )
             return cur.fetchall()
 
 
@@ -461,12 +515,15 @@ def get_authors_for_run(run_id):
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT DISTINCT author
                 FROM chunks
                 WHERE run_id = %s AND author IS NOT NULL
                 ORDER BY author
-            """, (run_id,))
+            """,
+                (run_id,),
+            )
             return [row[0] for row in cur.fetchall()]
 
 
@@ -481,12 +538,15 @@ def get_doc_types_for_run(run_id):
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT DISTINCT document_type
                 FROM chunks
                 WHERE run_id = %s AND document_type IS NOT NULL
                 ORDER BY document_type
-            """, (run_id,))
+            """,
+                (run_id,),
+            )
             return [row[0] for row in cur.fetchall()]
 
 
@@ -501,13 +561,16 @@ def get_date_range_for_run(run_id):
     """
     with get_connection() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT
                     MIN(date_extracted) AS earliest,
                     MAX(date_extracted) AS latest
                 FROM chunks
                 WHERE run_id = %s AND date_extracted IS NOT NULL
-            """, (run_id,))
+            """,
+                (run_id,),
+            )
             row = cur.fetchone()
             return {
                 "earliest": str(row["earliest"]) if row and row["earliest"] else None,

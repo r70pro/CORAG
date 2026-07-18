@@ -8,23 +8,23 @@ Handles:
 - Collection management (create, delete, info)
 """
 
+import hashlib
 import os
 import re
-import uuid
 import threading
-from typing import List, Dict, Generator
-
-from settings_manager import load_settings
+from collections.abc import Generator
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
-    VectorParams,
-    PointStruct,
-    Filter,
     FieldCondition,
+    Filter,
     MatchValue,
+    PointStruct,
+    VectorParams,
 )
+
+from settings_manager import load_settings
 
 # Default configuration
 DEFAULT_QDRANT_CONFIG = {
@@ -34,6 +34,7 @@ DEFAULT_QDRANT_CONFIG = {
 }
 
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"
+
 
 def get_collection_name(model_name=None) -> str:
     """Get the Qdrant collection name based on the embedding model name.
@@ -45,13 +46,14 @@ def get_collection_name(model_name=None) -> str:
             model_name = load_settings().get("embedding_model", DEFAULT_EMBEDDING_MODEL)
         except Exception:
             model_name = DEFAULT_EMBEDDING_MODEL
-    
+
     # Create a safe name (Qdrant collection names must match ^[a-zA-Z0-9_-]+$)
-    safe_suffix = re.sub(r'[^a-zA-Z0-9_-]', '_', model_name)
+    safe_suffix = re.sub(r"[^a-zA-Z0-9_-]", "_", model_name)
     # limit length to avoid too long Qdrant names
     if len(safe_suffix) > 40:
         safe_suffix = safe_suffix[-40:]
     return f"olmocr_documents_{safe_suffix.lower().strip('_')}"
+
 
 # Singleton model holder
 _embedding_model = None
@@ -104,9 +106,7 @@ def load_embedding_model(model_name=None):
         try:
             model_name = load_settings().get("embedding_model", DEFAULT_EMBEDDING_MODEL)
         except Exception:
-            model_name = os.environ.get(
-                "OLMOCR_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL
-            )
+            model_name = os.environ.get("OLMOCR_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
 
     if _embedding_model is not None and _embedding_model_name == model_name:
         return _embedding_model
@@ -131,7 +131,7 @@ def get_embedding_dimension(model_name=None):
     return model.get_embedding_dimension()
 
 
-def encode_texts(texts: List[str], model_name=None, batch_size=32) -> List[List[float]]:
+def encode_texts(texts: list[str], model_name=None, batch_size=32) -> list[list[float]]:
     """Encode a list of texts into dense vectors.
 
     Args:
@@ -149,11 +149,10 @@ def encode_texts(texts: List[str], model_name=None, batch_size=32) -> List[List[
         try:
             model_name = load_settings().get("embedding_model", DEFAULT_EMBEDDING_MODEL)
         except Exception:
-            model_name = os.environ.get(
-                "OLMOCR_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL
-            )
+            model_name = os.environ.get("OLMOCR_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
 
     import rag.cache as cache
+
     redis_healthy = False
     try:
         redis_healthy = cache.is_healthy()
@@ -202,7 +201,7 @@ def encode_texts(texts: List[str], model_name=None, batch_size=32) -> List[List[
     return embeddings
 
 
-def encode_query(query: str, model_name=None) -> List[float]:
+def encode_query(query: str, model_name=None) -> list[float]:
     """Encode a single query into a dense vector.
 
     Args:
@@ -216,11 +215,10 @@ def encode_query(query: str, model_name=None) -> List[float]:
         try:
             model_name = load_settings().get("embedding_model", DEFAULT_EMBEDDING_MODEL)
         except Exception:
-            model_name = os.environ.get(
-                "OLMOCR_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL
-            )
+            model_name = os.environ.get("OLMOCR_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
 
     import rag.cache as cache
+
     redis_healthy = False
     try:
         redis_healthy = cache.is_healthy()
@@ -254,6 +252,13 @@ def encode_query(query: str, model_name=None) -> List[float]:
 def init_collection(dimension=None, model_name=None):
     """Create the Qdrant collection if it doesn't exist.
 
+    If the collection already exists but its vector dimension differs from the
+    current embedding model, a ``ValueError`` is raised rather than silently
+    allowing a dimension-mismatch upsert (which Qdrant would reject anyway, but
+    only after a confusing failure mid-index). The mismatch most commonly
+    happens after an embedding-model switch; deleting the collection (via
+    ``delete_collection``) and re-indexing resolves it.
+
     Args:
         dimension: Vector dimension. Auto-detected from model if not provided.
         model_name: Embedding model name (for dimension detection).
@@ -265,12 +270,29 @@ def init_collection(dimension=None, model_name=None):
     collections = client.get_collections().collections
     existing = [c.name for c in collections]
 
-    if collection_name in existing:
-        print(f"Qdrant collection '{collection_name}' already exists.")
-        return
-
     if dimension is None:
         dimension = get_embedding_dimension(model_name)
+
+    if collection_name in existing:
+        try:
+            info = client.get_collection(collection_name)
+            existing_dim = info.config.params.vectors.size
+        except Exception:
+            existing_dim = None
+
+        # Only enforce a dimension mismatch when we can actually read a real
+        # integer size. If the collection metadata is unavailable (older client
+        # versions, mock environments, or permission errors) we cannot safely
+        # assert a mismatch, so we leave the existing collection untouched.
+        if isinstance(existing_dim, int) and existing_dim != dimension:
+            raise ValueError(
+                f"Qdrant collection '{collection_name}' exists with dimension "
+                f"{existing_dim}, but embedding model requires {dimension}. "
+                f"This usually means the embedding model was changed. Delete the "
+                f"collection (e.g. via the cleanup tools) and re-index."
+            )
+        print(f"Qdrant collection '{collection_name}' already exists.")
+        return
 
     client.create_collection(
         collection_name=collection_name,
@@ -318,13 +340,37 @@ def get_collection_info(model_name=None):
         }
 
 
-def upsert_chunks_generator(chunks: List[Dict], model_name=None, batch_size=32) -> Generator[Dict, None, None]:
+def _deterministic_point_id(chunk_id: str) -> str:
+    """Derive a stable Qdrant point ID from a chunk ID.
+
+    Using a deterministic ID (rather than a random UUID) makes re-indexing
+    idempotent: upserting the same chunk overwrites the existing point instead
+    of appending a duplicate vector. Qdrant accepts UUID-form strings as point
+    IDs, so we hash the chunk_id into a UUID-shaped value.
+    """
+    digest = hashlib.sha256(chunk_id.encode("utf-8")).hexdigest()[:32]
+    return f"{digest[0:8]}-{digest[8:12]}-{digest[12:16]}-{digest[16:20]}-{digest[20:32]}"
+
+
+def upsert_chunks_generator(
+    chunks: list[dict],
+    model_name=None,
+    batch_size=32,
+    pre_delete_run_ids: list[str] | None = None,
+) -> Generator[dict, None, None]:
     """Embed and upsert chunks into Qdrant, yielding progress status dicts.
+
+    Point IDs are derived deterministically from each chunk's ``chunk_id`` so
+    that re-indexing a run upserts in place rather than creating duplicate
+    vectors. Pass ``pre_delete_run_ids`` to first drop any pre-existing points
+    for those runs (used when re-indexing after a partial failure).
 
     Args:
         chunks: List of chunk dicts from the chunker.
         model_name: Embedding model name.
         batch_size: Batch size for embedding.
+        pre_delete_run_ids: Optional list of run IDs whose existing points
+            should be removed before upserting (idempotent re-index).
 
     Yields:
         Dict progress update: {"stage": "embedding"|"indexing", "current": int, "total": int}
@@ -345,23 +391,32 @@ def upsert_chunks_generator(chunks: List[Dict], model_name=None, batch_size=32) 
 
     collection_name = get_collection_name(model_name)
 
+    # Idempotent re-index: clear any pre-existing points for the given runs so
+    # a retry after a partial failure cannot leave stale/duplicate vectors.
+    if pre_delete_run_ids:
+        for run_id in pre_delete_run_ids:
+            try:
+                delete_run_vectors(run_id, model_name=model_name)
+            except Exception as e:
+                print(f"Warning: could not pre-delete vectors for run {run_id}: {e}")
+
     # Process in batches to support streaming progress
     total = len(chunks)
-    
+
     # 1. First encode all texts.
     texts = [c["text"] for c in chunks]
     embeddings = []
-    
+
     for i in range(0, total, batch_size):
-        batch_texts = texts[i:i + batch_size]
+        batch_texts = texts[i : i + batch_size]
         batch_embs = encode_texts(batch_texts, model_name=model_name, batch_size=batch_size)
         embeddings.extend(batch_embs)
         yield {"stage": "embedding", "current": min(i + batch_size, total), "total": total}
 
-    # 2. Build Qdrant points
+    # 2. Build Qdrant points (deterministic IDs for idempotent upsert)
     points = []
-    for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-        point_id = str(uuid.uuid4())
+    for chunk, embedding in zip(chunks, embeddings, strict=False):
+        point_id = _deterministic_point_id(chunk["chunk_id"])
         chunk["qdrant_point_id"] = point_id
         chunk["embedding_model"] = model_name
 
@@ -379,15 +434,17 @@ def upsert_chunks_generator(chunks: List[Dict], model_name=None, batch_size=32) 
             "text_preview": chunk["text"][:200],  # Preview for debugging
         }
 
-        points.append(PointStruct(
-            id=point_id,
-            vector=embedding,
-            payload=payload,
-        ))
+        points.append(
+            PointStruct(
+                id=point_id,
+                vector=embedding,
+                payload=payload,
+            )
+        )
 
     # 3. Upsert in batches
     for i in range(0, len(points), batch_size):
-        batch = points[i:i + batch_size]
+        batch = points[i : i + batch_size]
         client.upsert(
             collection_name=collection_name,
             points=batch,
@@ -397,7 +454,7 @@ def upsert_chunks_generator(chunks: List[Dict], model_name=None, batch_size=32) 
     print(f"Upserted {len(points)} vectors into Qdrant collection '{collection_name}'.")
 
 
-def upsert_chunks(chunks: List[Dict], model_name=None, batch_size=32) -> List[Dict]:
+def upsert_chunks(chunks: list[dict], model_name=None, batch_size=32) -> list[dict]:
     """Embed and upsert chunks into Qdrant.
 
     This is the main indexing function. It:
@@ -477,4 +534,3 @@ def load_reranker_model(model_name=None, device=None):
         _reranker_model_name = model_name
         print("Reranker model loaded successfully.")
         return _reranker_model
-

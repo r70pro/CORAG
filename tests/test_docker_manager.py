@@ -223,6 +223,31 @@ class TestDockerManager(unittest.TestCase):
             docker_manager.cleanup_docker()
             mock_run.assert_called_once()
 
+    @patch("docker_manager.get_docker_status")
+    @patch("subprocess.run")
+    @patch("os.remove")
+    def test_docker_manager_edge_cases(self, mock_remove, mock_run, mock_status):
+        # 1. Non-numeric port in get_docker_status_str (line 36-37)
+        mock_status.return_value = "not_found"
+        res_str = docker_manager.get_docker_status_str("invalid_port")
+        self.assertEqual(res_str[0], "not_found")
+
+        # 2. Non-numeric port in create_docker_container (line 81-82)
+        mock_run.return_value = MagicMock(returncode=0)
+        success, msg = docker_manager.create_docker_container("token", "invalid_port", "model", 0.8, 16000)
+        self.assertTrue(success)
+
+        # 3. Toggle KEEP_CONTAINERS_ON_EXIT env var (line 159)
+        mock_run.reset_mock()
+        with patch.dict(os.environ, {"TESTING": "false", "KEEP_CONTAINERS_ON_EXIT": "true"}):
+            docker_manager.cleanup_docker()
+            mock_run.assert_not_called()
+
+        # 4. OSError on temp file removal inside create_docker_container (lines 131-132, 136-139)
+        mock_remove.side_effect = OSError("mock access denied")
+        success2, msg2 = docker_manager.create_docker_container("token", 8000, "model", 0.8, 16000)
+        self.assertTrue(success2)
+
 
 if __name__ == "__main__":
     unittest.main()

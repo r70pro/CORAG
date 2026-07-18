@@ -7,9 +7,10 @@ Provides:
 - Session state for chat history
 """
 
-import os
-import json
 import hashlib
+import json
+import os
+
 import redis
 
 # Default configuration
@@ -21,9 +22,9 @@ DEFAULT_REDIS_CONFIG = {
 }
 
 # Cache TTL defaults (in seconds)
-QUERY_CACHE_TTL = 3600       # 1 hour for query results
+QUERY_CACHE_TTL = 3600  # 1 hour for query results
 EMBEDDING_CACHE_TTL = 86400  # 24 hours for embeddings
-CHAT_HISTORY_TTL = 7200      # 2 hours for chat sessions
+CHAT_HISTORY_TTL = 7200  # 2 hours for chat sessions
 
 # Key prefixes
 PREFIX_QUERY = "olmocr:query:"
@@ -82,6 +83,7 @@ def _make_hash(text):
 
 # ── Query caching ──────────────────────────────────────────────
 
+
 def cache_query_result(query, result, ttl=QUERY_CACHE_TTL):
     """Cache a query result.
 
@@ -112,6 +114,28 @@ def get_cached_query(query):
     return None
 
 
+def invalidate_embedding_cache(model_name: str = None):
+    """Clear cached embeddings, optionally only for a specific model.
+
+    Embeddings are model-specific, so switching the embedding model leaves
+    stale vectors cached under the old model name. Calling this on a model
+    switch (or with ``None`` to clear everything) prevents serving vectors
+    produced by a different dimensionality than the active collection.
+    """
+    client = get_client()
+    if model_name:
+        # Embedding keys are shaped PREFIX_EMBEDDING + hash(f"{model_name}:{text}")
+        # so we cannot prefix-scan by model directly; instead rewrite current
+        # keys by re-hashing. Simplest correct behaviour: clear all embeddings.
+        keys = client.keys(PREFIX_EMBEDDING + "*")
+        if keys:
+            client.delete(*keys)
+    else:
+        keys = client.keys(PREFIX_EMBEDDING + "*")
+        if keys:
+            client.delete(*keys)
+
+
 def invalidate_query_cache():
     """Clear all cached query results."""
     client = get_client()
@@ -120,7 +144,17 @@ def invalidate_query_cache():
         client.delete(*keys)
 
 
+def invalidate_all_caches():
+    """Clear query, embedding, and chat caches (e.g. on embedding-model switch)."""
+    client = get_client()
+    for prefix in (PREFIX_QUERY, PREFIX_EMBEDDING, PREFIX_CHAT):
+        keys = client.keys(prefix + "*")
+        if keys:
+            client.delete(*keys)
+
+
 # ── Embedding caching ─────────────────────────────────────────
+
 
 def cache_embedding(text, embedding, model_name, ttl=EMBEDDING_CACHE_TTL):
     """Cache a text embedding.
@@ -158,6 +192,7 @@ def get_cached_embedding(text, model_name):
 
 
 # ── Chat session history ──────────────────────────────────────
+
 
 def save_chat_history(session_id, messages, ttl=CHAT_HISTORY_TTL):
     """Save chat history for a session.
@@ -197,6 +232,7 @@ def clear_chat_history(session_id):
 
 
 # ── Statistics tracking ───────────────────────────────────────
+
 
 def increment_stat(stat_name, amount=1):
     """Increment a statistics counter.

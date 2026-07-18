@@ -11,4 +11,6 @@ This package provides:
 - cache: Redis caching layer for queries and embeddings
 """
 
-__version__ = "0.1.0"
+from settings_manager import VERSION
+
+__version__ = VERSION

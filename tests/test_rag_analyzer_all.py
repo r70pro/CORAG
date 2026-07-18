@@ -512,14 +512,133 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         # 5. Streaming wrapper test
         def mock_generator():
             yield "Hello, see "
+            yield "" # empty chunk (line 462)
             yield "[Source"
             yield " 1] and [So"
             yield "urce 2]."
+            yield " Testing "
+            yield "Source" # potential unbracketed prefix
+            yield " 3"
+            yield "[unclosed"
+            yield "a" * 160 # len > 150 without close bracket (line 495-496)
+            yield " leftover" # leftover buffer at the end (line 505)
         
         stream_out = "".join(list(rag_anz.replace_source_tags_streaming(mock_generator(), results)))
         self.assertIn("Dr. Gavin Weekes", stream_out)
         self.assertIn("medical_report.pdf", stream_out)
         self.assertNotIn("[Source", stream_out)
+        self.assertIn("leftover", stream_out)
+
+    def test_equivalence_helpers(self):
+        # Test _is_equivalent (line 84)
+        self.assertTrue(rag_anz._is_equivalent("microsoft/Phi-4-reasoning-plus", "nvidia/Phi-4-reasoning-plus-NVFP4"))
+        self.assertTrue(rag_anz._is_equivalent("nvidia/Phi-4-reasoning-plus-NVFP4", "microsoft/Phi-4-reasoning-plus"))
+        self.assertFalse(rag_anz._is_equivalent("other", "other2"))
+
+        # Test _map_equivalent (lines 90-95)
+        loaded = ["nvidia/Phi-4-reasoning-plus-NVFP4"]
+        self.assertEqual(
+            rag_anz._map_equivalent("microsoft/Phi-4-reasoning-plus", loaded),
+            "nvidia/Phi-4-reasoning-plus-NVFP4"
+        )
+        self.assertEqual(
+            rag_anz._map_equivalent("other", loaded),
+            "other"
+        )
+        self.assertEqual(
+            rag_anz._map_equivalent("nvidia/Phi-4-reasoning-plus-NVFP4", loaded),
+            "nvidia/Phi-4-reasoning-plus-NVFP4"
+        )
+
+    @patch("httpx.get")
+    def test_model_cache_with_testing_disabled(self, mock_get):
+        # Configure httpx mock
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {"data": [{"id": "model_x"}]}
+        mock_get.return_value = mock_resp
+
+        # Clear cache first
+        rag_anz._model_cache.clear()
+
+        # Temporarily remove TESTING env var
+        with patch.dict(os.environ):
+            os.environ.pop("TESTING", None)
+            
+            # First call: populates cache
+            models1 = rag_anz._get_loaded_models("http://localhost:8000")
+            self.assertEqual(models1, ["model_x"])
+            self.assertEqual(mock_get.call_count, 1)
+
+            # Second call: uses cached values (line 45)
+            models2 = rag_anz._get_loaded_models("http://localhost:8000")
+            self.assertEqual(models2, ["model_x"])
+            self.assertEqual(mock_get.call_count, 1)
+
+    @patch("re.findall", return_value=[])
+    def test_citations_empty_indices(self, mock_findall):
+        # Empty indices coverage (line 451)
+        res = rag_anz.replace_source_tags_in_string("Source 1", [{"text": "hello"}])
+        self.assertEqual(res, "Source 1")
+
+    def test_replacer_group_none(self):
+        # Capture and test nested replacer function when group(1) and group(2) are both None (line 439)
+        mock_pattern = MagicMock()
+        with patch("re.compile", return_value=mock_pattern):
+            replacer_fn = None
+            def mock_sub(replacer, text):
+                nonlocal replacer_fn
+                replacer_fn = replacer
+                return "mocked_result"
+            mock_pattern.sub.side_effect = mock_sub
+            
+            rag_anz.replace_source_tags_in_string("text", [])
+            
+            # Call replacer_fn directly with mock match
+            mock_match = MagicMock()
+            mock_match.group.side_effect = lambda idx: None if idx in (1, 2) else "matched_text"
+            res = replacer_fn(mock_match)
+            self.assertEqual(res, "matched_text")
+
+    @patch("rag.analyzer.search_similar")
+    @patch("rag.analyzer.query_llm")
+    def test_analyze_structured_custom_threshold(self, mock_query, mock_search):
+        # Call analyze in timeline mode with score_threshold in search_kwargs (line 553->557)
+        mock_search.return_value = [{"text": "chunk1", "page_number": 2}]
+        mock_query.return_value = "Response"
+        
+        res = list(rag_anz.analyze(
+            query="test",
+            mode="timeline",
+            stream=False,
+            score_threshold=0.1
+        ))
+        self.assertEqual(res, ["Response"])
+
+    @patch("rag.analyzer.search_similar")
+    @patch("rag.analyzer.query_llm")
+    def test_estimate_tokens_fallback_and_list(self, mock_query, mock_search):
+        mock_search.return_value = [{"text": "chunk1", "page_number": 2}]
+        mock_query.return_value = "Response"
+        
+        chat_history = [
+            {"role": "user", "name": "Alice", "content": "hello"},
+            {"role": "assistant", "content": [{"text": "list content"}, "other string"]}
+        ]
+        
+        # 1. Normal path with name and list content (lines 620-624, 625-626)
+        list(rag_anz.analyze(
+            query="test",
+            stream=False,
+            chat_history=chat_history
+        ))
+        
+        # 2. Fallback path (encoding is None) (lines 605-610)
+        with patch("tiktoken.get_encoding", side_effect=Exception("no tiktoken")):
+            list(rag_anz.analyze(
+                query="test",
+                stream=False,
+                chat_history=chat_history
+            ))
 
 
 if __name__ == "__main__":

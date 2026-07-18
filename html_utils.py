@@ -1,4 +1,5 @@
-from typing import Dict, List, Set, Optional, Any
+from typing import Any
+
 
 def make_progress_bar_html(completed: int, total: int, elapsed_secs: float = 0) -> str:
     pct = int((completed / total) * 100) if total > 0 else 0
@@ -15,7 +16,7 @@ def make_progress_bar_html(completed: int, total: int, elapsed_secs: float = 0) 
             eta_str = f"{int(remaining // 3600)}h {int((remaining % 3600) // 60)}m remaining"
     elif completed >= total and total > 0:
         eta_str = "Complete"
-    
+
     elapsed_str = ""
     if elapsed_secs > 0:
         if elapsed_secs < 60:
@@ -23,14 +24,18 @@ def make_progress_bar_html(completed: int, total: int, elapsed_secs: float = 0) 
         elif elapsed_secs < 3600:
             elapsed_str = f"{int(elapsed_secs // 60)}m {int(elapsed_secs % 60)}s elapsed"
         else:
-            elapsed_str = f"{int(elapsed_secs // 3600)}h {int((elapsed_secs % 3600) // 60)}m elapsed"
-    
+            elapsed_str = (
+                f"{int(elapsed_secs // 3600)}h {int((elapsed_secs % 3600) // 60)}m elapsed"
+            )
+
     time_info = ""
     if elapsed_str and eta_str:
         time_info = f"<div style='display:flex; justify-content:space-between; font-size:0.8rem; color:#94a3b8; margin-top:4px;'><span>{elapsed_str}</span><span>{eta_str}</span></div>"
     elif elapsed_str:
-        time_info = f"<div style='font-size:0.8rem; color:#94a3b8; margin-top:4px;'>{elapsed_str}</div>"
-    
+        time_info = (
+            f"<div style='font-size:0.8rem; color:#94a3b8; margin-top:4px;'>{elapsed_str}</div>"
+        )
+
     return f"""<div style='width:100%;'>
         <div style='display:flex; justify-content:space-between; margin-bottom:4px;'>
             <span style='font-size:0.9rem; color:#e2e8f0; font-weight:600;'>{completed}/{total} Pages</span>
@@ -43,10 +48,15 @@ def make_progress_bar_html(completed: int, total: int, elapsed_secs: float = 0) 
     </div>"""
 
 
-def make_file_status_html(file_mapping: Dict[int, str], file_page_counts: Dict[int, int], completed_files_set: Set[int], failed_files_set: Optional[Set[int]] = None) -> str:
+def make_file_status_html(
+    file_mapping: dict[int, str],
+    file_page_counts: dict[int, int],
+    completed_files_set: set[int],
+    failed_files_set: set[int] | None = None,
+) -> str:
     if failed_files_set is None:
         failed_files_set = set()
-    
+
     rows = ""
     for idx in sorted(file_mapping.keys()):
         name = file_mapping[idx]
@@ -58,7 +68,7 @@ def make_file_status_html(file_mapping: Dict[int, str], file_page_counts: Dict[i
         else:
             status = "<span style='color:#94a3b8;'>⏳ Pending</span>"
         rows += f"<tr style='border-bottom:1px solid rgba(255,255,255,0.05);'><td style='padding:6px 10px; color:#e2e8f0; font-size:0.85rem;'>{name}</td><td style='padding:6px 10px; color:#94a3b8; text-align:center; font-size:0.85rem;'>{pages}</td><td style='padding:6px 10px; text-align:center; font-size:0.85rem;'>{status}</td></tr>"
-    
+
     return f"""<table style='width:100%; border-collapse:collapse;'>
         <thead><tr style='border-bottom:1px solid rgba(255,255,255,0.1);'>
             <th style='padding:6px 10px; color:#94a3b8; text-align:left; font-size:0.8rem; text-transform:uppercase; letter-spacing:0.05em;'>File</th>
@@ -69,7 +79,9 @@ def make_file_status_html(file_mapping: Dict[int, str], file_page_counts: Dict[i
     </table>"""
 
 
-def make_upload_manifest_html(file_mapping: Dict[int, str], file_page_counts: Dict[int, int], file_sizes: Dict[int, int]) -> str:
+def make_upload_manifest_html(
+    file_mapping: dict[int, str], file_page_counts: dict[int, int], file_sizes: dict[int, int]
+) -> str:
     rows = ""
     total_pages = 0
     total_size = 0
@@ -80,23 +92,23 @@ def make_upload_manifest_html(file_mapping: Dict[int, str], file_page_counts: Di
         if isinstance(pages, int):
             total_pages += pages
         total_size += size_bytes
-        
+
         if size_bytes < 1024:
             size_str = f"{size_bytes} B"
         elif size_bytes < 1024 * 1024:
             size_str = f"{size_bytes / 1024:.1f} KB"
         else:
             size_str = f"{size_bytes / (1024 * 1024):.1f} MB"
-        
+
         rows += f"<tr style='border-bottom:1px solid rgba(255,255,255,0.05);'><td style='padding:5px 10px; color:#e2e8f0; font-size:0.85rem;'>{name}</td><td style='padding:5px 10px; color:#94a3b8; text-align:center; font-size:0.85rem;'>{pages}</td><td style='padding:5px 10px; color:#94a3b8; text-align:center; font-size:0.85rem;'>{size_str}</td></tr>"
-    
+
     if total_size < 1024 * 1024:
         total_size_str = f"{total_size / 1024:.1f} KB"
     else:
         total_size_str = f"{total_size / (1024 * 1024):.1f} MB"
-    
+
     rows += f"<tr style='border-top:1px solid rgba(255,255,255,0.1);'><td style='padding:5px 10px; color:#818cf8; font-size:0.85rem; font-weight:600;'>Total ({len(file_mapping)} files)</td><td style='padding:5px 10px; color:#818cf8; text-align:center; font-size:0.85rem; font-weight:600;'>{total_pages}</td><td style='padding:5px 10px; color:#818cf8; text-align:center; font-size:0.85rem; font-weight:600;'>{total_size_str}</td></tr>"
-    
+
     return f"""<table style='width:100%; border-collapse:collapse;'>
         <thead><tr style='border-bottom:1px solid rgba(255,255,255,0.1);'>
             <th style='padding:5px 10px; color:#94a3b8; text-align:left; font-size:0.8rem; text-transform:uppercase; letter-spacing:0.05em;'>File</th>
@@ -107,11 +119,12 @@ def make_upload_manifest_html(file_mapping: Dict[int, str], file_page_counts: Di
     </table>"""
 
 
-def get_simulated_sparkline(is_up: bool = True, latency_history: Optional[List[float]] = None) -> str:
+def get_simulated_sparkline(is_up: bool = True, latency_history: list[float] | None = None) -> str:
     import random
+
     if not is_up:
         return """<svg class='sparkline-svg sparkline-red' viewBox='0 0 60 20'><polyline points='0,10 10,10 20,10 30,10 40,10 50,10 60,10'/></svg>"""
-    
+
     if not latency_history:
         points = [random.randint(5, 15) for _ in range(8)]
     else:
@@ -119,38 +132,41 @@ def get_simulated_sparkline(is_up: bool = True, latency_history: Optional[List[f
         max_val = max(latency_history) if latency_history else 1
         val_range = max_val - min_val if max_val != min_val else 1
         points = [20 - int((v - min_val) / val_range * 15 + 2) for v in latency_history]
-        
+
     points_str = " ".join(f"{i*8},{v}" for i, v in enumerate(points))
     return f"""<svg class='sparkline-svg' viewBox='0 0 60 20'><polyline points='{points_str}'/></svg>"""
 
 
-def make_backing_services_html(data: Dict[str, Any]) -> str:
+def make_backing_services_html(data: dict[str, Any]) -> str:
     import os
+
     service_names = {
         "postgres": "PostgreSQL 16",
         "redis": "Redis 7.2",
         "minio": "MinIO S3",
         "qdrant": "Qdrant 1.10",
-        "vllm": "vLLM Engine"
+        "vllm": "vLLM Engine",
     }
-    
+
     service_descs = {
         "postgres": "port: 5432 | db: olmocr_rag",
         "redis": "port: 6379 | db: 0",
         "minio": "port: 9000 | bucket: pdfs",
         "qdrant": "port: 6333 | collection: cases",
-        "vllm": "port: 8000 | model: "
+        "vllm": "port: 8000 | model: ",
     }
-    
+
     html_parts = []
-    
+
     for s in ["postgres", "qdrant", "redis", "minio", "vllm"]:
-        info = data["services"].get(s, {"is_up": False, "latency": 0.0, "extra_info": None, "latency_history": []})
+        info = data["services"].get(
+            s, {"is_up": False, "latency": 0.0, "extra_info": None, "latency_history": []}
+        )
         is_up = info["is_up"]
         latency = info["latency"]
         extra_info = info["extra_info"]
         latency_history = info["latency_history"]
-        
+
         desc = service_descs[s]
         if s == "vllm":
             if is_up and extra_info:
@@ -159,21 +175,21 @@ def make_backing_services_html(data: Dict[str, Any]) -> str:
                 desc += "Loading weights..."
             else:
                 desc += "None Loaded"
-                
+
         status_class = "up" if is_up else "down"
         badge_class = "up" if is_up else "down"
         badge_text = "UP" if is_up else "DOWN"
         latency_str = f"{latency:.1f} ms" if is_up else "N/A"
-        
+
         if not is_up and s == "vllm" and data.get("vllm_progress"):
             status_class = "warning"
             badge_class = "warning"
             badge_text = "LOADING"
             progress = data["vllm_progress"]
             latency_str = f"Progress: {progress['pct']}%"
-            
+
         sparkline = get_simulated_sparkline(is_up, latency_history)
-        
+
         html_parts.append(f"""
         <div class='diag-service-card'>
             <div class='diag-card-header'>
@@ -191,13 +207,15 @@ def make_backing_services_html(data: Dict[str, Any]) -> str:
             </div>
         </div>
         """)
-        
+
     # Card 6: Runtime Metadata
     redis_mem_used = "320 KB"
     redis_max_mem = "512 MB"
     try:
         import redis
+
         from rag.cache import get_redis_config
+
         cfg = get_redis_config()
         r = redis.Redis(host=cfg["host"], port=cfg["port"], db=cfg["db"], socket_connect_timeout=1)
         info = r.info()
@@ -209,12 +227,16 @@ def make_backing_services_html(data: Dict[str, Any]) -> str:
             redis_max_mem = "Unlimited"
     except Exception:
         pass
-        
-    env_str = "Docker container" if os.path.exists("/.dockerenv") or os.environ.get("IS_DOCKER") else "Host OS"
+
+    env_str = (
+        "Docker container"
+        if os.path.exists("/.dockerenv") or os.environ.get("IS_DOCKER")
+        else "Host OS"
+    )
     vllm_model_name = data.get("vllm_model", "None Loaded")
     if not vllm_model_name:
         vllm_model_name = "None Loaded"
-        
+
     metadata_desc = f"""Redis memory: {redis_mem_used} / {redis_max_mem}<br>
 Redis query cache TTL: 3600 s<br>
 Multi-modal: {vllm_model_name}<br>
@@ -239,31 +261,31 @@ Environment: {env_str}"""
         </div>
     </div>
     """)
-    
+
     return f"<div class='diag-grid'>{''.join(html_parts)}</div>"
 
 
-def make_system_health_badge_html(data: Dict[str, Any]) -> str:
+def make_system_health_badge_html(data: dict[str, Any]) -> str:
     service_names = {
         "postgres": "PostgreSQL",
         "redis": "Redis",
         "minio": "MinIO",
         "qdrant": "Qdrant",
-        "vllm": "vLLM"
+        "vllm": "vLLM",
     }
     fixes = {
         "postgres": "Start PostgreSQL service/container.",
         "redis": "Start Redis service/container.",
         "minio": "Start MinIO service/container.",
         "qdrant": "Start Qdrant service/container.",
-        "vllm": "Start vLLM service/container."
+        "vllm": "Start vLLM service/container.",
     }
-    
+
     all_healthy = data["all_healthy"]
     vllm_model = data["vllm_model"]
     failed_services = data["failed_services"]
     vllm_progress = data["vllm_progress"]
-    
+
     if all_healthy:
         if not vllm_model or vllm_model in ["None Loaded", "Unknown"]:
             suitability = "No model loaded"
@@ -274,7 +296,7 @@ def make_system_health_badge_html(data: Dict[str, Any]) -> str:
         else:
             suitability = "Best suited for RAG processing"
             suit_color = "#60a5fa"
-            
+
         display_model = vllm_model if vllm_model else "None Loaded"
         return f"""
         <div style='display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;'>
@@ -290,7 +312,7 @@ def make_system_health_badge_html(data: Dict[str, Any]) -> str:
         degraded_str = ", ".join(degraded_names)
         fix_instructions = [fixes[s] for s in failed_services]
         fix_str = " ".join(fix_instructions)
-        
+
         if failed_services == ["vllm"] and vllm_progress:
             progress = vllm_progress
             return f"""
@@ -314,7 +336,7 @@ def make_system_health_badge_html(data: Dict[str, Any]) -> str:
             """
 
 
-def make_gpu_metrics_html(data: Dict[str, Any]) -> str:
+def make_gpu_metrics_html(data: dict[str, Any]) -> str:
     if not data["cuda_available"]:
         return """
         <div style='background: rgba(17, 24, 39, 0.5); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 10px; padding: 18px; margin-top: 10px;'>
@@ -323,7 +345,7 @@ def make_gpu_metrics_html(data: Dict[str, Any]) -> str:
             </div>
             <div style='font-weight:600; font-size:1.05rem; color:#e2e8f0;'>Running on Host CPU</div>
             <div style='color:#94a3b8; font-size:0.85rem; margin-top:4px;'>VRAM Usage</div>
-            
+
             <div class='vram-progress-container'>
                 <div style='display:flex; justify-content:space-between; font-size:0.85rem; font-family:"JetBrains Mono", monospace; color:#94a3b8; margin-bottom:4px;'>
                     <span>0.0%</span>
@@ -335,7 +357,7 @@ def make_gpu_metrics_html(data: Dict[str, Any]) -> str:
             </div>
         </div>
         """
-        
+
     gpu_name = data["gpu_name"]
     vram_used = data["vram_used"]
     vram_total = data["vram_total"]
@@ -344,7 +366,7 @@ def make_gpu_metrics_html(data: Dict[str, Any]) -> str:
     vram_reclaimable = data["vram_reclaimable"]
     vram_potential_free = data["vram_potential_free"]
     processes = data["processes"]
-    
+
     rows_html = ""
     if not processes:
         rows_html = """
@@ -380,11 +402,11 @@ def make_gpu_metrics_html(data: Dict[str, Any]) -> str:
                 <span class='status-dot up'></span>
                 <span>GPU 0: {gpu_name}</span>
             </div>
-            
+
             <div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;'>
                 <span class='badge-success' style='padding:4px 10px; font-size: 0.75rem;'>✓ CUDA Available - 1 GPU Active</span>
             </div>
-            
+
             <div style='color:#94a3b8; font-size:0.85rem; margin-top:12px; margin-bottom:4px;'>Overall VRAM Usage</div>
             <div class='vram-progress-container'>
                 <div style='display:flex; justify-content:space-between; font-size:0.85rem; font-family:"JetBrains Mono", monospace; color:#34d399; margin-bottom:4px;'>
@@ -395,7 +417,7 @@ def make_gpu_metrics_html(data: Dict[str, Any]) -> str:
                     <div class='vram-bar-inner' style='width: {vram_pct:.1f}%; background: linear-gradient(90deg, #ec4899, #3b82f6);'></div>
                 </div>
             </div>
-            
+
             <div class='gpu-stats-grid'>
                 <div class='gpu-stat-box'>
                     <div class='gpu-stat-label'>Free VRAM</div>
@@ -412,13 +434,13 @@ def make_gpu_metrics_html(data: Dict[str, Any]) -> str:
                 </div>
             </div>
         </div>
-        
+
         <!-- Column 2: Active Processes -->
         <div class='gpu-processes-card'>
             <div style='font-size: 0.95rem; font-weight: 600; color: #c7d2fe; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;'>
                 <span>📈</span> Active GPU Processes
             </div>
-            
+
             <div class='gpu-table-wrapper' style='min-height: 375px !important; max-height: 375px !important; overflow-y: auto !important;'>
                 <table class='gpu-table'>
                     <thead>
@@ -438,8 +460,13 @@ def make_gpu_metrics_html(data: Dict[str, Any]) -> str:
     """
 
 
-def make_case_dashboard_html(runs: List[Dict[str, Any]]) -> str:
+def make_case_dashboard_html(
+    runs: list[dict[str, Any]], cases_metadata: dict[str, Any] | None = None
+) -> str:
     import os
+
+    if cases_metadata is None:
+        cases_metadata = {}
     if not runs:
         return (
             "<div class='dashboard-empty'>"
@@ -477,16 +504,21 @@ def make_case_dashboard_html(runs: List[Dict[str, Any]]) -> str:
                 indexed_str = str(indexed_at)[:16]
 
         run_id = run.get("run_id", "")
-        
-        # Fetch rich case metadata
-        from rag.metadata_helper import get_case_metadata
-        meta = get_case_metadata(run_id)
-        
+
+        # Use pre-fetched metadata (batch-loaded by the caller to avoid N+1 queries)
+        meta = cases_metadata.get(run_id) or {"names": [], "dob": "—", "injuries": []}
+
         client_display = ", ".join(meta["names"]) if meta["names"] else "Unknown Client"
         dob_display = meta["dob"] if meta["dob"] != "—" else "Not Extracted"
-        
+
         if meta["injuries"]:
-            injury_display = "<ul style='margin: 0; padding-left: 14px; font-size: 0.8rem;'>" + "".join([f"<li style='margin-bottom: 2px;'>{inj}</li>" for inj in meta["injuries"]]) + "</ul>"
+            injury_display = (
+                "<ul style='margin: 0; padding-left: 14px; font-size: 0.8rem;'>"
+                + "".join(
+                    [f"<li style='margin-bottom: 2px;'>{inj}</li>" for inj in meta["injuries"]]
+                )
+                + "</ul>"
+            )
         else:
             injury_display = "<span style='color: #9ca3af; font-style: italic; font-size: 0.8rem;'>No specific injury or diagnosis found.</span>"
 
@@ -501,7 +533,7 @@ def make_case_dashboard_html(runs: List[Dict[str, Any]]) -> str:
                 </div>
                 <input type="checkbox" class="case-select-checkbox" data-run-id="{run_id}" onclick="event.stopPropagation(); window.toggleCaseSelection(this, event, '{run_id}');" />
             </div>
-            
+
             <div style="margin: 6px 0; font-size: 0.85rem; color: #d1d5db; display: flex; align-items: center; gap: 6px;">
                 <span style="color: #818cf8; font-weight: 600;">📅 DOB:</span> <span>{dob_display}</span>
             </div>
@@ -521,7 +553,7 @@ def make_case_dashboard_html(runs: List[Dict[str, Any]]) -> str:
                 <span>Authors: <span class="stat-val">{authors}</span></span>
                 <span>Date Range: <span class="stat-val" style="font-size: 0.75rem;">{date_range}</span></span>
             </div>
-            
+
             <div style="font-size:0.75rem; color:#6b7280; margin-top:10px; display: flex; justify-content: space-between; align-items: center;">
                 <span class="badge-success" style="font-size:0.7rem; padding: 2px 6px; border-radius: 4px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.15); color: #34d399;">✓ Indexed</span>
                 <span>{indexed_str}</span>
@@ -533,7 +565,7 @@ def make_case_dashboard_html(runs: List[Dict[str, Any]]) -> str:
     return f"<div class='case-dashboard-grid'>{''.join(cards)}</div>"
 
 
-def make_case_banner_html(active_case_label: Optional[str]) -> str:
+def make_case_banner_html(active_case_label: str | None) -> str:
     if not active_case_label or "All Cases" in str(active_case_label):
         return (
             "<div class='active-case-banner'>"

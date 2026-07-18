@@ -1,0 +1,6 @@
+# Pinned development/test dependencies for reproducible CI.
+# Main application deps live in requirements.txt; this file pins the test
+# tooling that the CI pipeline installs on top of them.
+pytest==8.3.4
+coverage==7.6.10
+ruff==0.8.4

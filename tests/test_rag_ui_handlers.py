@@ -139,7 +139,9 @@ class TestRAGUIHandlers(unittest.TestCase):
     @patch("rag_export.export_chat_markdown")
     @patch("rag_export.export_chat_text")
     @patch("rag_export.export_timeline_csv")
-    def test_export_chat_formats(self, mock_csv, mock_txt, mock_md, mock_choices):
+    @patch("rag_export.export_chat_docx")
+    @patch("rag_export.export_timeline_docx")
+    def test_export_chat_formats(self, mock_timeline_docx, mock_chat_docx, mock_csv, mock_txt, mock_md, mock_choices):
         # Setup mock choices to test case name resolution
         mock_choices.return_value = [("📁 case_name", "case_r123")]
 
@@ -173,6 +175,32 @@ class TestRAGUIHandlers(unittest.TestCase):
         # CSV export returns None (no table data)
         mock_csv.return_value = None
         self.assertFalse(rag_ui_handlers._do_export_csv([], "case_r123").get("visible"))
+        
+        # 4. DOCX export success
+        mock_chat_docx.return_value = "/path/to/chat.docx"
+        res_docx = rag_ui_handlers._do_export_docx([], "mode", "case_r123")
+        self.assertEqual(res_docx.get("value"), "/path/to/chat.docx")
+        mock_chat_docx.assert_called_with([], "mode", "📁 case_name")
+        
+        # DOCX export fails / raises Exception
+        mock_chat_docx.side_effect = Exception("DOCX export fail")
+        self.assertFalse(rag_ui_handlers._do_export_docx([], "mode", "case_r123").get("visible"))
+        mock_chat_docx.side_effect = None
+        mock_chat_docx.return_value = None
+        self.assertFalse(rag_ui_handlers._do_export_docx([], "mode", "case_r123").get("visible"))
+        
+        # 5. Timeline DOCX export success
+        mock_timeline_docx.return_value = "/path/to/timeline.docx"
+        res_t_docx = rag_ui_handlers._do_export_timeline_docx([], "case_r123")
+        self.assertEqual(res_t_docx.get("value"), "/path/to/timeline.docx")
+        mock_timeline_docx.assert_called_with([], "📁 case_name")
+        
+        # Timeline DOCX export fails / raises Exception
+        mock_timeline_docx.side_effect = Exception("Timeline DOCX fail")
+        self.assertFalse(rag_ui_handlers._do_export_timeline_docx([], "case_r123").get("visible"))
+        mock_timeline_docx.side_effect = None
+        mock_timeline_docx.return_value = None
+        self.assertFalse(rag_ui_handlers._do_export_timeline_docx([], "case_r123").get("visible"))
 
     @patch("rag.db.get_runs_with_stats")
     def test_dashboard_indexed_choices_and_exceptions(self, mock_get_runs):

@@ -1,37 +1,44 @@
 import os
+
 import gradio as gr
-from settings_manager import load_settings
-from rag_ui_state import log_to_rag, get_rag_logs, extract_text_content, get_available_runs
+
 import rag_ui_state
+from rag_ui_state import extract_text_content, get_available_runs, get_rag_logs, log_to_rag
+from settings_manager import load_settings
+
 
 # Forward declarations / imports to avoid circular reference issues
 def _get_indexed_run_choices():
     from rag_ui_dashboard import _get_indexed_run_choices as get_choices
+
     return get_choices()
+
 
 def _build_dashboard_html():
     from rag_ui_dashboard import _build_dashboard_html as build_html
+
     return build_html()
 
 
 def index_run(run_dir, progress=None):
     """Index a single OCR run into the RAG system."""
     from indexing_service import CorpusIndexingService
-    for update in CorpusIndexingService.index_run(run_dir):
-        yield update
+
+    yield from CorpusIndexingService.index_run(run_dir)
 
 
 def index_all_runs(get_available_runs_fn=None):
     """Index all available OCR runs into the RAG corpus."""
     from indexing_service import CorpusIndexingService
-    for update in CorpusIndexingService.index_all_runs(get_available_runs_fn):
-        yield update
+
+    yield from CorpusIndexingService.index_all_runs(get_available_runs_fn)
 
 
 def start_rag_infra_ui():
     """Start RAG infrastructure and return status."""
     try:
-        from rag_infra_manager import start_and_init_rag, get_rag_status_html
+        from rag_infra_manager import get_rag_status_html, start_and_init_rag
+
         success, msg = start_and_init_rag()
         status_html = get_rag_status_html()
         return msg, status_html
@@ -42,7 +49,8 @@ def start_rag_infra_ui():
 def stop_rag_infra_ui():
     """Stop RAG infrastructure and return status."""
     try:
-        from rag_infra_manager import stop_rag_infrastructure, get_rag_status_html
+        from rag_infra_manager import get_rag_status_html, stop_rag_infrastructure
+
         success, msg = stop_rag_infrastructure()
         status_html = get_rag_status_html()
         return msg, status_html
@@ -54,6 +62,7 @@ def refresh_rag_status():
     """Refresh RAG infrastructure status badges."""
     try:
         from rag_infra_manager import get_rag_status_html
+
         return get_rag_status_html()
     except Exception:
         return "<span class='badge-idle'>Unknown</span>"
@@ -138,8 +147,8 @@ def index_all_runs_ui_wrapper():
 
 def upload_and_index_markdown(files, case_option, new_case_name):
     from indexing_service import CorpusIndexingService
-    for update in CorpusIndexingService.add_markdown_to_case(files, case_option, new_case_name):
-        yield update
+
+    yield from CorpusIndexingService.add_markdown_to_case(files, case_option, new_case_name)
     rag_ui_state.LAST_CREATED_RUN_ID = CorpusIndexingService.last_created_run_id
 
 
@@ -161,10 +170,22 @@ def user_message_submit(message, history):
     return "", history
 
 
-def bot_respond(history, mode, model_url, model_name, top_k,
-                active_case, doc_type, author, date_from, date_to,
-                use_reranker_val=None, reranker_model_val=None, reranker_device_val=None,
-                progress=None):
+def bot_respond(
+    history,
+    mode,
+    model_url,
+    model_name,
+    top_k,
+    active_case,
+    doc_type,
+    author,
+    date_from,
+    date_to,
+    use_reranker_val=None,
+    reranker_model_val=None,
+    reranker_device_val=None,
+    progress=None,
+):
     """Generate bot response with streaming, applying all active filters."""
     if not history:
         yield history, get_rag_logs()
@@ -195,7 +216,9 @@ def bot_respond(history, mode, model_url, model_name, top_k,
     date_to_f = date_to.strip() if date_to and date_to.strip() else None
 
     # Stream the response
-    history.append({"role": "assistant", "content": "🔍 Retrieving and reranking matching chunks..."})
+    history.append(
+        {"role": "assistant", "content": "🔍 Retrieving and reranking matching chunks..."}
+    )
     yield history, get_rag_logs()
 
     log_to_rag(f"RAG query received: '{last_user_msg}'")
@@ -216,6 +239,7 @@ def bot_respond(history, mode, model_url, model_name, top_k,
 
     try:
         from rag.analyzer import ANALYSIS_MODE_MAP
+
         mode_key = ANALYSIS_MODE_MAP.get(mode, "free_qa")
 
         from rag.analyzer import analyze
@@ -267,9 +291,18 @@ def bot_respond(history, mode, model_url, model_name, top_k,
         yield history, get_rag_logs()
 
 
-def save_analysis_settings(url, name, top_k, emb_model, use_reranker_val=None, reranker_model_val=None, reranker_device_val=None):
+def save_analysis_settings(
+    url,
+    name,
+    top_k,
+    emb_model,
+    use_reranker_val=None,
+    reranker_model_val=None,
+    reranker_device_val=None,
+):
     try:
         from settings_manager import save_settings
+
         settings = load_settings()
         if use_reranker_val is None:
             use_reranker_val = settings.get("use_reranker", True)
@@ -278,16 +311,27 @@ def save_analysis_settings(url, name, top_k, emb_model, use_reranker_val=None, r
         if reranker_device_val is None:
             reranker_device_val = settings.get("reranker_device", "cuda")
 
-        settings.update({
-            "analysis_server_url": url,
-            "analysis_model_name": name,
-            "retrieval_top_k": int(top_k),
-            "embedding_model": emb_model,
-            "use_reranker": bool(use_reranker_val),
-            "reranker_model": reranker_model_val,
-            "reranker_device": reranker_device_val,
-        })
+        settings.update(
+            {
+                "analysis_server_url": url,
+                "analysis_model_name": name,
+                "retrieval_top_k": int(top_k),
+                "embedding_model": emb_model,
+                "use_reranker": bool(use_reranker_val),
+                "reranker_model": reranker_model_val,
+                "reranker_device": reranker_device_val,
+            }
+        )
         save_settings(settings)
+        # Switching the embedding model changes vector dimensionality, which
+        # invalidates every cached embedding and any query result built on the
+        # previous collection. Drop them so the next query re-embeds correctly.
+        try:
+            from rag.cache import invalidate_all_caches
+
+            invalidate_all_caches()
+        except Exception:
+            pass
         return "✅ Analysis configuration saved successfully."
     except Exception as e:
         return f"❌ Error: {e}"
@@ -296,6 +340,7 @@ def save_analysis_settings(url, name, top_k, emb_model, use_reranker_val=None, r
 def _do_export_md(history, mode, active_case):
     try:
         from rag_export import export_chat_markdown
+
         choices = _get_indexed_run_choices()
         case_label = "All Cases"
         for lbl, rid in choices:
@@ -315,6 +360,7 @@ def _do_export_md(history, mode, active_case):
 def _do_export_txt(history, mode, active_case):
     try:
         from rag_export import export_chat_text
+
         choices = _get_indexed_run_choices()
         case_label = "All Cases"
         for lbl, rid in choices:
@@ -334,6 +380,7 @@ def _do_export_txt(history, mode, active_case):
 def _do_export_csv(history, active_case):
     try:
         from rag_export import export_timeline_csv
+
         choices = _get_indexed_run_choices()
         case_label = "All Cases"
         for lbl, rid in choices:
@@ -345,6 +392,47 @@ def _do_export_csv(history, active_case):
             log_to_rag(f"Exported timeline as CSV: {os.path.basename(path)}")
             return gr.update(value=path, visible=True)
         log_to_rag("CSV export: no table data found in chat history.")
+        return gr.update(visible=False)
+    except Exception as e:
+        log_to_rag(f"Export error: {e}")
+        return gr.update(visible=False)
+
+
+def _do_export_docx(history, mode, active_case):
+    try:
+        from rag_export import export_chat_docx
+
+        choices = _get_indexed_run_choices()
+        case_label = "All Cases"
+        for lbl, rid in choices:
+            if rid == active_case:
+                case_label = lbl
+                break
+        path = export_chat_docx(history, mode, case_label)
+        if path:
+            log_to_rag(f"Exported chat as DOCX: {os.path.basename(path)}")
+            return gr.update(value=path, visible=True)
+        return gr.update(visible=False)
+    except Exception as e:
+        log_to_rag(f"Export error: {e}")
+        return gr.update(visible=False)
+
+
+def _do_export_timeline_docx(history, active_case):
+    try:
+        from rag_export import export_timeline_docx
+
+        choices = _get_indexed_run_choices()
+        case_label = "All Cases"
+        for lbl, rid in choices:
+            if rid == active_case:
+                case_label = lbl
+                break
+        path = export_timeline_docx(history, case_label)
+        if path:
+            log_to_rag(f"Exported timeline as DOCX: {os.path.basename(path)}")
+            return gr.update(value=path, visible=True)
+        log_to_rag("DOCX timeline export: no table data found in chat history.")
         return gr.update(visible=False)
     except Exception as e:
         log_to_rag(f"Export error: {e}")
