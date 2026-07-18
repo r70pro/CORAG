@@ -50,13 +50,15 @@ class TestIndexingService(unittest.TestCase):
             updates = list(CorpusIndexingService.index_run(self.run_dir))
             self.assertIn("No markdown files found", "".join(updates))
 
+    @patch("rag.db.mark_run_indexed")
+    @patch("rag.db.mark_document_indexed")
     @patch("rag.chunker.chunk_documents_from_run")
     @patch("rag.db.register_run")
     @patch("rag.db.register_document")
     @patch("rag.storage.upload_markdown")
     @patch("rag.embedding.upsert_chunks_generator")
     @patch("rag.db.insert_chunks")
-    def test_index_run_full_flow_with_exceptions(self, mock_insert, mock_upsert, mock_upload, mock_reg_doc, mock_register_run, mock_chunk):
+    def test_index_run_full_flow_with_exceptions(self, mock_insert, mock_upsert, mock_upload, mock_reg_doc, mock_register_run, mock_chunk, mock_mark_doc, mock_mark_run):
         mock_chunk.return_value = {
             "doc1": {
                 "md_file": "0001_doc.md",
@@ -160,6 +162,9 @@ class TestIndexingService(unittest.TestCase):
             updates6 = list(CorpusIndexingService.add_markdown_to_case([mock_file], "new", "Case"))
             self.assertIn("Failed to create directories", "".join(updates6))
 
+    @patch("rag.db.mark_run_indexed")
+    @patch("rag.db.mark_document_indexed")
+    @patch("rag.db.get_connection")
     @patch("rag.db.get_runs_with_stats")
     @patch("rag.db.register_run")
     @patch("rag.db.register_document")
@@ -167,7 +172,12 @@ class TestIndexingService(unittest.TestCase):
     @patch("rag.chunker.chunk_document")
     @patch("rag.embedding.upsert_chunks_generator")
     @patch("rag.db.insert_chunks")
-    def test_add_markdown_to_case_processing_variants(self, mock_insert, mock_upsert, mock_chunk, mock_upload, mock_reg_doc, mock_reg_run, mock_get_runs):
+    def test_add_markdown_to_case_processing_variants(self, mock_insert, mock_upsert, mock_chunk, mock_upload, mock_reg_doc, mock_reg_run, mock_get_runs, mock_conn, mock_mark_doc, mock_mark_run):
+        # Configure get_connection mock
+        mock_conn_inst = mock_conn.return_value.__enter__.return_value
+        mock_cur = mock_conn_inst.cursor.return_value.__enter__.return_value
+        mock_cur.fetchone.return_value = [0]  # Return 0 documents count by default
+
         # Setup source file
         src_dir = tempfile.mkdtemp()
         src_file = os.path.join(src_dir, "uploaded.md")
