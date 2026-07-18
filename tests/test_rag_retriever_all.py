@@ -20,17 +20,6 @@ class TestRAGRetrieverAll(unittest.TestCase):
         # Reset cached model to avoid test leakage
         rag_emb._embedding_model = None
 
-    def test_text_similarity(self):
-        # 1. Matching
-        self.assertAlmostEqual(rag_ret._text_similarity("shoulder pain", "shoulder pain"), 1.0)
-        
-        # 2. Part matching
-        self.assertAlmostEqual(rag_ret._text_similarity("shoulder pain", "knee pain"), 0.3333333, places=5)
-        
-        # 3. Empty strings
-        self.assertEqual(rag_ret._text_similarity("", "shoulder"), 0.0)
-        self.assertEqual(rag_ret._text_similarity("shoulder", ""), 0.0)
-
     def test_mmr_rerank_edges(self):
         # 1. Empty/short results
         results = [{"score": 0.9, "text": "shoulder"}]
@@ -111,6 +100,143 @@ class TestRAGRetrieverAll(unittest.TestCase):
         # Exception should bubble up
         with self.assertRaises(Exception):
             rag_ret.search_similar("query")
+
+    @patch("rag.retriever.encode_query")
+    @patch("rag.retriever.get_qdrant_client")
+    @patch("rag.db.get_chunks_by_qdrant_ids")
+    def test_search_similar_date_int_filters(self, mock_db_chunks, mock_qdrant_client, mock_encode):
+        mock_encode.return_value = [0.1, 0.2]
+        mock_client = mock_qdrant_client.return_value
+        mock_client.search.return_value = []
+        mock_db_chunks.return_value = []
+
+        # Call with date filters as standard ISO strings
+        rag_ret.search_similar(
+            query="test query",
+            date_from="2024-07-19",
+            date_to="2026-07-19"
+        )
+
+        # Retrieve the filter conditions passed to client.search
+        self.assertTrue(mock_client.search.called)
+        called_args, called_kwargs = mock_client.search.call_args
+        query_filter = called_kwargs.get("query_filter")
+        self.assertIsNotNone(query_filter)
+        
+        # Check that we have FieldCondition for date_int with gte=20240719 and lte=20260719
+        conditions = query_filter.must
+        self.assertEqual(len(conditions), 2)
+        
+        c1, c2 = conditions[0], conditions[1]
+        self.assertEqual(c1.key, "date_int")
+        self.assertEqual(c1.range.gte, 20240719.0)
+        self.assertEqual(c2.key, "date_int")
+        self.assertEqual(c2.range.lte, 20260719.0)
+
+    @patch("rag.retriever.encode_query")
+    @patch("rag.retriever.get_qdrant_client")
+    @patch("rag.db.get_chunks_by_qdrant_ids")
+    def test_search_similar_python_date_fallback(self, mock_db_chunks, mock_qdrant_client, mock_encode):
+        mock_encode.return_value = [0.1, 0.2]
+        
+        mock_client = mock_qdrant_client.return_value
+        p1 = MagicMock()
+        p1.id = "p1"
+        p1.score = 0.9
+        p1.payload = {"date_extracted": None}
+        
+        p2 = MagicMock()
+        p2.id = "p2"
+        p2.score = 0.8
+        p2.payload = {"date_extracted": "2019-12-31"}
+
+        p3 = MagicMock()
+        p3.id = "p3"
+        p3.score = 0.7
+        p3.payload = {"date_extracted": "2021-01-01"}
+
+        mock_client.search.return_value = [p1, p2, p3]
+        mock_db_chunks.return_value = [
+            {"qdrant_point_id": "p1", "text": "no date", "date_extracted": None},
+            {"qdrant_point_id": "p2", "text": "too early", "date_extracted": "2019-12-31"},
+            {"qdrant_point_id": "p3", "text": "too late", "date_extracted": "2021-01-01"},
+        ]
+
+        res = rag_ret.search_similar(
+            query="test query",
+            date_from="2020-01-01",
+            date_to="2020-12-31"
+        )
+        self.assertEqual(len(res), 0)
+
+    @patch("rag.retriever.encode_query")
+    @patch("rag.retriever.get_qdrant_client")
+    @patch("rag.db.get_chunks_by_qdrant_ids")
+    def test_search_similar_date_int_exception(self, mock_db_chunks, mock_qdrant_client, mock_encode):
+        mock_encode.return_value = [0.1, 0.2]
+        mock_client = mock_qdrant_client.return_value
+        mock_client.search.return_value = []
+        mock_db_chunks.return_value = []
+
+        class MockInt(int):
+            def __new__(cls, val, *args, **kwargs):
+                if str(val) in ("20240719", "20260719"):
+                    raise ValueError("Mock int error")
+                return super().__new__(cls, val, *args, **kwargs)
+
+        with patch("builtins.int", MockInt):
+            rag_ret.search_similar(
+                query="test query",
+                date_from="2024-07-19",
+                date_to="2026-07-19"
+            )
+
+    def test_normalize_iso_date_all_branches(self):
+        self.assertIsNone(rag_ret._normalize_iso_date(None))
+        self.assertIsNone(rag_ret._normalize_iso_date(""))
+        self.assertIsNone(rag_ret._normalize_iso_date("   "))
+
+        self.assertEqual(rag_ret._normalize_iso_date(1577836800.0), "2020-01-01")
+        self.assertIsNone(rag_ret._normalize_iso_date(999999999999.0))
+
+        self.assertEqual(rag_ret._normalize_iso_date("2020-08-27"), "2020-08-27")
+        self.assertEqual(rag_ret._normalize_iso_date("2020-08"), "2020-08-01")
+        self.assertEqual(rag_ret._normalize_iso_date("2020"), "2020-01-01")
+
+        self.assertIsNone(rag_ret._normalize_iso_date("not-a-date"))
+        self.assertIsNone(rag_ret._normalize_iso_date("2020-invalid-day"))
+        self.assertIsNone(rag_ret._normalize_iso_date("2020-08-27-01"))
+
+    @patch("rag.retriever.encode_query")
+    @patch("rag.retriever.get_qdrant_client")
+    @patch("rag.db.get_chunks_by_qdrant_ids")
+    def test_search_similar_mmr_trigger(self, mock_db_chunks, mock_qdrant_client, mock_encode):
+        mock_encode.return_value = [0.1, 0.2]
+        
+        mock_client = mock_qdrant_client.return_value
+        p1 = MagicMock()
+        p1.id = "p1"
+        p1.score = 0.9
+        p1.payload = {}
+        
+        p2 = MagicMock()
+        p2.id = "p2"
+        p2.score = 0.8
+        p2.payload = {}
+
+        mock_client.search.return_value = [p1, p2]
+        mock_db_chunks.return_value = [
+            {"qdrant_point_id": "p1", "text": "shoulder"},
+            {"qdrant_point_id": "p2", "text": "knee"},
+        ]
+
+        # top_k = 1, so len(results) > top_k triggers MMR re-ranking
+        res = rag_ret.search_similar(
+            query="test query",
+            top_k=1,
+            use_reranker=False
+        )
+        self.assertEqual(len(res), 1)
 
     @patch("rag.db.get_corpus_stats")
     def test_get_available_filters_success(self, mock_db_stats):

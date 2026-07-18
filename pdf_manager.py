@@ -4,7 +4,6 @@ import os
 import zipfile
 from io import BytesIO
 
-import gradio as gr
 import pypdfium2 as pdfium
 from pypdf import PdfReader
 
@@ -152,7 +151,7 @@ def get_markdown_for_page(full_markdown, page_ranges, page_num):
 
 def on_file_selected(selected_file, run_id_state):
     if not selected_file or not run_id_state:
-        return "", 0, [], "", gr.update(maximum=2, value=1, interactive=False), None
+        return "", 0, [], "", {"maximum": 2, "value": 1, "interactive": False}, None
 
     if not is_safe_filename(selected_file):
         return (
@@ -160,7 +159,7 @@ def on_file_selected(selected_file, run_id_state):
             0,
             [],
             "Invalid file path.",
-            gr.update(maximum=2, value=1, interactive=False),
+            {"maximum": 2, "value": 1, "interactive": False},
             None,
         )
 
@@ -185,7 +184,7 @@ def on_file_selected(selected_file, run_id_state):
         total_pages or 0,
         page_ranges or [],
         full_markdown,
-        gr.update(maximum=max(2, total_pages), value=1, interactive=(total_pages > 1)),
+        {"maximum": max(2, total_pages), "value": 1, "interactive": (total_pages > 1)},
         pdf_path,
     )
 

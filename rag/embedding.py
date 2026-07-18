@@ -20,6 +20,7 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     MatchValue,
+    PayloadSchemaType,
     PointStruct,
     VectorParams,
 )
@@ -301,6 +302,14 @@ def init_collection(dimension=None, model_name=None):
             distance=Distance.COSINE,
         ),
     )
+    try:
+        client.create_payload_index(
+            collection_name=collection_name,
+            field_name="date_int",
+            field_schema=PayloadSchemaType.INTEGER,
+        )
+    except Exception as e:
+        print(f"Warning: could not create Qdrant payload index for date_int: {e}")
     print(f"Created Qdrant collection '{collection_name}' with dimension {dimension}.")
 
 
@@ -420,6 +429,14 @@ def upsert_chunks_generator(
         chunk["qdrant_point_id"] = point_id
         chunk["embedding_model"] = model_name
 
+        date_extracted = chunk.get("date_extracted")
+        date_int = None
+        if date_extracted:
+            try:
+                date_int = int(str(date_extracted).replace("-", ""))
+            except Exception:
+                pass
+
         payload = {
             "chunk_id": chunk["chunk_id"],
             "doc_id": chunk["doc_id"],
@@ -428,7 +445,8 @@ def upsert_chunks_generator(
             "page_number": chunk.get("page_number"),
             "document_type": chunk.get("document_type", "unknown"),
             "author": chunk.get("author"),
-            "date_extracted": chunk.get("date_extracted"),
+            "date_extracted": date_extracted,
+            "date_int": date_int,
             "section_type": chunk.get("section_type", "general"),
             "patient_name": chunk.get("patient_name"),
             "text_preview": chunk["text"][:200],  # Preview for debugging

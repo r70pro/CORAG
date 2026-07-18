@@ -32,11 +32,18 @@ The suite features **built-in Docker lifecycle management** to dynamically run t
   - [rag_ui_dashboard.py](file:///home/owner/KIRAG/rag_ui_dashboard.py) — Case Dashboard UI: card grid builder, select/deselect-all JS handlers, single/multi/all case deletion from PostgreSQL + Qdrant + MinIO
   - [rag_ui_handlers.py](file:///home/owner/KIRAG/rag_ui_handlers.py) — RAG business logic: indexing, infrastructure control, corpus stats, chat submission, streaming bot responses, analysis settings, and chat export dispatch
   - [rag_ui_state.py](file:///home/owner/KIRAG/rag_ui_state.py) — Shared RAG state: thread-safe log buffer (`RAG_LOG_BUFFER`), `LAST_CREATED_RUN_ID`, `extract_text_content()` for Gradio 6 format handling
-  - [requirements.txt](file:///home/owner/KIRAG/requirements.txt) — Python packages and third-party dependencies
+  - [requirements.txt](file:///home/owner/KIRAG/requirements.txt) — Python packages and third-party dependencies (FastAPI, Uvicorn, multipart added)
   - [settings.json](file:///home/owner/KIRAG/settings.json) — Persistent user configuration (pipeline, Docker, analysis, embedding, reranker settings)
   - [settings_manager.py](file:///home/owner/KIRAG/settings_manager.py) — Loading, saving, and validation utility for configurations; defines `SUPPORTED_MODELS`, `MODEL_MAX_CONTENT_LENGTHS`, `WORKSPACE_DIR`
   - [system_diagnostics.py](file:///home/owner/KIRAG/system_diagnostics.py) — Service latency probes (PostgreSQL, Redis, MinIO, Qdrant, vLLM), `nvidia-smi` GPU metrics parser, and vLLM model loading progress tracker
+  - [ui_adapters.py](file:///home/owner/KIRAG/ui_adapters.py) — **NEW** — UI translation layer converting plain Python backend data structures into Gradio `gr.update` payloads
   - [ui_theme.py](file:///home/owner/KIRAG/ui_theme.py) — Dark theme definition (Gradio `Base` theme override) and external CSS loader from `assets/theme.css`
+  - [cli.py](file:///home/owner/KIRAG/cli.py) — **NEW** — Command-line interface providing headless management of RAG infra, queries, container operations, settings, and indexing
+  - [api/](file:///home/owner/KIRAG/api) — **NEW** — FastAPI REST API layer:
+    - [main.py](file:///home/owner/KIRAG/api/main.py) — Main app definition, middleware config, lifespan hooks
+    - [models.py](file:///home/owner/KIRAG/api/models.py) — Pydantic models mapping REST request/response contracts
+    - [deps.py](file:///home/owner/KIRAG/api/deps.py) — Shared API dependencies
+    - [routes/](file:///home/owner/KIRAG/api/routes) — API routers per domain (pipeline, docker, rag, diagnostics, settings, documents)
   - [.env.example](file:///home/owner/KIRAG/.env.example) — Template environment file for PostgreSQL, Redis, MinIO, embedding, and the vLLM container image configuration. **`.env` is git-ignored** — only `secrets_config.py` and `docker-compose.rag.yml` consume these variables.
   - assets/
     - [accessibility.js](file:///home/owner/KIRAG/assets/accessibility.js) — Runtime WCAG accessibility enhancements (ARIA labels, focus indicators, keyboard shortcuts, dark mode enforcement, scroll synchronisation)
@@ -209,7 +216,7 @@ The application uses a persistent **left navigation sidebar** with 5 navigation 
 | **Logo & Branding** | "IQ-RAG Client" title, "Mission Control" subtitle | Styled `.sidebar-logo-container` |
 | **Panel Navigation** | 5 `gr.Button` components: 📥 Ingestion Pipeline, 🔍 Layout Inspector, 📊 Case Dashboard, 💬 RAG Processing, 🖥️ System Diagnostics | Active button highlighted via `active-nav-btn` CSS class; `.click()` handlers call `select_view(idx)` |
 | **🐳 Inference Server (Docker)** | HF token (password field), Model selector dropdown, Docker port (number), GPU memory slider (0.1–1.0), Max Content Length slider (2048–model max, up to 1M), Start/Stop/Recreate buttons | Creates and manages the `olmocr` vLLM container (default image `vllm/vllm-openai:v0.8.5`, overridable via `OLMOCR_VLLM_IMAGE`). Model change auto-syncs between Pipeline and Docker dropdowns and adjusts max content length limits via `MODEL_MAX_CONTENT_LENGTHS` |
-| **Sidebar Footer** | Active Role dropdown (Admin, Clinical Reviewer, Legal Specialist), Comfortable/Compact layout toggle buttons, Version label (`IQ-RAG Workstation v2.0.2`) | Compact mode toggles `.layout-compact` CSS class via JS |
+| **Sidebar Footer** | Active Role dropdown (Admin, Clinical Reviewer, Legal Specialist), Comfortable/Compact layout toggle buttons, Version label (`IQ-RAG Workstation v2.0.3`) | Compact mode toggles `.layout-compact` CSS class via JS |
 
 #### Panel 1: PDF Ingestion ([app.py:L199-L298](file:///home/owner/KIRAG/app.py#L199-L298))
 
@@ -421,6 +428,131 @@ The application relies on the following key dependencies ([requirements.txt](fil
 - **`httpx`** (≥0.27.0): HTTP client for communicating with the vLLM server (streaming SSE support).
 - **`numpy`** (≥1.24.0): Multidimensional array operations (used in embeddings/retrievals).
 - **`coverage`** (≥7.15.0) / **`pytest`** (≥9.1.0): Testing framework and coverage statistics.
+- **`fastapi`** (≥0.111.0): REST API framework with automatic OpenAPI schema generation.
+- **`uvicorn`** (≥0.30.0): ASGI web server implementation.
+- **`python-multipart`** (≥0.0.9): Multipart parsing support for file uploads.
+
+---
+
+## 🚀 REST API
+
+The suite exposes a complete backend REST API layer via FastAPI, allowing you to programmatically trigger OCR runs, query the RAG search pipeline, control container states, and poll system diagnostics.
+
+### Starting the API Server
+
+You can run the API server as a standalone service on a separate port (e.g., `8001`):
+```bash
+uvicorn api.main:app --host 0.0.0.0 --port 8001 --reload
+```
+
+Once started, interactive OpenAPI/Swagger documentation is available at:
+👉 **`http://localhost:8001/docs`**
+
+### Key API Endpoints
+
+| Domain | Method | Path | Description |
+|:---|:---:|:---|:---|
+| **Pipeline** | `POST` | `/api/pipeline/start` | Start batch OCR processing (returns SSE stream) |
+| | `GET` | `/api/pipeline/runs` | List available completed OCR runs |
+| | `GET` | `/api/pipeline/status/{id}` | Check status of an in-flight OCR process |
+| | `POST` | `/api/pipeline/stop/{id}` | Stop a running OCR pipeline process |
+| **Docker** | `GET` | `/api/docker/status` | Get vLLM inference container status |
+| | `POST` | `/api/docker/start` | Start the existing vLLM container |
+| | `POST` | `/api/docker/stop` | Stop the running vLLM container |
+| | `POST` | `/api/docker/create` | Recreate the vLLM container with new parameters |
+| **RAG** | `POST` | `/api/rag/query` | Query RAG system (returns SSE text stream or JSON response) |
+| | `POST` | `/api/rag/index` | Index a specific run directory into PostgreSQL + Qdrant |
+| | `POST` | `/api/rag/index-all` | Scan and index all completed OCR runs in the workspace |
+| | `GET` | `/api/rag/corpus/stats` | Retrieve aggregate corpus stats |
+| | `POST` | `/api/rag/infra/start` | Start the database, vector store, caching, and storage backends |
+| **Diagnostics**| `GET` | `/api/diagnostics/health` | Perform latency checks on all services & GPU metrics |
+| | `GET` | `/api/diagnostics/report` | Download the full system markdown diagnostic report |
+| **Documents** | `GET` | `/api/documents/runs` | Browse completed OCR runs and list extracted files |
+| | `GET` | `/api/documents/runs/{run}/markdown/{file}`| Retrieve the raw text content of an extracted markdown file |
+
+---
+
+## 💻 Command-Line Interface (CLI)
+
+The `cli.py` script provides a headless command-line interface for local control of the application without loading the Gradio web UI. It interacts directly with backend managers and service layers.
+
+### General Usage
+```bash
+python cli.py [command_group] [subcommand] [arguments...]
+```
+Get general help:
+```bash
+python cli.py -h
+```
+
+### Common Commands
+
+#### 1. RAG Core Commands
+- **Run a streaming query on the corpus**:
+  ```bash
+  python cli.py rag query "List all diagnostic studies performed on the client" --mode timeline_generator
+  ```
+- **Query isolated to a specific case**:
+  ```bash
+  python cli.py rag query "Summarize injuries" --case run_20260719_082815
+  ```
+- **Index a specific run directory**:
+  ```bash
+  python cli.py rag index /home/owner/.local/share/kirag/workspace/run_20260719_082815
+  ```
+- **Index all completed runs**:
+  ```bash
+  python cli.py rag index-all
+  ```
+- **Show database and vector corpus statistics**:
+  ```bash
+  python cli.py rag stats
+  ```
+- **Control database backing services**:
+  ```bash
+  python cli.py rag infra status
+  python cli.py rag infra start
+  python cli.py rag infra stop
+  ```
+
+#### 2. System Diagnostics
+- **Perform health checks on databases and GPU VRAM usage**:
+  ```bash
+  python cli.py diagnostics health
+  ```
+- **List active processes consuming GPU memory**:
+  ```bash
+  python cli.py diagnostics gpu
+  ```
+- **Write system report to `workspace/diagnostic_report.md`**:
+  ```bash
+  python cli.py diagnostics report
+  ```
+
+#### 3. Configuration Management
+- **Display active settings**:
+  ```bash
+  python cli.py settings show
+  ```
+- **Set a custom configuration value**:
+  ```bash
+  python cli.py settings set retrieval_top_k 25
+  python cli.py settings set embedding_device cpu
+  ```
+
+#### 4. Batch OCR Pipeline & Docker Container
+- **List completed workspace OCR runs**:
+  ```bash
+  python cli.py pipeline runs
+  ```
+- **Get state of the local vLLM container**:
+  ```bash
+  python cli.py docker status
+  ```
+- **Recreate container with specialized resource settings**:
+  ```bash
+  python cli.py docker create --model allenai/olmOCR-2-7B-1025-FP8 --gpu-mem 0.85 --port 8000
+  ```
 
 ---
 

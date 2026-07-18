@@ -11,7 +11,6 @@ import uuid
 from collections.abc import Generator
 from typing import Any
 
-import gradio as gr
 import httpx
 from pypdf import PdfReader
 
@@ -32,6 +31,13 @@ def enqueue_output(out: Any, q: queue.Queue) -> None:
 
 
 class PipelineResult(tuple):
+    """Plain-data result tuple yielded by process_pdfs().
+
+    Holds raw Python values — no Gradio dependency.  The companion
+    ``ui_adapters.pipeline_result_to_gradio()`` function converts these
+    into ``gr.update()`` tuples for the Gradio UI layer.
+    """
+
     __slots__ = ()
 
     def __new__(
@@ -50,8 +56,6 @@ class PipelineResult(tuple):
         upload_manifest_display: str = "",
         stop_btn: Any = None,
     ) -> "PipelineResult":
-        if stop_btn is None:
-            stop_btn = gr.update()
         return tuple.__new__(
             cls,
             (
@@ -133,18 +137,18 @@ def _make_empty_yield(
 ) -> PipelineResult:
     return PipelineResult(
         log_text,
-        gr.update(value=badge_html),
+        badge_html,
         progress_html,
-        gr.update(visible=False),
-        gr.update(visible=False),
-        gr.update(choices=[], value=None),
+        {"visible": False},
+        {"visible": False},
+        {"choices": [], "value": None},
         None,
         None,
-        gr.update(interactive=start_interactive),
+        {"interactive": start_interactive},
         run_id,
         "",
         "",
-        gr.update(interactive=False),
+        {"interactive": False},
     )
 
 
@@ -299,18 +303,18 @@ def process_pdfs(
     except Exception as e:
         yield PipelineResult(
             f"Failed to start pipeline process: {e}",
-            gr.update(value="<span class='badge-failed'>Failed</span>"),
+            "<span class='badge-failed'>Failed</span>",
             "",
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(choices=[], value=None),
+            {"visible": False},
+            {"visible": False},
+            {"choices": [], "value": None},
             None,
             None,
-            gr.update(interactive=True),
+            {"interactive": True},
             "",
             "",
             manifest_html,
-            gr.update(interactive=False),
+            {"interactive": False},
         )
         return
 
@@ -339,24 +343,24 @@ def process_pdfs(
     progress_bar_fn = make_progress_bar_html
     yield PipelineResult(
         "Initializing pipeline...",
-        gr.update(value="<span class='badge-running'>Running</span>"),
+        "<span class='badge-running'>Running</span>",
         progress_bar_fn(0, total_pages),
-        gr.update(
-            visible=True,
-            value="<div class='stat-card'><div class='stat-value'>0</div><div class='stat-label'>Completed Pages</div></div>",
-        ),
-        gr.update(
-            visible=True,
-            value="<div class='stat-card'><div class='stat-value'>0</div><div class='stat-label'>Failed Pages</div></div>",
-        ),
-        gr.update(choices=[], value=None),
+        {
+            "visible": True,
+            "value": "<div class='stat-card'><div class='stat-value'>0</div><div class='stat-label'>Completed Pages</div></div>",
+        },
+        {
+            "visible": True,
+            "value": "<div class='stat-card'><div class='stat-value'>0</div><div class='stat-label'>Failed Pages</div></div>",
+        },
+        {"choices": [], "value": None},
         None,
         None,
-        gr.update(interactive=False),
+        {"interactive": False},
         run_id,
         file_status_html,
         manifest_html,
-        gr.update(interactive=True),
+        {"interactive": True},
     )
 
     streaming_choices = []
@@ -377,26 +381,27 @@ def process_pdfs(
                         proc.kill()
                     elapsed = time.monotonic() - start_time
                     if not dropdown_value_set and streaming_choices:
-                        dropdown_val_update = gr.update(
-                            choices=streaming_choices, value=streaming_choices[0][1]
-                        )
+                        dropdown_val_update = {
+                            "choices": streaming_choices,
+                            "value": streaming_choices[0][1],
+                        }
                         dropdown_value_set = True
                     else:
-                        dropdown_val_update = gr.update(choices=streaming_choices)
+                        dropdown_val_update = {"choices": streaming_choices}
                     yield PipelineResult(
                         accumulated_logs + "\n\n[PROCESS TERMINATED BY USER]\n",
-                        gr.update(value="<span class='badge-stopped'>Stopped</span>"),
+                        "<span class='badge-stopped'>Stopped</span>",
                         progress_bar_fn(completed_pages, total_pages, elapsed),
-                        gr.update(
-                            value=f"<div class='stat-card'><div class='stat-value'>{completed_pages}</div><div class='stat-label'>Completed Pages</div></div>"
-                        ),
-                        gr.update(
-                            value=f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"
-                        ),
+                        {
+                            "value": f"<div class='stat-card'><div class='stat-value'>{completed_pages}</div><div class='stat-label'>Completed Pages</div></div>"
+                        },
+                        {
+                            "value": f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"
+                        },
                         dropdown_val_update,
                         None,
                         None,
-                        gr.update(interactive=True),
+                        {"interactive": True},
                         "",
                         make_file_status_html(
                             file_mapping,
@@ -405,7 +410,7 @@ def process_pdfs(
                             failed_file_indices,
                         ),
                         manifest_html,
-                        gr.update(interactive=False),
+                        {"interactive": False},
                     )
                     return
 
@@ -493,27 +498,28 @@ def process_pdfs(
                 )
 
                 if not dropdown_value_set and streaming_choices:
-                    dropdown_val_update = gr.update(
-                        choices=streaming_choices, value=streaming_choices[0][1]
-                    )
+                    dropdown_val_update = {
+                        "choices": streaming_choices,
+                        "value": streaming_choices[0][1],
+                    }
                     dropdown_value_set = True
                 else:
-                    dropdown_val_update = gr.update(choices=streaming_choices)
+                    dropdown_val_update = {"choices": streaming_choices}
 
                 yield PipelineResult(
                     accumulated_logs,
-                    gr.update(value="<span class='badge-running'>Running</span>"),
+                    "<span class='badge-running'>Running</span>",
                     progress_bar_fn(completed_pages, total_pages, elapsed),
-                    gr.update(value=status_html),
-                    gr.update(value=failed_html),
+                    {"value": status_html},
+                    {"value": failed_html},
                     dropdown_val_update,
                     None,
                     None,
-                    gr.update(interactive=False),
+                    {"interactive": False},
                     run_id,
                     file_status_html,
                     manifest_html,
-                    gr.update(interactive=True),
+                    {"interactive": True},
                 )
                 last_yield_time = now
 
@@ -559,51 +565,51 @@ def process_pdfs(
         )
 
         if not dropdown_value_set and choices:
-            dropdown_val_update = gr.update(choices=choices, value=dropdown_value)
+            dropdown_val_update = {"choices": choices, "value": dropdown_value}
             dropdown_value_set = True
         else:
-            dropdown_val_update = gr.update(choices=choices)
+            dropdown_val_update = {"choices": choices}
 
         yield PipelineResult(
             accumulated_logs + f"\n\n[PROCESS EXITED WITH CODE {exit_code}]\n",
-            gr.update(value=status_text),
+            status_text,
             progress_bar_fn(completed_pages, total_pages, elapsed),
-            gr.update(
-                value=f"<div class='stat-card'><div class='stat-value'>{completed_pages}</div><div class='stat-label'>Completed Pages</div></div>"
-            ),
-            gr.update(
-                value=f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"
-            ),
+            {
+                "value": f"<div class='stat-card'><div class='stat-value'>{completed_pages}</div><div class='stat-label'>Completed Pages</div></div>"
+            },
+            {
+                "value": f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"
+            },
             dropdown_val_update,
             zip_file_path,
             None,
-            gr.update(interactive=True),
+            {"interactive": True},
             run_id,
             file_status_html,
             manifest_html,
-            gr.update(interactive=False),
+            {"interactive": False},
         )
 
     except Exception as e:
         elapsed = time.monotonic() - start_time
         yield PipelineResult(
             accumulated_logs + f"\n\nException during processing: {e}\n",
-            gr.update(value="<span class='badge-failed'>Error</span>"),
+            "<span class='badge-failed'>Error</span>",
             progress_bar_fn(completed_pages, total_pages, elapsed),
-            gr.update(
-                value=f"<div class='stat-card'><div class='stat-value'>{completed_pages}</div><div class='stat-label'>Completed Pages</div></div>"
-            ),
-            gr.update(
-                value=f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"
-            ),
-            gr.update(choices=[], value=None),
+            {
+                "value": f"<div class='stat-card'><div class='stat-value'>{completed_pages}</div><div class='stat-label'>Completed Pages</div></div>"
+            },
+            {
+                "value": f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"
+            },
+            {"choices": [], "value": None},
             None,
             None,
-            gr.update(interactive=True),
+            {"interactive": True},
             "",
             "",
             manifest_html,
-            gr.update(interactive=False),
+            {"interactive": False},
         )
     finally:
         with process_state.active_runs_lock:

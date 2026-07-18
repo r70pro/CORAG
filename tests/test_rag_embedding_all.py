@@ -179,6 +179,14 @@ class TestRAGEmbeddingAll(unittest.TestCase):
         rag_emb._embedding_model = None
         res = rag_emb.upsert_chunks(chunks, model_name="sentence-transformers/all-MiniLM-L6-v2")
         self.assertEqual(len(res), 1)
+        
+        # Verify date_int is correctly calculated and stored in Qdrant payload
+        self.assertTrue(mock_client.upsert.called)
+        called_args, called_kwargs = mock_client.upsert.call_args
+        points = called_kwargs.get("points")
+        self.assertIsNotNone(points)
+        self.assertEqual(len(points), 1)
+        self.assertEqual(points[0].payload["date_int"], 20260711)
 
         # 2. None model with settings load exception
         with patch("rag.embedding.load_settings", side_effect=Exception("Disk error")):

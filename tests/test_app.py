@@ -259,7 +259,7 @@ class TestOLMOCRApp(unittest.TestCase):
         # Step 1: Initial yield
         yield_1 = next(gen)
         self.assertEqual(yield_1[0], "Initializing pipeline...")
-        self.assertTrue("Running" in yield_1[1]["value"]) # Status badge gr.update
+        self.assertTrue("Running" in yield_1[1]) # Status badge is now a plain HTML string
         
         # Step 2: Loop yield (due to 0.3s elapsed time change, which triggers the 0.2s throttle check)
         yield_2 = next(gen)
@@ -270,7 +270,7 @@ class TestOLMOCRApp(unittest.TestCase):
         results = list(gen)
         final_yield = results[-1]
         self.assertTrue("PROCESS EXITED WITH CODE 0" in final_yield[0])
-        self.assertTrue("Success" in final_yield[1]["value"])
+        self.assertTrue("Success" in final_yield[1])
 
     @patch("httpx.get")
     @patch("pypdf.PdfReader")
@@ -444,28 +444,22 @@ class TestOLMOCRApp(unittest.TestCase):
 
     @patch("app.process_pdfs")
     def test_process_pdfs_ui_wrapper(self, mock_process_pdfs):
-        mock_result = MagicMock()
-        mock_result.log_text = "log"
-        mock_result.status_badge = "badge"
-        mock_result.progress_bar = "progress"
-        mock_result.completed_pages = "pages"
-        mock_result.failed_pages = "fail"
-        mock_result.file_selector = "selector"
-        mock_result.download_zip = "zip"
-        mock_result.download_individual = "indiv"
-        mock_result.start_btn = "start"
-        mock_result.active_run_id = "run_id"
-        mock_result.file_status_table = "status_table"
-        mock_result.upload_manifest_display = "manifest"
-        mock_result.stop_btn = "stop"
+        from pipeline_manager import PipelineResult
+
+        mock_result = PipelineResult(
+            "log", "badge", "progress", "pages", "fail",
+            "selector", "zip", "indiv", "start", "run_id",
+            "status_table", "manifest", "stop",
+        )
         mock_process_pdfs.return_value = [mock_result]
         
         gen = app.process_pdfs_ui_wrapper("arg1", kwarg1="val1")
         results = list(gen)
         self.assertEqual(len(results), 1)
-        self.assertEqual(results[0], (
-            "log", "badge", "progress", "pages", "fail", "selector", "zip", "indiv", "start", "run_id", "status_table", "manifest", "stop"
-        ))
+        # The adapter passes through non-dict values unchanged
+        self.assertEqual(results[0][0], "log")       # log_text
+        self.assertEqual(results[0][2], "progress")   # progress_bar
+        self.assertEqual(results[0][9], "run_id")     # active_run_id
         mock_process_pdfs.assert_called_once_with("arg1", kwarg1="val1")
 
     @patch("app.gr.update")

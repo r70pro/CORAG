@@ -12,12 +12,39 @@ This guide outlines the systematic, layout-aware PDF OCR extraction, indexing, a
 
 ## 🗺️ System Architecture Overview
 
-The diagram below illustrates how unstructured clinical and legal records are ingested, parsed, stored, and queried entirely on local hardware.
+The diagram below illustrates how unstructured clinical and legal records are ingested, parsed, stored, and queried entirely on local hardware, highlighting the new hybrid architecture supporting **Gradio UI, FastAPI REST API, and CLI interfaces** sharing a decoupled backend logic layer.
 
 ```mermaid
 flowchart TD
+    subgraph UI ["User Interfaces"]
+        UI_Gradio["Gradio Web Dashboard<br/>(app.py / rag_ui.py)"]
+        UI_API["FastAPI REST Server<br/>(api/main.py / /api/*)"]
+        UI_CLI["Command-Line Interface<br/>(cli.py)"]
+    end
+
+    subgraph Adapters ["Interface Adapter Layer"]
+        UI_Gradio -->|UI parameters| UI_Bridge["ui_adapters.py<br/>(dict -> gr.update)"]
+    end
+
+    subgraph Core ["Decoupled Backend Managers (Python)"]
+        UI_Bridge --> Core_Pipeline["pipeline_manager.py"]
+        UI_Bridge --> Core_PDF["pdf_manager.py"]
+        
+        UI_API --> Core_Pipeline
+        UI_API --> Core_PDF
+        UI_API --> Core_RAG["rag/analyzer.py & retriever.py"]
+        UI_API --> Core_Docker["docker_manager.py"]
+        UI_API --> Core_Infra["rag_infra_manager.py"]
+
+        UI_CLI --> Core_Pipeline
+        UI_CLI --> Core_PDF
+        UI_CLI --> Core_RAG
+        UI_CLI --> Core_Docker
+        UI_CLI --> Core_Infra
+    end
+
     subgraph Ingestion ["1. Case Ingestion & OCR"]
-        A["Scanned PDF Records<br/>(specialist letters, GP notes,<br/>radiology, IME reports)"] -->|pypdfium2 page rendering| B["High-Resolution Page Images"]
+        Core_Pipeline -->|pypdfium2 page rendering| B["High-Resolution Page Images"]
         B -->|vLLM VLM Backend<br/>GPU-accelerated| C["Layout-Aware OCR"]
         C -->|olmOCR Vision-Language Model| D["Extracted Markdown<br/>(tables, headers, signatures preserved)"]
     end
@@ -25,7 +52,7 @@ flowchart TD
     subgraph Storage ["2. Multi-Case Storage & Registry"]
         D -->|"workspace/run_YYYYMMDD_HHMMSS/"| E[("Local Case Workspace")]
         E -->|Archived Blobs| F[("MinIO Object Store<br/>olmocr-pdfs / olmocr-markdown")]
-        F -->|Registry Records| G[("PostgreSQL DB<br/>ocr_runs → documents → chunks")]
+        F -->|Registry Records| G[("PostgreSQL DB<br/>ocr_runs -> documents -> chunks")]
     end
 
     subgraph Indexing ["3. Medicolegal Parsing & Vectorization"]
@@ -37,7 +64,7 @@ flowchart TD
     end
 
     subgraph Retrieval ["4. Hybrid Query & Re-ranking"]
-        L["User Search / Analysis Query"] -->|Encode query vector| M["Query Embedding"]
+        Core_RAG -->|Encode query vector| M["Query Embedding"]
         M -->|"Filtered similarity search<br/>(run_id, author, date, doc_type)"| K
         K -->|Dense candidate chunks| N["MMR Re-ranking<br/>+ Jaccard Diversity"]
         N -->|Enriched with PG metadata| O["Grounded Context Blocks<br/>[Source N] | File | Page | Author | Date"]
@@ -45,8 +72,9 @@ flowchart TD
 
     subgraph Generation ["5. Local LLM Analysis & Outputs"]
         O -->|System prompt injection<br/>5 medicolegal templates| P["vLLM Local Analysis LLM<br/>(OpenAI-compatible API)"]
-        P -->|Streaming response| Q["Gradio Chat Interface<br/>with copy buttons"]
-        Q -->|"Export: Markdown / Text"| R["Structured Legal & Medical Output"]
+        P -->|Streaming response| UI_Gradio
+        P -->|Streaming / JSON response| UI_API
+        P -->|Streaming output| UI_CLI
     end
 ```
 
@@ -65,15 +93,39 @@ Before processing any case, the RAG infrastructure services must be running. Thi
 | **MinIO** | `olmocr_minio` | `127.0.0.1:9000` | Blob storage for PDFs and markdown files |
 | **Qdrant 1.10** | `olmocr_qdrant` | `127.0.0.1:6333` | Vector database for semantic search |
 
-**Routine:**
-1. Open the OLMOCR web application at `http://127.0.0.1:7860`.
-2. Click **💬 RAG Processing** in the left navigation sidebar to open the RAG panel.
-3. Expand the **🔧 RAG Infrastructure** accordion in the RAG sidebar.
-4. Click **▶️ Start**. The [start_and_init_rag()](file:///home/owner/KIRAG/rag_infra_manager.py#L261-L293) function in [rag_infra_manager.py](file:///home/owner/KIRAG/rag_infra_manager.py) runs `docker compose up -d --wait` and then sequentially initialises:
-     * PostgreSQL schema ([rag/db.py → init_schema()](file:///home/owner/KIRAG/rag/db.py#L83)): Creates the `ocr_runs`, `documents`, and `chunks` tables with cascading foreign keys (`ON DELETE CASCADE`) and indexes on `page_number`, `date_extracted`, `author`, and `document_type`.
-    * MinIO buckets ([rag/storage.py → init_buckets()](file:///home/owner/KIRAG/rag/storage.py#L49-L56)): Creates `olmocr-pdfs` and `olmocr-markdown` buckets.
-    * Qdrant collection ([rag/embedding.py → init_collection()](file:///home/owner/KIRAG/rag/embedding.py)): Creates a cosine-similarity collection with auto-detected vector dimensions based on the configured embedding model.
-5. Verify all four badges show ✓ (green/healthy).
+**Startup Alternatives:**
+
+*   **Option A: Via Gradio UI**
+    1. Open the OLMOCR web application at `http://127.0.0.1:7860`.
+    2. Click **💬 RAG Processing** in the left navigation sidebar to open the RAG panel.
+    3. Expand the **🔧 RAG Infrastructure** accordion in the RAG sidebar.
+    4. Click **▶️ Start**. The [start_and_init_rag()](file:///home/owner/KIRAG/rag_infra_manager.py#L261-L293) function runs `docker compose up -d --wait` and initializes the PostgreSQL schema, MinIO buckets, and Qdrant vector store collection.
+    5. Verify all four badges show ✓ (green/healthy).
+
+*   **Option B: Via REST API**
+    Send a `POST` request to start and initialize the infrastructure:
+    ```bash
+    curl -X POST http://localhost:8001/api/rag/infra/start
+    ```
+    To check service statuses:
+    ```bash
+    curl http://localhost:8001/api/rag/infra/status
+    ```
+
+*   **Option C: Via CLI (Headless)**
+    Execute the RAG infrastructure start command:
+    ```bash
+    python cli.py rag infra start
+    ```
+    To inspect statuses:
+    ```bash
+    python cli.py rag infra status
+    ```
+
+**Sequential Initialisation Details:**
+*   PostgreSQL schema ([rag/db.py → init_schema()](file:///home/owner/KIRAG/rag/db.py#L83)): Creates the `ocr_runs`, `documents`, and `chunks` tables with cascading foreign keys (`ON DELETE CASCADE`) and indexes on `page_number`, `date_extracted`, `author`, and `document_type`.
+*   MinIO buckets ([rag/storage.py → init_buckets()](file:///home/owner/KIRAG/rag/storage.py#L49-L56)): Creates `olmocr-pdfs` and `olmocr-markdown` buckets.
+*   Qdrant collection ([rag/embedding.py → init_collection()](file:///home/owner/KIRAG/rag/embedding.py)): Creates a cosine-similarity collection with auto-detected vector dimensions based on the configured embedding model.
 
 > [!TIP]
 > Start the RAG infrastructure once at the beginning of the day. The containers persist between sessions and survive application restarts (configured with `restart: unless-stopped`).
@@ -89,30 +141,51 @@ In medicolegal work, missing a single sentence in a specialist report, or misint
 *   **Backend**: A local vLLM container ([docker_manager.py](file:///home/owner/KIRAG/docker_manager.py)) launched from the `vllm/vllm-openai:v0.8.5` image (overridable via the `OLMOCR_VLLM_IMAGE` environment variable) with full GPU control (`--gpus all`).
 *   **Default OCR Model**: `allenai/olmOCR-2-7B-1025-FP8` — a vision-language model trained specifically to read PDFs and output pristine, layout-aware GitHub-flavored Markdown.
 
-**Routine:**
-1. Check the **System Health** badge in the top-right of the current panel.
-2. If the vLLM service is not running, expand the **🐳 Inference Server (Docker)** accordion in the global left navigation sidebar.
-3. Enter your Hugging Face token (required for gated models).
-4. Set the OCR model to `allenai/olmOCR-2-7B-1025-FP8`.
-5. Click **🔄 Recreate & Run** to pull and start the inference container.
-6. Wait for the System Health badge to show ✓ Ready (the system polls every 5 seconds via [periodic_status_check()](file:///home/owner/KIRAG/app_handlers.py) in [app_handlers.py](file:///home/owner/KIRAG/app_handlers.py)).
+**Inference Engine Startup Alternatives:**
+
+*   **Option A: Via Gradio UI**
+    1. Expand the **🐳 Inference Server (Docker)** accordion in the global left navigation sidebar.
+    2. Enter your Hugging Face token (required for gated models).
+    3. Select the OCR model name (e.g., `allenai/olmOCR-2-7B-1025-FP8`).
+    4. Click **🔄 Recreate & Run** to pull and start the inference container. Wait for System Health to show ✓ Ready.
+
+*   **Option B: Via REST API**
+    Send a `POST` request to create the inference container:
+    ```bash
+    curl -X POST http://localhost:8001/api/docker/create \
+         -H "Content-Type: application/json" \
+         -d '{"hf_token": "hf_...", "port": 8000, "model": "allenai/olmOCR-2-7B-1025-FP8", "gpu_mem": 0.8, "max_model_len": 15360}'
+    ```
+
+*   **Option C: Via CLI**
+    Run the creation command:
+    ```bash
+    python cli.py docker create --hf-token "hf_..." --port 8000 --model "allenai/olmOCR-2-7B-1025-FP8"
+    ```
 
 #### 1.2 Upload and Process Case PDFs
 
-**Routine:**
-1. In the **📥 Source Documents** section, drag-and-drop or upload all PDFs for the current case.
-2. Adjust settings if needed:
-    * **Workers**: Number of parallel page-processing workers (default: 4).
-    * **Max Concurrent Requests**: Controls vLLM request concurrency (default: 20).
-    * **Target Longest Image Dimension**: Set to **2048px** for fine print in clinical handwritten notes or low-contrast scans (default: 1288px).
-    * **Max Page Retries**: Number of retry attempts per failed page (default: 8).
-    * **Guided Decoding**: Enables YAML-structured output enforcement (default: on).
-3. Click **🚀 Start Batch Processing**.
-4. Monitor progress via the **📊 Monitoring** panel:
-    * **Status badge**: Shows `Processing`, `Completed`, or `Error`.
-    * **Progress bar**: Visual completion percentage.
-    * **Completed/Failed page cards**: Real-time counters.
-    * **📜 System Output Log**: Live subprocess output from the [pipeline_manager.py](file:///home/owner/KIRAG/pipeline_manager.py) subprocess runner.
+**Batch OCR Alternatives:**
+
+*   **Option A: Via Gradio UI**
+    1. In the **📥 Source Documents** section, upload the target PDFs.
+    2. Adjust workers, concurrency, target image dimensions, and retry options.
+    3. Click **🚀 Start Batch Processing**.
+    4. Monitor progress via the progress bar, completed page counters, and the live system output log.
+
+*   **Option B: Via REST API**
+    Trigger the batch process by listing absolute file paths. The API response streams Server-Sent Events (SSE) detailing logs and progress percentages in real-time:
+    ```bash
+    curl -X POST http://localhost:8001/api/pipeline/start \
+         -H "Content-Type: application/json" \
+         -d '{"file_paths": ["/absolute/path/to/case_file.pdf"], "workers": 4, "max_concurrent": 20}'
+    ```
+
+*   **Option C: Via CLI**
+    Start processing files in headless mode:
+    ```bash
+    python cli.py pipeline start --files "/absolute/path/to/file1.pdf" "/absolute/path/to/file2.pdf" --workers 4
+    ```
 
 #### 1.3 The OCR Pipeline Internals
 
@@ -225,18 +298,44 @@ For every text chunk, regex patterns extract:
 
 #### 4.2 Running the Indexing Process
 
-**Routine:**
-1. In the **📦 Document Indexing** accordion, click **🔄 Refresh Stats** to rescan the `workspace/` directory.
-2. Select the target run from the **Select OCR Run** dropdown.
-3. Click **📥 Index Selected Run** (or **📥 Index All Runs** for bulk indexing).
-4. Monitor the **📜 RAG System Log** below the chat window. The system will execute the [CorpusIndexingService.index_run()](file:///home/owner/KIRAG/indexing_service.py#L12-L155) pipeline:
-    * **Check skip**: If the run is already indexed (`is_run_indexed(run_id)` returns `True`), it skips immediately.
-    * **Chunk**: Invokes [chunk_documents_from_run()](file:///home/owner/KIRAG/rag/chunker.py), which reads all `.md` files from the run, loads JSONL page ranges, and produces chunk dicts.
-    * **Register**: Writes run and document records to PostgreSQL via [register_run()](file:///home/owner/KIRAG/rag/db.py) and [register_document()](file:///home/owner/KIRAG/rag/db.py).
-    * **Upload**: Archives PDFs and Markdown to MinIO under `run_id/doc_id/filename` keys.
-    * **Embed**: Encodes all chunks via [upsert_chunks_generator()](file:///home/owner/KIRAG/rag/embedding.py) in batches of 32, normalises embeddings for cosine similarity, and upserts vector points into Qdrant with full metadata payloads. A live progress card shows percentage completion for both embedding and indexing stages.
-    * **Finalise**: Marks documents and the run as indexed, and invalidates the Redis query cache.
-5. Verify by clicking **🔄 Refresh Stats** — the corpus statistics table should reflect the new document and chunk counts.
+**Indexing Alternatives:**
+
+*   **Option A: Via Gradio UI**
+    1. In the **📦 Document Indexing** accordion, click **🔄 Refresh Stats** to rescan the `workspace/` directory.
+    2. Select the target run from the **Select OCR Run** dropdown.
+    3. Click **📥 Index Selected Run** (or **📥 Index All Runs** for bulk indexing).
+    4. Monitor the live progress card and **📜 RAG System Log** below the chat window.
+
+*   **Option B: Via REST API**
+    Trigger case indexing by sending a POST request with the run directory:
+    ```bash
+    curl -X POST http://localhost:8001/api/rag/index \
+         -H "Content-Type: application/json" \
+         -d '{"run_dir": "/home/owner/.local/share/kirag/workspace/run_20260719_082815"}'
+    ```
+    Or index all completed runs:
+    ```bash
+    curl -X POST http://localhost:8001/api/rag/index-all
+    ```
+
+*   **Option C: Via CLI**
+    Run the indexing command on a directory:
+    ```bash
+    python cli.py rag index /home/owner/.local/share/kirag/workspace/run_20260719_082815
+    ```
+    Or index all completed runs:
+    ```bash
+    python cli.py rag index-all
+    ```
+
+**Under-the-Hood Sequence:**
+The system executes the [CorpusIndexingService.index_run()](file:///home/owner/KIRAG/indexing_service.py#L12-L155) pipeline:
+*   **Check skip**: If the run is already indexed (`is_run_indexed(run_id)` returns `True`), it skips immediately.
+*   **Chunk**: Invokes [chunk_documents_from_run()](file:///home/owner/KIRAG/rag/chunker.py), which reads all `.md` files from the run, loads JSONL page ranges, and produces chunk dicts.
+*   **Register**: Writes run and document records to PostgreSQL via [register_run()](file:///home/owner/KIRAG/rag/db.py) and [register_document()](file:///home/owner/KIRAG/rag/db.py).
+*   **Upload**: Archives PDFs and Markdown to MinIO under `run_id/doc_id/filename` keys.
+*   **Embed**: Encodes all chunks via [upsert_chunks_generator()](file:///home/owner/KIRAG/rag/embedding.py) in batches of 32, normalises embeddings for cosine similarity, and upserts vector points into Qdrant with full metadata payloads.
+*   **Finalise**: Marks documents and the run as indexed, and invalidates the Redis query cache.
 
 ---
 
@@ -341,25 +440,48 @@ All modes enforce:
 * ISO date format (`YYYY-MM-DD`) throughout.
 * Professional language appropriate for medicolegal analysis.
 
-#### 6.3 Using the Chat Interface
+#### 6.3 Querying Alternatives
 
-**Routine:**
-1. In the **🔍 Search Filters** accordion (RAG sidebar), select the **Active Case** to isolate queries to a single case. The "All Cases" option queries the entire corpus.
-2. (Optional) Apply additional metadata filters:
-    * **Document Type**: Filter by `specialist_letter`, `clinical_notes`, `radiology_report`, `physiotherapy_report`, `medicolegal_report`, or `referral_letter`.
-    * **Author**: Dynamically populated checklist of unique authors from the selected case.
-    * **Date From / Date To**: ISO date range fields to narrow the search window (e.g., post-accident treatment only).
-3. Select the desired **Analysis Mode** from the dropdown above the chat window.
-4. Type your question in the chat input field.
-5. Click **🚀 Ask** or press `Ctrl+Enter`.
-6. The response streams in real-time with full source citations.
-7. Click **⏹️ Stop** at any time to cancel in-flight chat inference and stop the LLM response generation.
-8. Use the **📋 Copy** button on any response, or press `Ctrl+Shift+C` to copy the last response to clipboard.
-9. Switch analysis modes between queries to generate different report types from the same indexed documents.
-10. Click **🗑️ Clear Chat** (or press `Ctrl+Shift+N`) to reset the conversation when moving to a new line of enquiry.
-11. Use the **⬅️ Hide Controls** toggle to collapse the RAG sidebar and expand the chat window to full width for reviewing long responses.
+*   **Option A: Via Gradio UI**
+    1. In the **🔍 Search Filters** accordion (RAG sidebar), select the **Active Case** to isolate queries.
+    2. (Optional) Apply Document Type, Author, or Date range filters.
+    3. Select the desired **Analysis Mode** from the dropdown above the chat window.
+    4. Type your question in the chat input field.
+    5. Click **🚀 Ask** or press `Ctrl+Enter`.
+    6. Click **⏹️ Stop** at any time to cancel in-flight chat inference and halt the LLM response.
+    7. Export the chat session or download outputs using the export buttons below the chat window.
 
-The chat supports multi-turn conversation. The system retains the last 6 messages of chat history ([build_prompt()](file:///home/owner/KIRAG/rag/analyzer.py#L128-L166)) to manage context window limits while allowing follow-up questions.
+*   **Option B: Via REST API**
+    Send a `POST` request to `/api/rag/query`. By default, this returns an SSE stream of JSON chunks:
+    ```bash
+    curl -X POST http://localhost:8001/api/rag/query \
+         -H "Content-Type: application/json" \
+         -d '{
+           "query": "What injuries did the patient sustain?",
+           "mode": "injury_summary",
+           "case_id": "run_20260719_082815",
+           "stream": true
+         }'
+    ```
+    To disable streaming and receive a single, complete JSON response:
+    ```bash
+    curl -X POST http://localhost:8001/api/rag/query \
+         -H "Content-Type: application/json" \
+         -d '{
+           "query": "What injuries did the patient sustain?",
+           "mode": "injury_summary",
+           "case_id": "run_20260719_082815",
+           "stream": false
+         }'
+    ```
+
+*   **Option C: Via CLI**
+    Run queries headlessly from the console with streaming output:
+    ```bash
+    python cli.py rag query "Summarize medical history" --mode timeline_generator --case run_20260719_082815
+    ```
+
+The system maintains a context buffer of the last 6 messages of chat history ([build_prompt()](file:///home/owner/KIRAG/rag/analyzer.py#L128-L166)) to manage context window limits while allowing follow-up questions during multi-turn conversation.
 
 > [!TIP]
 > **Case isolation is critical for medicolegal work.** Always select the specific case from the Active Case dropdown before querying. The system applies the corresponding `run_id` as a filter in [search_similar()](file:///home/owner/KIRAG/rag/retriever.py#L26-L219), restricting semantic lookups strictly to that case's vectors. Use "All Cases" only for deliberate cross-case research.

@@ -176,7 +176,7 @@ class TestPDFManagerAll(unittest.TestCase):
     @patch("pdf_manager.get_page_mapping_and_pdf_path")
     def test_on_file_selected(self, mock_mapping):
         # 1. Empty
-        self.assertEqual(pm.on_file_selected("", ""), ("", 0, [], "", pm.gr.update(maximum=2, value=1, interactive=False), None))
+        self.assertEqual(pm.on_file_selected("", ""), ("", 0, [], "", {"maximum": 2, "value": 1, "interactive": False}, None))
 
         # 2. Success path
         mock_mapping.return_value = ("pdf_path", 5, [[0, 10, 1]])

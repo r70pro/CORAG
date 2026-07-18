@@ -649,7 +649,7 @@ class TestPipelineManager(unittest.TestCase):
         )
         res = list(gen)
         self.assertEqual(len(res), 1)
-        self.assertTrue("Model Mismatch" in res[0][1]["value"])
+        self.assertTrue("Model Mismatch" in res[0][1])
         self.assertTrue("The requested model 'allenai/olmOCR-2-7B-1025-FP8' is not loaded" in res[0][0])
 
     def test_pipeline_result_properties(self):

@@ -78,6 +78,7 @@ from system_diagnostics import (  # noqa: F401
     get_service_latency,
     get_vllm_loading_progress,
 )
+from ui_adapters import file_selection_to_gradio, pipeline_result_to_gradio
 
 # Styling and theme properties
 from ui_theme import custom_css, dark_theme  # noqa: F401
@@ -89,21 +90,7 @@ atexit.register(cleanup_active_runs)
 
 def process_pdfs_ui_wrapper(*args: Any, **kwargs: Any) -> Generator[tuple[Any, ...], None, None]:
     for result in process_pdfs(*args, **kwargs):
-        yield (
-            result.log_text,
-            result.status_badge,
-            result.progress_bar,
-            result.completed_pages,
-            result.failed_pages,
-            result.file_selector,
-            result.download_zip,
-            result.download_individual,
-            result.start_btn,
-            result.active_run_id,
-            result.file_status_table,
-            result.upload_manifest_display,
-            result.stop_btn,
-        )
+        yield pipeline_result_to_gradio(result)
 
 
 # GUI layout construction
@@ -644,7 +631,7 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
 
     # Selection and update events
     file_selector.change(
-        on_file_selected,
+        lambda sel, rid: file_selection_to_gradio(on_file_selected(sel, rid)),
         inputs=[file_selector, active_run_id],
         outputs=[
             current_pdf_path,

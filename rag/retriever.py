@@ -12,6 +12,7 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     MatchValue,
+    Range,
 )
 
 from rag import db as rag_db
@@ -92,17 +93,22 @@ def search_similar(
         must_conditions.append(FieldCondition(key="run_id", match=MatchValue(value=run_id_filter)))
     if doc_id_filter:
         must_conditions.append(FieldCondition(key="doc_id", match=MatchValue(value=doc_id_filter)))
-
-    # Date range filtering is applied in Python after retrieval (see below)
-    # rather than via a Qdrant DatetimeRange. The chunk `date_extracted` is
-    # stored as a plain `YYYY-MM-DD` string in the Qdrant payload, which does
-    # not satisfy Qdrant's RFC3339 datetime range, and a FieldCondition with
-    # `match=None` is rejected by qdrant-client. Filtering post-retrieval keeps
-    # behaviour consistent between the Qdrant payload and the PostgreSQL
-    # `date_extracted` column, and avoids silently dropping date-filtered
-    # queries when a chunk's date is unparseable.
     date_from_norm = _normalize_iso_date(date_from) if date_from else None
     date_to_norm = _normalize_iso_date(date_to) if date_to else None
+
+    # Date range filtering natively in Qdrant using the indexed `date_int` field
+    if date_from_norm:
+        try:
+            from_int = int(date_from_norm.replace("-", ""))
+            must_conditions.append(FieldCondition(key="date_int", range=Range(gte=float(from_int))))
+        except Exception as e:
+            print(f"Warning: could not parse date_from to int: {e}")
+    if date_to_norm:
+        try:
+            to_int = int(date_to_norm.replace("-", ""))
+            must_conditions.append(FieldCondition(key="date_int", range=Range(lte=float(to_int))))
+        except Exception as e:
+            print(f"Warning: could not parse date_to to int: {e}")
 
     query_filter = Filter(must=must_conditions) if must_conditions else None
 
@@ -365,20 +371,6 @@ def _normalize_iso_date(value) -> str | None:
     except (ValueError, TypeError):
         return None
     return None
-
-
-def _text_similarity(text1: str, text2: str) -> float:
-    """Simple Jaccard similarity between two texts (for MMR diversity check).
-
-    This avoids re-embedding just for diversity calculation.
-    """
-    words1 = set(text1.lower().split())
-    words2 = set(text2.lower().split())
-    if not words1 or not words2:
-        return 0.0
-    intersection = words1 & words2
-    union = words1 | words2
-    return len(intersection) / len(union)
 
 
 def format_context_for_llm(results: list[dict]) -> str:
