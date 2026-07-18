@@ -22,7 +22,7 @@ DEFAULT_DB_CONFIG = {
     "port": 5432,
     "dbname": "olmocr_rag",
     "user": "olmocr",
-    "password": "",
+    "password": "pg_pass_5c6d3284f18b90a6e2d8",
 }
 
 _connection_pool = None
