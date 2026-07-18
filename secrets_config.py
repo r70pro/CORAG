@@ -11,9 +11,12 @@ import os
 # Credentials are resolved from the environment first. These are the same
 # variable names consumed by docker-compose.rag.yml, so the app and the
 # containers stay in sync without duplicating plaintext.
-DEFAULT_DB_PASSWORD = os.environ.get("OLMOCR_PG_PASS", "change_me_in_production")
-DEFAULT_MINIO_ACCESS_KEY = os.environ.get("OLMOCR_MINIO_ACCESS_KEY", "change_me_minio_user")
-DEFAULT_MINIO_SECRET_KEY = os.environ.get("OLMOCR_MINIO_SECRET_KEY", "change_me_minio_secret")
+UNSAFE_DEFAULT_DB_PASSWORD = "change_me_in_production"
+UNSAFE_DEFAULT_MINIO_SECRET_KEY = "change_me_minio_secret"
+
+DEFAULT_DB_PASSWORD = UNSAFE_DEFAULT_DB_PASSWORD
+DEFAULT_MINIO_ACCESS_KEY = "change_me_minio_user"
+DEFAULT_MINIO_SECRET_KEY = UNSAFE_DEFAULT_MINIO_SECRET_KEY
 
 
 def get_db_password() -> str:
@@ -31,6 +34,6 @@ def get_minio_secret_key() -> str:
 def credentials_are_default() -> bool:
     """Return True if any backing-service credential is still the unsafe default."""
     return (
-        get_db_password() == DEFAULT_DB_PASSWORD
-        or get_minio_secret_key() == DEFAULT_MINIO_SECRET_KEY
+        get_db_password() == UNSAFE_DEFAULT_DB_PASSWORD
+        or get_minio_secret_key() == UNSAFE_DEFAULT_MINIO_SECRET_KEY
     )
