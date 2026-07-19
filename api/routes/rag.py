@@ -126,12 +126,17 @@ async def upload_markdown(
 
     from indexing_service import CorpusIndexingService
 
-    # Write uploaded files to a temp dir so the indexer can read them
+    # Write uploaded files to a temp dir so the indexer can read them.
+    # Sanitise the client-supplied filename via basename so a path like
+    # "../../evil.md" cannot escape the temp dir and overwrite arbitrary files.
     temp_dir = tempfile.mkdtemp()
     saved_paths = []
     try:
         for upload in files:
-            path = os.path.join(temp_dir, upload.filename)
+            safe_name = os.path.basename(upload.filename or "").strip()
+            if not safe_name or "/" in safe_name or "\\" in safe_name or ".." in safe_name:
+                continue
+            path = os.path.join(temp_dir, safe_name)
             content = await upload.read()
             with open(path, "wb") as f:
                 f.write(content)

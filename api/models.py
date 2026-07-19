@@ -90,13 +90,6 @@ class IndexRunRequest(BaseModel):
     run_dir: str = Field(..., description="Absolute path to the run directory")
 
 
-class UploadMarkdownRequest(BaseModel):
-    """Metadata for uploading external markdown files."""
-
-    case_option: str = Field("new", description="'new' or an existing case label")
-    new_case_name: str = ""
-
-
 class CorpusStatsResponse(BaseModel):
     """Corpus-level aggregate statistics."""
 

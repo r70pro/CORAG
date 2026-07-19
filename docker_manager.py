@@ -111,6 +111,9 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len):
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(f"HF_TOKEN={hf_token}\n")
             fh.write("PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True\n")
+            # Newer vLLM releases reject max_model_len values above the model's
+            # derived maximum. Allow the app's configured value to override it.
+            fh.write("VLLM_ALLOW_LONG_MAX_MODEL_LEN=1\n")
         env_file = env_path
 
         cmd = [
