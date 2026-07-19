@@ -19,6 +19,8 @@ import argparse
 import json
 import sys
 
+import settings_manager  # noqa: F401
+
 
 def _print_json(data: dict | list) -> None:
     """Pretty-print a JSON-serialisable object."""

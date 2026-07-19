@@ -87,11 +87,9 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len):
         port_int = int(port)
     except (TypeError, ValueError):
         port_int = 8000
-    if status in ["running", "exited"]:
+    if status != "not_found" and status != "error":
         try:
-            if status == "running":
-                subprocess.run(["docker", "stop", "olmocr"], check=True, capture_output=True)
-            subprocess.run(["docker", "rm", "olmocr"], check=True, capture_output=True)
+            subprocess.run(["docker", "rm", "-f", "olmocr"], check=True, capture_output=True)
         except subprocess.CalledProcessError as e:
             return False, f"Failed to remove existing container: {e.stderr.decode().strip()}"
 
@@ -140,6 +138,8 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len):
             f"{float(gpu_mem):.2f}",
             "--max_model_len",
             str(int(max_model_len)),
+            "--max-num-batched-tokens",
+            str(max(int(max_model_len), 4096)),
         ]
         try:
             subprocess.run(cmd, check=True, capture_output=True, text=True)

@@ -184,7 +184,7 @@ class TestDockerManager(unittest.TestCase):
         self.assertTrue("Failed to remove existing container" in msg)
 
         # Case: create command failed
-        mock_run.side_effect = [MagicMock(returncode=0), MagicMock(returncode=0), subprocess.CalledProcessError(1, "docker run", stderr=b"bad flag")]
+        mock_run.side_effect = [MagicMock(returncode=0), subprocess.CalledProcessError(1, "docker run", stderr=b"bad flag")]
         success, msg = docker_manager.create_docker_container("token", 8000, "model", 0.8, 16000)
         self.assertFalse(success)
 
