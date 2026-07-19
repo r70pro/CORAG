@@ -107,12 +107,12 @@ class TestPdfManager(unittest.TestCase):
         process_state.active_runs["run1"] = {"run_dir": "/tmp/run"}
         
         res = pdf_manager.on_file_selected("doc.md", "run1")
-        # Returns (pdf_path, total_pages, page_ranges, full_markdown, gr.update(...), pdf_path)
+        # Returns (pdf_path, total_pages, page_ranges, full_markdown, gr.update(...), file_path)
         self.assertEqual(res[0], "/tmp/doc.pdf")
         self.assertEqual(res[1], 2)
         self.assertEqual(res[2], [[0, 10, 1]])
         self.assertEqual(res[3], "hello markdown text")
-        self.assertEqual(res[5], "/tmp/doc.pdf")
+        self.assertEqual(res[5], "/tmp/run/markdown/inputs/doc.md")
         
         process_state.active_runs.clear()
 

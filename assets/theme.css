@@ -575,6 +575,8 @@ input[role="combobox"] {
     display: flex !important;
     flex-direction: column !important;
     justify-content: space-between !important;
+    flex-wrap: nowrap !important;
+    overflow-y: auto !important;
 }
 
 @media (min-width: 768px) {
@@ -1131,3 +1133,34 @@ input[role="combobox"] {
 #selected-cases-input {
     display: none !important;
 }
+
+/* ── UI Layout & Overlap Fixes ───────────────── */
+
+/* 1. Sidebar footer container layout fix */
+.sidebar-footer-container {
+    min-width: 100% !important;
+    width: 100% !important;
+    flex-grow: 0 !important;
+    height: auto !important;
+    margin-top: auto !important;
+}
+
+/* 2. Checkbox text wrap fix to prevent horizontal overflow/overlap */
+.block.type-checkbox label span {
+    white-space: normal !important;
+    word-break: break-word !important;
+}
+
+/* 3. Text label vertical spacing fix */
+.svelte-1hguek3 span[data-testid="block-info"],
+.svelte-jdcl7l {
+    margin-bottom: 6px !important;
+    display: inline-block !important;
+}
+
+/* 4. Top-right actions column spacing fix */
+.diagnostics-actions-col {
+    min-width: 340px !important;
+    max-width: 400px !important;
+}
+

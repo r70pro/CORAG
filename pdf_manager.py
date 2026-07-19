@@ -165,6 +165,7 @@ def on_file_selected(selected_file, run_id_state):
 
     pdf_path, total_pages, page_ranges = get_page_mapping_and_pdf_path(selected_file, run_id_state)
 
+    file_path = None
     full_markdown = ""
     with process_state.active_runs_lock:
         run_info = process_state.active_runs.get(run_id_state)
@@ -185,7 +186,7 @@ def on_file_selected(selected_file, run_id_state):
         page_ranges or [],
         full_markdown,
         {"maximum": max(2, total_pages), "value": 1, "interactive": (total_pages > 1)},
-        pdf_path,
+        file_path,
     )
 
 

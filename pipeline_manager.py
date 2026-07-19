@@ -329,6 +329,7 @@ def process_pdfs(
     completed_file_indices = set()
     failed_file_indices = set()
     start_time = time.monotonic()
+    hundred_percent_start_time = None
 
     current_headers = None
     worker_states = {}
@@ -369,6 +370,19 @@ def process_pdfs(
 
     try:
         while t.is_alive() or not q.empty():
+            if total_pages > 0 and completed_pages >= total_pages:
+                if hundred_percent_start_time is None:
+                    hundred_percent_start_time = time.monotonic()
+                elif time.monotonic() - hundred_percent_start_time > 10.0:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    break
+            else:
+                hundred_percent_start_time = None
+
             with process_state.active_runs_lock:
                 if (
                     run_id in process_state.active_runs
@@ -555,7 +569,7 @@ def process_pdfs(
 
         elapsed = time.monotonic() - start_time
 
-        if exit_code == 0:
+        if exit_code == 0 or (total_pages > 0 and completed_pages >= total_pages):
             status_text = "<span class='badge-success'>Success</span>"
         else:
             status_text = "<span class='badge-failed'>Failed</span>"

@@ -193,6 +193,7 @@ class TestPDFManagerAll(unittest.TestCase):
         self.assertEqual(total, 5)
         self.assertEqual(ranges, [[0, 10, 1]])
         self.assertEqual(content, "page 1 text")
+        self.assertEqual(preview_path, os.path.join(self.tmp_dir, "markdown", "inputs", "doc.md"))
 
         # 3. File reading exception
         with patch("builtins.open", side_effect=Exception("Read fail")):
