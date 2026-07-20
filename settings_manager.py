@@ -115,6 +115,9 @@ def load_settings():
         try:
             with open(SETTINGS_FILE) as f:
                 user_settings = json.load(f)
+                # Avoid overwriting hf_token with an empty string if env has a token
+                if "hf_token" in user_settings and not user_settings["hf_token"] and defaults.get("hf_token"):
+                    user_settings.pop("hf_token")
                 defaults.update(user_settings)
         except Exception as e:
             print(f"Error loading settings: {e}")
