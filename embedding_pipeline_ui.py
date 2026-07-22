@@ -10,6 +10,7 @@ Provides a dedicated workspace for Stage 2 Dense Vector Embedding:
 """
 
 import gradio as gr
+
 from rag.embedding import get_collection_info, get_collection_name
 from rag_ui_handlers import (
     get_available_runs,

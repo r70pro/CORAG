@@ -355,7 +355,7 @@ def get_gpu_metrics_data() -> dict[str, Any]:
             lines = res.stdout.strip().split("\n")
             parts = lines[0].split(",")
             gpu_name = parts[0].strip()
-            
+
             raw_used = parts[1].strip() if len(parts) > 1 else ""
             raw_total = parts[2].strip() if len(parts) > 2 else ""
 

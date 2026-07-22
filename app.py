@@ -23,7 +23,6 @@ from app_handlers import (
 
 # Resets & Space metrics
 from cleanup_manager import format_size, get_dir_size, perform_reset_cleanup  # noqa: F401
-from embedding_pipeline_ui import build_embedding_pipeline_ui
 
 # Docker Container operations
 from docker_manager import (  # noqa: F401
@@ -36,6 +35,7 @@ from docker_manager import (  # noqa: F401
     start_docker_container,
     stop_docker_container,
 )
+from embedding_pipeline_ui import build_embedding_pipeline_ui
 
 # HTML templates
 from html_utils import (  # noqa: F401

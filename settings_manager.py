@@ -2,6 +2,7 @@ import json
 import os
 import sys
 
+
 # Wrap stdout/stderr to prevent crash with [Errno 5] Input/output error
 # when running detached from a terminal.
 class SafeStream:
