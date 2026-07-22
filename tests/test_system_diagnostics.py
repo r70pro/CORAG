@@ -127,6 +127,50 @@ class TestSystemDiagnostics(unittest.TestCase):
         mock_run.side_effect = Exception("Docker command failed")
         res = system_diagnostics.get_vllm_loading_progress()
         self.assertIsNone(res)
+        mock_run.side_effect = None
+
+        # 7. Autotuning active progress match
+        log_autotune = "Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 32.59profile/s]"
+        mock_run.return_value = MagicMock(returncode=0, stdout=log_autotune)
+        res = system_diagnostics.get_vllm_loading_progress()
+        self.assertEqual(res["shards_loaded"], "Tuning")
+        self.assertEqual(res["shards_total"], "Active")
+        self.assertEqual(res["eta"], "Autotuning FP4 GEMM (7/16)")
+
+        # 8. Autotuning start match
+        log_autotune_start = "Autotuning process starts ..."
+        mock_run.return_value = MagicMock(returncode=0, stdout=log_autotune_start)
+        res = system_diagnostics.get_vllm_loading_progress()
+        self.assertEqual(res["shards_loaded"], "Tuning")
+        self.assertEqual(res["eta"], "Autotuning FP4 GEMM starting...")
+
+        # 9. Profiling/warmup match
+        log_warmup = "Initial profiling/warmup run took 13.87 s"
+        mock_run.return_value = MagicMock(returncode=0, stdout=log_warmup)
+        res = system_diagnostics.get_vllm_loading_progress()
+        self.assertEqual(res["shards_loaded"], "Warmup")
+        self.assertEqual(res["eta"], "Warming up engine...")
+
+        # 10. Compiling graph match
+        log_compile = "Compiling a graph for compile range"
+        mock_run.return_value = MagicMock(returncode=0, stdout=log_compile)
+        res = system_diagnostics.get_vllm_loading_progress()
+        self.assertEqual(res["shards_loaded"], "Compile")
+        self.assertEqual(res["eta"], "Compiling model graphs & CUDA PTX (torch.compile)...")
+
+        # 10b. Torch compile complete match
+        log_compile_done = "torch.compile took 644.12 s in total"
+        mock_run.return_value = MagicMock(returncode=0, stdout=log_compile_done)
+        res = system_diagnostics.get_vllm_loading_progress()
+        self.assertEqual(res["shards_loaded"], "Compile")
+        self.assertEqual(res["eta"], "Compilation complete! Initializing engine & KV cache...")
+
+        # 11. Model weight loading match
+        log_init = "Loading weights took 65.70 seconds"
+        mock_run.return_value = MagicMock(returncode=0, stdout=log_init)
+        res = system_diagnostics.get_vllm_loading_progress()
+        self.assertEqual(res["shards_loaded"], "Init")
+        self.assertEqual(res["eta"], "Initializing engine...")
 
     @patch("system_diagnostics.get_service_latency")
     @patch("system_diagnostics.get_vllm_loading_progress")
@@ -288,6 +332,48 @@ class TestSystemDiagnostics(unittest.TestCase):
                 self.assertEqual(res["processes"][1]["type_text"], "System Graphics")
                 # Process 333 should map to Application
                 self.assertEqual(res["processes"][2]["type_text"], "Application")
+
+    @patch("subprocess.run")
+    @patch("system_diagnostics.get_docker_containers")
+    def test_get_gpu_metrics_data_gb10_na_handling(self, mock_docker, mock_run):
+        mock_docker.return_value = {"c_vllm": "olmocr"}
+
+        mock_torch = MagicMock()
+        mock_torch.cuda.is_available.return_value = True
+        mock_torch.cuda.get_device_name.return_value = "NVIDIA GB10"
+        mock_torch.cuda.get_device_properties.return_value = MagicMock(total_memory=124610 * 1024 * 1024)
+        mock_torch.cuda.memory_allocated.return_value = 2168 * 1024 * 1024
+
+        smi_query_out = "NVIDIA GB10, [N/A], [N/A]"
+        smi_proc_section = """
++-----------------------------------------------------------------------------+
+| Processes:                                                                  |
++-----------------------------------------------------------------------------+
+|  GPU   GI   CI        PID   Type   Process name                             |
+|=============================================================================|
+|    0   N/A  N/A   1499941      C   VLLM::EngineCore                    83146MiB |
+|    0   N/A  N/A    167924      C   python: app.py                       4701MiB |
++-----------------------------------------------------------------------------+
+"""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=smi_query_out),
+            MagicMock(returncode=0, stdout=smi_proc_section),
+        ]
+
+        def mock_resolve(pid, name):
+            if pid == 1499941:
+                return "VLLM::EngineCore", True, "c_vllm"
+            else:
+                return "python app.py", False, ""
+
+        with patch.dict(sys.modules, {"torch": mock_torch}):
+            with patch("system_diagnostics.resolve_process_details", mock_resolve):
+                res = system_diagnostics.get_gpu_metrics_data()
+                self.assertTrue(res["cuda_available"])
+                self.assertEqual(res["gpu_name"], "NVIDIA GB10")
+                # vram_used should prioritize active process sum (83146 + 4701 = 87847) over local PyTorch allocation (2168)
+                self.assertEqual(res["vram_used"], 87847.0)
+                self.assertLessEqual(res["vram_potential_free"], res["vram_total"])
 
     @patch("system_diagnostics.check_backing_services_data")
     @patch("system_diagnostics.get_gpu_metrics_data")

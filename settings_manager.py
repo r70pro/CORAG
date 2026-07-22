@@ -1,5 +1,49 @@
 import json
 import os
+import sys
+
+# Wrap stdout/stderr to prevent crash with [Errno 5] Input/output error
+# when running detached from a terminal.
+class SafeStream:
+    def __init__(self, original):
+        self.original = original
+
+    def write(self, data):
+        if self.original:
+            try:
+                self.original.write(data)
+            except OSError as e:
+                if e.errno == 5:  # EIO
+                    pass
+                else:
+                    raise
+            except Exception:
+                pass
+
+    def flush(self):
+        if self.original:
+            try:
+                self.original.flush()
+            except OSError as e:
+                if e.errno == 5:
+                    pass
+                else:
+                    raise
+            except Exception:
+                pass
+
+    def isatty(self):
+        try:
+            return self.original.isatty()
+        except Exception:
+            return False
+
+    def __getattr__(self, name):
+        return getattr(self.original, name)
+
+sys.stdout = SafeStream(sys.stdout)
+sys.stderr = SafeStream(sys.stderr)
+
 
 # Load .env file manually if it exists
 dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -102,7 +146,8 @@ def load_settings():
         "analysis_model_name": "nvidia/Phi-4-reasoning-plus-NVFP4",
         "analysis_server_url": "http://localhost:8000/v1",
         "embedding_model": "BAAI/bge-large-en-v1.5",
-        "embedding_device": "cpu",
+        "embedding_device": "auto",
+        "embedding_batch_size": 64,
         "chunk_size": 800,
         "chunk_overlap": 100,
         "retrieval_top_k": 15,

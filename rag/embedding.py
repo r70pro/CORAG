@@ -90,13 +90,15 @@ def is_healthy():
         return False
 
 
-def load_embedding_model(model_name=None):
+def load_embedding_model(model_name=None, device=None):
     """Load the sentence-transformer embedding model.
 
-    Uses lazy loading with singleton pattern.
+    Uses lazy loading with singleton pattern. Auto-selects CUDA if available
+    unless explicitly set to CPU.
 
     Args:
         model_name: HuggingFace model name. Defaults to BAAI/bge-large-en-v1.5.
+        device: Device to load model on ('cuda', 'cpu', 'auto', or None).
 
     Returns:
         The loaded SentenceTransformer model.
@@ -109,6 +111,19 @@ def load_embedding_model(model_name=None):
         except Exception:
             model_name = os.environ.get("OLMOCR_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
 
+    if device is None:
+        try:
+            device = load_settings().get("embedding_device")
+        except Exception:
+            device = None
+        if not device:
+            device = os.environ.get("OLMOCR_EMBEDDING_DEVICE")
+
+    if not device or device == "auto":
+        import torch
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
     if _embedding_model is not None and _embedding_model_name == model_name:
         return _embedding_model
 
@@ -118,7 +133,6 @@ def load_embedding_model(model_name=None):
 
         from sentence_transformers import SentenceTransformer
 
-        device = os.environ.get("OLMOCR_EMBEDDING_DEVICE", "cpu")
         print(f"Loading embedding model '{model_name}' on {device}...")
         _embedding_model = SentenceTransformer(model_name, device=device)
         _embedding_model_name = model_name
@@ -132,8 +146,8 @@ def get_embedding_dimension(model_name=None):
     return model.get_embedding_dimension()
 
 
-def encode_texts(texts: list[str], model_name=None, batch_size=32) -> list[list[float]]:
-    """Encode a list of texts into dense vectors.
+def encode_texts(texts: list[str], model_name=None, batch_size=64) -> list[list[float]]:
+    """Encode a list of texts into dense vectors with bulk caching and acceleration.
 
     Args:
         texts: List of text strings to encode.
@@ -165,17 +179,17 @@ def encode_texts(texts: list[str], model_name=None, batch_size=32) -> list[list[
     uncached_texts = []
 
     if redis_healthy:
-        for idx, text in enumerate(texts):
-            try:
-                cached_val = cache.get_cached_embedding(text, model_name)
+        try:
+            cached_vals = cache.get_cached_embeddings_bulk(texts, model_name)
+            for idx, (text, cached_val) in enumerate(zip(texts, cached_vals, strict=False)):
                 if cached_val is not None:
                     embeddings[idx] = cached_val
                 else:
                     uncached_indices.append(idx)
                     uncached_texts.append(text)
-            except Exception:
-                uncached_indices.append(idx)
-                uncached_texts.append(text)
+        except Exception:
+            uncached_indices = list(range(len(texts)))
+            uncached_texts = texts
     else:
         uncached_indices = list(range(len(texts)))
         uncached_texts = texts
@@ -193,13 +207,15 @@ def encode_texts(texts: list[str], model_name=None, batch_size=32) -> list[list[
         for idx, new_idx in enumerate(uncached_indices):
             emb = new_embeddings_list[idx]
             embeddings[new_idx] = emb
-            if redis_healthy:
-                try:
-                    cache.cache_embedding(uncached_texts[idx], emb, model_name)
-                except Exception:
-                    pass
+
+        if redis_healthy:
+            try:
+                cache.cache_embeddings_bulk(uncached_texts, new_embeddings_list, model_name)
+            except Exception:
+                pass
 
     return embeddings
+
 
 
 def encode_query(query: str, model_name=None) -> list[float]:
@@ -460,16 +476,27 @@ def upsert_chunks_generator(
             )
         )
 
-    # 3. Upsert in batches
+    # 3. Upsert in batches with exponential backoff retries
+    import time
+
     for i in range(0, len(points), batch_size):
         batch = points[i : i + batch_size]
-        client.upsert(
-            collection_name=collection_name,
-            points=batch,
-        )
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                client.upsert(
+                    collection_name=collection_name,
+                    points=batch,
+                )
+                break
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise e
+                time.sleep(0.5 * (2**attempt))
         yield {"stage": "indexing", "current": min(i + batch_size, total), "total": total}
 
     print(f"Upserted {len(points)} vectors into Qdrant collection '{collection_name}'.")
+
 
 
 def upsert_chunks(chunks: list[dict], model_name=None, batch_size=32) -> list[dict]:

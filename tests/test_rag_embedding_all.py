@@ -265,8 +265,8 @@ class TestRAGEmbeddingAll(unittest.TestCase):
             self.assertEqual(res, "fake_inner_reranker")
 
     @patch("rag.cache.is_healthy")
-    @patch("rag.cache.get_cached_embedding")
-    @patch("rag.cache.cache_embedding")
+    @patch("rag.cache.get_cached_embeddings_bulk")
+    @patch("rag.cache.cache_embeddings_bulk")
     @patch("sentence_transformers.SentenceTransformer")
     def test_encode_texts_caching_and_exceptions(self, mock_transformer, mock_cache_write, mock_cache_read, mock_cache_healthy):
         # Setup mock model
@@ -277,7 +277,7 @@ class TestRAGEmbeddingAll(unittest.TestCase):
 
         # Baseline: Redis is down
         mock_cache_healthy.return_value = False
-        mock_cache_read.return_value = None
+        mock_cache_read.return_value = [None]
 
         # 1. cache.is_healthy raises Exception (lines 160-161)
         mock_cache_healthy.side_effect = Exception("Redis crash")
@@ -288,10 +288,10 @@ class TestRAGEmbeddingAll(unittest.TestCase):
         # 2. redis_healthy is True, but cache read returns None (miss) (lines 174-175)
         mock_cache_healthy.side_effect = None
         mock_cache_healthy.return_value = True
-        mock_cache_read.return_value = None
+        mock_cache_read.return_value = [None]
         rag_emb._embedding_model = None
         res = rag_emb.encode_texts(["text1"], "my_model")
-        mock_cache_write.assert_called_with("text1", [0.9, 0.9], "my_model")
+        mock_cache_write.assert_called_with(["text1"], [[0.9, 0.9]], "my_model")
 
         # 3. redis_healthy is True, but cache read raises Exception (lines 176-178)
         mock_cache_read.side_effect = Exception("Read failed")
@@ -301,7 +301,7 @@ class TestRAGEmbeddingAll(unittest.TestCase):
 
         # 4. redis_healthy is True, but cache write raises Exception (lines 199-200)
         mock_cache_read.side_effect = None
-        mock_cache_read.return_value = None
+        mock_cache_read.return_value = [None]
         mock_cache_write.side_effect = Exception("Write failed")
         rag_emb._embedding_model = None
         res = rag_emb.encode_texts(["text1"], "my_model")
@@ -309,12 +309,12 @@ class TestRAGEmbeddingAll(unittest.TestCase):
         mock_cache_write.side_effect = None
 
         # 5. redis_healthy is True, cache read returns cached value (hit) (line 172)
-        mock_cache_read.return_value = [0.5, 0.5]
+        mock_cache_read.return_value = [[0.5, 0.5]]
         res = rag_emb.encode_texts(["text1"], "my_model")
         self.assertEqual(res, [[0.5, 0.5]])
 
         # 6. redis_healthy is True, all texts are cached (empty uncached_texts, line 183->202 branch)
-        mock_cache_read.return_value = [0.6, 0.6]
+        mock_cache_read.return_value = [[0.6, 0.6]]
         res = rag_emb.encode_texts(["text1"], "my_model")
         self.assertEqual(res, [[0.6, 0.6]])
 

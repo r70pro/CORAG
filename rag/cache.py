@@ -191,6 +191,55 @@ def get_cached_embedding(text, model_name):
     return None
 
 
+def get_cached_embeddings_bulk(texts: list[str], model_name: str) -> list[list[float] | None]:
+    """Retrieve cached embeddings for a list of texts in a single Redis roundtrip.
+
+    Args:
+        texts: List of source text strings.
+        model_name: The embedding model used.
+
+    Returns:
+        List of embedding vectors (or None for cache misses).
+    """
+    if not texts:
+        return []
+    client = get_client()
+    keys = [PREFIX_EMBEDDING + _make_hash(f"{model_name}:{t}") for t in texts]
+    results = client.mget(keys)
+    res_list = []
+    for raw in results:
+        if raw:
+            try:
+                res_list.append(json.loads(raw))
+            except Exception:
+                res_list.append(None)
+        else:
+            res_list.append(None)
+    return res_list
+
+
+def cache_embeddings_bulk(
+    texts: list[str], embeddings: list[list[float]], model_name: str, ttl=EMBEDDING_CACHE_TTL
+):
+    """Cache multiple text embeddings in a single Redis pipeline.
+
+    Args:
+        texts: List of source texts.
+        embeddings: Corresponding list of embedding vectors.
+        model_name: The embedding model used.
+        ttl: Time-to-live in seconds.
+    """
+    if not texts or not embeddings:
+        return
+    client = get_client()
+    pipe = client.pipeline()
+    for text, emb in zip(texts, embeddings, strict=False):
+        key = PREFIX_EMBEDDING + _make_hash(f"{model_name}:{text}")
+        pipe.set(key, json.dumps(emb), ex=ttl)
+    pipe.execute()
+
+
+
 # ── Chat session history ──────────────────────────────────────
 
 

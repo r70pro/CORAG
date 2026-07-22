@@ -50,19 +50,20 @@ def select_view(active_view_idx):
         "<h1 class='inline-header-title'>Ingestion Pipeline</h1><p class='inline-header-subtitle'>Upload and process documents through the OCR pipeline</p>",
         "<h1 class='inline-header-title'>Layout Inspector</h1><p class='inline-header-subtitle'>Verify visual text extraction accuracy side-by-side</p>",
         "<h1 class='inline-header-title'>Case Dashboard</h1><p class='inline-header-subtitle'>Overview of ingested case folders and databases</p>",
+        "<h1 class='inline-header-title'>Embedding & Vector Pipeline</h1><p class='inline-header-subtitle'>Manage Stage 2 dense vector embedding, device acceleration, and Qdrant storage</p>",
         "<h1 class='inline-header-title'>RAG Processing (Query & Cite)</h1><p class='inline-header-subtitle'>Query, summarize, and retrieve matching citations</p>",
         "<h1 class='inline-header-title'>System Diagnostics</h1><p class='inline-header-subtitle'>Service health, GPU telemetry & cleanup management.</p>",
     ]
 
     btn_updates = []
-    for i in range(5):
+    for i in range(6):
         if i == active_view_idx:
             btn_updates.append(gr.update(elem_classes=["nav-btn", "active-nav-btn"]))
         else:
             btn_updates.append(gr.update(elem_classes=["nav-btn"]))
 
     view_updates = []
-    for i in range(5):
+    for i in range(6):
         view_updates.append(gr.update(visible=(i == active_view_idx)))
 
     return [gr.update(value=titles[active_view_idx])] + btn_updates + view_updates

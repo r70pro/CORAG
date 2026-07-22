@@ -23,6 +23,7 @@ from app_handlers import (
 
 # Resets & Space metrics
 from cleanup_manager import format_size, get_dir_size, perform_reset_cleanup  # noqa: F401
+from embedding_pipeline_ui import build_embedding_pipeline_ui
 
 # Docker Container operations
 from docker_manager import (  # noqa: F401
@@ -143,6 +144,9 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
             )
             rag_dashboard_btn = gr.Button(
                 "📊 Case Dashboard", variant="secondary", elem_classes=["nav-btn"]
+            )
+            embedding_pipeline_btn = gr.Button(
+                "🧠 Embedding Pipeline", variant="secondary", elem_classes=["nav-btn"]
             )
             rag_chat_btn = gr.Button(
                 "💬 RAG Processing", variant="secondary", elem_classes=["nav-btn"]
@@ -429,13 +433,19 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                 dash_components = build_case_dashboard_ui()
 
             # ────────────────────────────────────────────────────────
-            # PANEL 4: RAG Processing
+            # PANEL 4: Embedding Pipeline
+            # ────────────────────────────────────────────────────────
+            with gr.Column(visible=False) as embedding_pipeline_panel:
+                embed_components = build_embedding_pipeline_ui()
+
+            # ────────────────────────────────────────────────────────
+            # PANEL 5: RAG Processing
             # ────────────────────────────────────────────────────────
             with gr.Column(visible=False) as rag_chat_panel:
                 chat_components = build_rag_chat_ui()
 
             # ────────────────────────────────────────────────────────
-            # PANEL 5: System Diagnostics
+            # PANEL 6: System Diagnostics
             # ────────────────────────────────────────────────────────
             with gr.Column(visible=False) as diagnostics_panel:
                 # Top header bar: status info and quick buttons
@@ -538,11 +548,13 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
         ingestion_btn,
         inspector_btn,
         rag_dashboard_btn,
+        embedding_pipeline_btn,
         rag_chat_btn,
         diagnostics_btn,
         ingestion_panel,
         inspector_panel,
         rag_dashboard_panel,
+        embedding_pipeline_panel,
         rag_chat_panel,
         diagnostics_panel,
     ]
@@ -557,10 +569,13 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
             dash_components["dashboard_status"],
         ],
     )
-    rag_chat_btn.click(lambda: select_view(3), outputs=nav_outputs).then(
+    embedding_pipeline_btn.click(lambda: select_view(3), outputs=nav_outputs).then(
+        embed_components["refresh_fn"], outputs=[embed_components["telemetry_comp"]]
+    )
+    rag_chat_btn.click(lambda: select_view(4), outputs=nav_outputs).then(
         chat_components["refresh_fn"], outputs=[chat_components["active_case_selector"]]
     )
-    diagnostics_btn.click(lambda: select_view(4), outputs=nav_outputs)
+    diagnostics_btn.click(lambda: select_view(5), outputs=nav_outputs)
 
     # Comfortable vs Compact Layout spacing handlers
     btn_comfortable.click(

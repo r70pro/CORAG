@@ -17,7 +17,7 @@ The diagram below illustrates how unstructured clinical and legal records are in
 ```mermaid
 flowchart TD
     subgraph UI ["User Interfaces"]
-        UI_Gradio["Gradio Web Dashboard<br/>(app.py / rag_ui.py)"]
+        UI_Gradio["Gradio Web Dashboard<br/>(app.py / rag_ui.py / embedding_pipeline_ui.py)"]
         UI_API["FastAPI REST Server<br/>(api/main.py / /api/*)"]
         UI_CLI["Command-Line Interface<br/>(cli.py)"]
     end
@@ -67,7 +67,7 @@ flowchart TD
         Core_RAG -->|Encode query vector| M["Query Embedding"]
         M -->|"Filtered similarity search<br/>(run_id, author, date, doc_type)"| K
         K -->|Dense candidate chunks| N["MMR Re-ranking<br/>+ Jaccard Diversity"]
-        N -->|Enriched with PG metadata| O["Grounded Context Blocks<br/>[Source N] | File | Page | Author | Date"]
+        N -->|Enriched with PG metadata| O["Grounded Context Blocks<br/>File | Page Range | Author | Doc Type | Ref Details"]
     end
 
     subgraph Generation ["5. Local LLM Analysis & Outputs"]
@@ -227,30 +227,29 @@ After processing completes, the results are immediately available for review.
 
 ---
 
-### Phase 3: Choosing the Embedding Model
+### Phase 3: Stage 2 Embedding Engine & Hardware Acceleration
 
-Before indexing, the Markdown content must be converted into numerical vectors for semantic search. The choice of embedding model directly impacts retrieval quality.
+Before indexing, Markdown content is converted into dense 1,024-dimensional vector representations for semantic search. In the **KIRAG** workstation, Stage 2 Embedding runs as a dedicated standalone workspace ([`embedding_pipeline_ui.py`](file:///home/owner/KIRAG/embedding_pipeline_ui.py)), accessible directly via the main left sidebar navigation (**`🧠 Embedding Pipeline`**).
 
 *   **Embedding Client**: Powered by HuggingFace `sentence-transformers` ([rag/embedding.py](file:///home/owner/KIRAG/rag/embedding.py)).
-*   **Singleton Pattern**: The model is loaded once and cached in memory via [load_embedding_model()](file:///home/owner/KIRAG/rag/embedding.py#L90-L125). Switching models triggers a reload.
-*   **Device Control**: Runs on CPU by default (`OLMOCR_EMBEDDING_DEVICE=cpu`) to avoid competing with the vLLM GPU inference engine.
-*   **Default Model**: `BAAI/bge-large-en-v1.5` (1024 dimensions) — selected for its superior accuracy with complex medical and legal terminology.
+*   **Singleton & Device Control**: The model auto-detects CUDA hardware (`embedding_device: "auto"`) for up to **50x–100x GPU acceleration** (~172 chunks/sec on NVIDIA GB10). Users can toggle between `⚡ Auto CUDA GPU`, `🚀 CUDA GPU Dedicated`, or `💻 CPU Mode`.
+*   **Batch Size Slider**: Interactive slider (16 to 512, default 64) for tuning GPU memory utilization and throughput.
+*   **Redis Bulk Pipeline Caching**: Uses Redis `mget` and pipeline `mset` ([rag/cache.py](file:///home/owner/KIRAG/rag/cache.py)) for sub-millisecond vector lookup cache hits.
+*   **Default Model**: `BAAI/bge-large-en-v1.5` (1024 dimensions) — selected for superior accuracy with complex medical and legal terminology.
 
-| Model | Dimensions | Speed | Accuracy | Best For |
+| Model | Dimensions | Speed (CUDA) | Accuracy | Best For |
 |:---|:---:|:---:|:---:|:---|
-| `BAAI/bge-large-en-v1.5` | 1024 | 🐢 Slower | **Excellent** | **Default & Recommended**: Complex medical jargon, legal arguments, multi-clinician records |
-| `sentence-transformers/all-MiniLM-L6-v2` | 384 | ⚡ Fast | Good | Quick prototyping, short documents (can be added manually via custom value) |
+| `BAAI/bge-large-en-v1.5` | 1024 | ⚡ Fast (172/s) | **Excellent** | **Default & Recommended**: Complex medical jargon, legal arguments, multi-clinician records |
+| `sentence-transformers/all-MiniLM-L6-v2` | 384 | ⚡ Ultra-Fast | Good | Quick prototyping, short documents |
 
-**Collision Prevention**: Different embedding models produce vectors of different dimensionality. The system automatically isolates collections using [get_collection_name(model_name)](file:///home/owner/KIRAG/rag/embedding.py#L38-L54). For example:
-* `all-MiniLM-L6-v2` → collection `olmocr_documents_all-minilm-l6-v2`
-* `BAAI/bge-large-en-v1.5` → collection `olmocr_documents_baaibge-large-en-v1.5`
-
-This prevents data corruption or vector dimension clashes in Qdrant when switching between models.
+**Collision Prevention**: Different embedding models produce vectors of different dimensionality. The system automatically isolates collections using [get_collection_name(model_name)](file:///home/owner/KIRAG/rag/embedding.py#L38-L54) (e.g. `olmocr_documents_baaibge-large-en-v1.5`).
 
 **Routine:**
-1. Expand **⚙️ Analysis Settings** in the RAG sidebar.
-2. Select the embedding model from the **Embedding Model Name** dropdown.
-3. Click **💾 Save Analysis Configuration**.
+1. Click **`🧠 Embedding Pipeline`** on the main left sidebar (4th navigation button down).
+2. Select the **Compute Engine Device** (`auto` for CUDA acceleration) and adjust the **Embedding Batch Size** slider.
+3. Select or enter the **Embedding Model Name**.
+4. Adjust **Max Chunk Size** (200–2,000 chars) and **Chunk Overlap** (0–500 chars).
+5. Click **💾 Save Configuration**. Monitor live Qdrant point count and Redis vector cache telemetry in real-time.
 
 > [!WARNING]
 > If you change the embedding model after indexing, previously indexed vectors remain in the old collection. You must re-index all runs with the new model, or queries will return no results.
@@ -281,8 +280,8 @@ Within each section:
 * Splits at double-newlines (paragraph boundaries) first
 * Falls back to single newlines
 * Falls back to sentence boundaries (`. `)
-* Maximum chunk size: **800 characters** (~200 tokens)
-* Overlap: **100 characters** between consecutive chunks for narrative continuity
+* Maximum chunk size: **800 characters** (~200 tokens, configurable 200–2000)
+* Overlap: **100 characters** between consecutive chunks for narrative continuity (configurable 0–500)
 
 **Stage 3 — Rich Clinical Metadata Extraction** ([chunk_document()](file:///home/owner/KIRAG/rag/chunker.py)):
 For every text chunk, regex patterns extract:
@@ -296,36 +295,36 @@ For every text chunk, regex patterns extract:
 | **Patient Name** | Header patterns via [_extract_patient_name()](file:///home/owner/KIRAG/rag/chunker.py) | `Re: John Doe DOB: ...` → `John Doe` |
 | **Page Number** | Character-to-page mapping via [_find_page_for_position()](file:///home/owner/KIRAG/rag/chunker.py) | Maps each chunk to its source PDF page |
 
-#### 4.2 Running the Indexing Process
+#### 4.2 Direct External Markdown Upload & Batch Indexing
+
+All indexing operations — whether for OCR runs or direct markdown file uploads — are managed on the **`🧠 Embedding Pipeline`** page:
 
 **Indexing Alternatives:**
 
-*   **Option A: Via Gradio UI**
-    1. In the **📦 Document Indexing** accordion, click **🔄 Refresh Stats** to rescan the `workspace/` directory.
-    2. Select the target run from the **Select OCR Run** dropdown.
-    3. Click **📥 Index Selected Run** (or **📥 Index All Runs** for bulk indexing).
-    4. Monitor the live progress card and **📜 RAG System Log** below the chat window.
+*   **Option A: Direct External Markdown Upload (Via Gradio UI)**
+    1. Navigate to **`🧠 Embedding Pipeline`**.
+    2. Under **📥 Direct External Markdown Upload & Indexing**, drag & drop `.md` files into the uploader.
+    3. Select **Target Case** (`Create New Case` or select an existing case folder).
+    4. Click **📥 Upload & Index Markdown**. Monitor progress in the real-time execution log.
 
-*   **Option B: Via REST API**
+*   **Option B: Index Processed OCR Runs (Via Gradio UI)**
+    1. Navigate to **`🧠 Embedding Pipeline`**.
+    2. Under **⚙️ Batch Indexing Operations & Real-Time Console**, select the target run from the **Select OCR Run** dropdown.
+    3. Click **📥 Index Selected Run** (or **📥 Index All Runs** for bulk indexing).
+    4. Monitor progress via the live status card and execution log window.
+
+*   **Option C: Via REST API**
     Trigger case indexing by sending a POST request with the run directory:
     ```bash
     curl -X POST http://localhost:8001/api/rag/index \
          -H "Content-Type: application/json" \
          -d '{"run_dir": "/home/owner/.local/share/kirag/workspace/run_20260719_082815"}'
     ```
-    Or index all completed runs:
-    ```bash
-    curl -X POST http://localhost:8001/api/rag/index-all
-    ```
 
-*   **Option C: Via CLI**
+*   **Option D: Via CLI**
     Run the indexing command on a directory:
     ```bash
     python cli.py rag index /home/owner/.local/share/kirag/workspace/run_20260719_082815
-    ```
-    Or index all completed runs:
-    ```bash
-    python cli.py rag index-all
     ```
 
 **Under-the-Hood Sequence:**
@@ -334,7 +333,7 @@ The system executes the [CorpusIndexingService.index_run()](file:///home/owner/K
 *   **Chunk**: Invokes [chunk_documents_from_run()](file:///home/owner/KIRAG/rag/chunker.py), which reads all `.md` files from the run, loads JSONL page ranges, and produces chunk dicts.
 *   **Register**: Writes run and document records to PostgreSQL via [register_run()](file:///home/owner/KIRAG/rag/db.py) and [register_document()](file:///home/owner/KIRAG/rag/db.py).
 *   **Upload**: Archives PDFs and Markdown to MinIO under `run_id/doc_id/filename` keys.
-*   **Embed**: Encodes all chunks via [upsert_chunks_generator()](file:///home/owner/KIRAG/rag/embedding.py) in batches of 32, normalises embeddings for cosine similarity, and upserts vector points into Qdrant with full metadata payloads.
+*   **Embed**: Encodes all chunks via [upsert_chunks_generator()](file:///home/owner/KIRAG/rag/embedding.py) using GPU acceleration in batches, normalises embeddings for cosine similarity, and upserts vector points into Qdrant with full metadata payloads (with backoff retries).
 *   **Finalise**: Marks documents and the run as indexed, and invalidates the Redis query cache.
 
 ---
@@ -414,7 +413,7 @@ Query → Embed → Qdrant Filtered Search → Cross-Encoder Rerank → MMR Dive
 6. Applies **Maximal Marginal Relevance (MMR)** re-ranking ([_mmr_rerank()](file:///home/owner/KIRAG/rag/retriever.py#L222-L309)) with `λ=0.7` to balance relevance with diversity, using Jaccard text similarity for diversity measurement.
 
 **Context Formatting** ([format_context_for_llm()](file:///home/owner/KIRAG/rag/retriever.py#L326-L361)):
-Each chunk is labelled with structured source citations:
+Internal context assembly formats retrieved chunks for LLM injection with structured metadata headers:
 ```
 [Source 1] | File: specialist_report.md | Page: 3 | Author: Dr. Smith | Date: 2024-06-15 | Type: Specialist Letter
 <chunk text>
@@ -426,16 +425,16 @@ Five specialised system prompts ([rag/analyzer.py → SYSTEM_PROMPTS](file:///ho
 
 | Mode | Icon | Purpose | Output Format | Ideal LLM |
 |:---|:---:|:---|:---|:---|
-| **Free Q&A** | 💬 | Answer any question about the records | Cited paragraphs | Either |
-| **Timeline Generator** | 📅 | Extract every dated clinical event | Markdown table: `Date \| Event \| Provider \| Source (PDF Page & Verifying Details)` | Instruct |
+| **Free Q&A** | 💬 | Answer any question about the records | Cited narrative paragraphs with exact page range citations & verification details | Either |
+| **Timeline Generator** | 📅 | Extract every dated clinical event | Markdown table: `Date \| Event \| Provider \| Source (PDF Page Range & Verifying Details)` | Instruct |
 | **Injury Summary** | 🏥 | Structured injury/treatment report | Numbered headings: Patient Details → Mechanism → Injuries → Treatment → Status → Medications → Providers → Outstanding Issues | Instruct |
-| **Inconsistency Finder** | 🔍 | Cross-reference discrepancies across sources | Table: `Issue \| Source A Says \| Source B Says \| Severity (Minor/Moderate/Major)` | **Reasoning** |
-| **Medication Tracker** | 💊 | Track all prescriptions and changes | Table: `Medication \| Dose/Freq \| Date Started \| Date Stopped \| Prescriber \| Source (PDF Page & Verifying Details)` | Either |
+| **Inconsistency Finder** | 🔍 | Cross-reference discrepancies across sources | Table: `Issue \| Source A Says \| Source B Says \| Severity (Minor/Moderate/Major) \| Citations & Verifying Details` | **Reasoning** |
+| **Medication Tracker** | 💊 | Track all prescriptions and changes | Table: `Medication \| Dose/Freq \| Date Started \| Date Stopped \| Prescriber \| Source (PDF Page Range & Verifying Details)` | Either |
 
 All modes enforce:
-* **No raw source tags**: The LLM is instructed never to use raw system source tags like `[Source 26]` in final outputs.
-* **Exact page citations**: Every factual claim must cite the exact page number range of the original PDF document.
-* **Robust verification details**: Each citation includes the document type/title, authoring physician or clinic, and identifying report details (reference numbers, accession numbers) so users can instantly verify the source.
+* **No raw system source tags**: The LLM is strictly instructed never to use raw system source tags like `[Source 26]` or `[Source 52]` in final outputs.
+* **Exact page range citations**: Every factual claim must cite the exact page number range of the original PDF document where the information is located.
+* **Robust verification details**: Each entry includes verification details so users can instantly verify the source when scrolling through the original PDF (exact document type and title e.g. `Operation Record`, exact authoring physician or clinic e.g. `Dr. Gavin Weekes`, and identifying report details e.g. `Ref No: 2024AL0008570-1`, `Accession Number: 77.50382801`).
 * Explicit acknowledgement when information cannot be determined from the provided excerpts.
 * ISO date format (`YYYY-MM-DD`) throughout.
 * Professional language appropriate for medicolegal analysis.
@@ -830,7 +829,7 @@ The following features remain as future enhancements:
 
 ### Document Verification
 1. **Always verify OCR output** against the original PDF using the synchronised side-by-side viewer (Layout Inspector panel) before indexing. Pay particular attention to handwritten notes, low-contrast scans, and multi-column layouts.
-2. **Cross-reference citations**: Every RAG answer includes `[Source N]` references with filename, page, and date. Always verify critical claims by navigating to the cited page.
+2. **Cross-reference citations**: Every RAG answer includes exact PDF page number range citations along with verifying report details (document type/title, authoring physician/clinic, reference or accession numbers). Always verify critical claims by navigating to the cited page range in the Layout Inspector side-by-side viewer.
 
 ### Case Management
 3. **One case = one run**: Upload each client's documents as a separate batch. Name imported runs descriptively: `run_imported_Smith_v_Jones_2024`. Alternatively, use the **📥 Upload External Markdown** accordion to create named cases directly.

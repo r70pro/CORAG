@@ -756,33 +756,28 @@ class TestUICallbacks(unittest.TestCase):
             self.assertFalse(res.get("visible", True))
 
     def test_simple_closures(self):
+        from embedding_pipeline_ui import build_embedding_pipeline_ui
+
         with gr.Blocks() as demo:
             rag_ui.build_analysis_ui()
+            build_embedding_pipeline_ui()
         callbacks = {}
         for block_fn in demo.fns.values():
             fn = block_fn.fn
             if fn:
                 callbacks[getattr(fn, "__name__", "")] = fn
 
-        toggle_new_case_textbox = callbacks.get("toggle_new_case_textbox")
         _refresh_case_selector = callbacks.get("_refresh_case_selector")
-        _refresh_target_case_choices = callbacks.get("_refresh_target_case_choices")
         _refresh_analysis_tab_selectors = callbacks.get("_refresh_analysis_tab_selectors")
+        _get_updated_case_choices = callbacks.get("_get_updated_case_choices")
 
-        self.assertIsNotNone(toggle_new_case_textbox)
         self.assertIsNotNone(_refresh_case_selector)
-        self.assertIsNotNone(_refresh_target_case_choices)
         self.assertIsNotNone(_refresh_analysis_tab_selectors)
-
-        self.assertTrue(toggle_new_case_textbox("new").get("visible"))
-        self.assertFalse(toggle_new_case_textbox("existing").get("visible"))
+        self.assertIsNotNone(_get_updated_case_choices)
 
         with patch("rag_ui._get_indexed_run_choices", return_value=[("lbl", "r1")]):
             res_sel = _refresh_case_selector()
             self.assertEqual(res_sel.get("choices"), [("lbl", "r1")])
-
-            res_target = _refresh_target_case_choices()
-            self.assertEqual(res_target.get("choices"), [("🆕 Create New Case", "new"), ("lbl", "r1")])
 
             res_tab = _refresh_analysis_tab_selectors()
             self.assertEqual(res_tab[0].get("choices"), [("lbl", "r1")])

@@ -437,3 +437,71 @@ def _do_export_timeline_docx(history, active_case):
     except Exception as e:
         log_to_rag(f"Export error: {e}")
         return gr.update(visible=False)
+
+
+def save_embedding_settings(model_name, device, chunk_size, chunk_overlap, batch_size):
+    try:
+        from settings_manager import save_settings
+
+        new_settings = {
+            "embedding_model": model_name,
+            "embedding_device": device,
+            "chunk_size": int(chunk_size),
+            "chunk_overlap": int(chunk_overlap),
+            "embedding_batch_size": int(batch_size),
+        }
+        save_settings(new_settings)
+        log_to_rag(
+            f"Updated embedding pipeline settings: model={model_name}, device={device}, "
+            f"chunk_size={chunk_size}, overlap={chunk_overlap}, batch_size={batch_size}"
+        )
+        return "✅ Embedding pipeline configuration saved successfully!"
+    except Exception as e:
+        log_to_rag(f"Failed to save embedding configuration: {e}")
+        return f"❌ Save error: {e}"
+
+
+def get_embedding_pipeline_info_html():
+    try:
+        from rag.embedding import get_collection_info, get_collection_name
+        from settings_manager import load_settings
+
+        settings = load_settings()
+        model_name = settings.get("embedding_model", "BAAI/bge-large-en-v1.5")
+        device = settings.get("embedding_device", "auto")
+        col_name = get_collection_name(model_name)
+        info = get_collection_info(model_name)
+
+        active_device = device
+        if device == "auto" or not device:
+            try:
+                import torch
+
+                active_device = "CUDA GPU" if torch.cuda.is_available() else "CPU"
+            except Exception:
+                active_device = "CPU"
+
+        html = f"""
+        <div style='background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 12px; margin-top: 10px; font-size: 0.82rem;'>
+            <div style='display: flex; justify-content: space-between; margin-bottom: 6px;'>
+                <span style='color: #94a3b8;'>Active Compute Engine:</span>
+                <span style='font-weight: 600; color: #34d399;'>⚡ {str(active_device).upper()}</span>
+            </div>
+            <div style='display: flex; justify-content: space-between; margin-bottom: 6px;'>
+                <span style='color: #94a3b8;'>Qdrant Collection:</span>
+                <span style='font-family: monospace; color: #cbd5e1;'>{col_name}</span>
+            </div>
+            <div style='display: flex; justify-content: space-between; margin-bottom: 6px;'>
+                <span style='color: #94a3b8;'>Indexed Vectors:</span>
+                <span style='font-weight: 600; color: #60a5fa;'>{info.get("points_count", 0)} points</span>
+            </div>
+            <div style='display: flex; justify-content: space-between;'>
+                <span style='color: #94a3b8;'>Collection Status:</span>
+                <span style='color: #a7f3d0;'>{str(info.get("status", "unknown")).upper()}</span>
+            </div>
+        </div>
+        """
+        return html
+    except Exception as e:
+        return f"<div style='font-size:0.8rem; color:#ef4444;'>Error loading vector metrics: {e}</div>"
+

@@ -314,7 +314,7 @@ class TestAppCallbacks(unittest.TestCase):
     def test_select_view(self):
         self.assertTrue(hasattr(app, "select_view"))
         res = app.select_view(0)
-        self.assertEqual(len(res), 11)
+        self.assertEqual(len(res), 13)
         self.assertIsNotNone(res[0])
 
     @patch("app.check_backing_services")

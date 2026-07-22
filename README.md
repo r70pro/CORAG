@@ -13,13 +13,14 @@ The suite features **built-in Docker lifecycle management** to dynamically run t
 ## 📁 Repository Directory Structure
 
 - OLMOCR/
-  - [app.py](file:///home/owner/KIRAG/app.py) — Main Gradio application entry point (~756 lines). Constructs the 5-panel layout, wires all event handlers, validates backing-service credentials at startup, and launches the server
-  - [app_handlers.py](file:///home/owner/KIRAG/app_handlers.py) — UI callback functions for navigation toggling, settings persistence, Docker controls, and periodic diagnostics polling
+  - [app.py](file:///home/owner/KIRAG/app.py) — Main Gradio application entry point. Constructs the 6-panel layout (Ingestion, Layout Inspector, Case Dashboard, Embedding Pipeline, RAG Processing, System Diagnostics), wires all event handlers, validates backing-service credentials at startup, and launches the server
+  - [app_handlers.py](file:///home/owner/KIRAG/app_handlers.py) — UI callback functions for 6-view navigation toggling (`select_view`), settings persistence, Docker controls, and periodic diagnostics polling
   - [cleanup_manager.py](file:///home/owner/KIRAG/cleanup_manager.py) — Disk cache and run file cleanup manager (`perform_reset_cleanup()`)
   - [conftest.py](file:///home/owner/KIRAG/conftest.py) — Pytest configuration redirecting Hugging Face cache to `workspace/huggingface`
   - [docker-compose.rag.yml](file:///home/owner/KIRAG/docker-compose.rag.yml) — Docker Compose orchestration for the RAG services stack (PostgreSQL 16, Redis 7.2, MinIO, Qdrant 1.10)
   - [docker_manager.py](file:///home/owner/KIRAG/docker_manager.py) — Local vLLM inference container lifecycle manager (`start`, `stop`, `create`, `cleanup`)
   - [download_models.py](file:///home/owner/KIRAG/download_models.py) — Downloader script for quantised NVFP4 models from Hugging Face with retry logic and IPv4 DNS forcing
+  - [embedding_pipeline_ui.py](file:///home/owner/KIRAG/embedding_pipeline_ui.py) — **NEW** — Standalone Embedding & Vector Indexing Pipeline workspace: device acceleration (`auto` CUDA / CPU), batch size slider, chunking hyperparameters, direct external markdown upload, live Qdrant telemetry, and execution logging
   - [html_utils.py](file:///home/owner/KIRAG/html_utils.py) — HTML generators for progress bars, upload manifests, file status tables, service health cards, GPU metrics, and case dashboard cards
   - [indexing_service.py](file:///home/owner/KIRAG/indexing_service.py) — `CorpusIndexingService` class: orchestrates chunk → embed → upsert pipeline for single runs, bulk runs, and external markdown uploads
   - [pdf_manager.py](file:///home/owner/KIRAG/pdf_manager.py) — PDF rendering (pypdfium2), page mapping from JSONL, base64 image conversion, and zip archive operations
@@ -36,10 +37,10 @@ The suite features **built-in Docker lifecycle management** to dynamically run t
   - [settings.json](file:///home/owner/KIRAG/settings.json) — Persistent user configuration (pipeline, Docker, analysis, embedding, reranker settings)
   - [settings_manager.py](file:///home/owner/KIRAG/settings_manager.py) — Loading, saving, and validation utility for configurations; defines `SUPPORTED_MODELS`, `MODEL_MAX_CONTENT_LENGTHS`, `WORKSPACE_DIR`
   - [system_diagnostics.py](file:///home/owner/KIRAG/system_diagnostics.py) — Service latency probes (PostgreSQL, Redis, MinIO, Qdrant, vLLM), `nvidia-smi` GPU metrics parser, and vLLM model loading progress tracker
-  - [ui_adapters.py](file:///home/owner/KIRAG/ui_adapters.py) — **NEW** — UI translation layer converting plain Python backend data structures into Gradio `gr.update` payloads
+  - [ui_adapters.py](file:///home/owner/KIRAG/ui_adapters.py) — UI translation layer converting plain Python backend data structures into Gradio `gr.update` payloads
   - [ui_theme.py](file:///home/owner/KIRAG/ui_theme.py) — Dark theme definition (Gradio `Base` theme override) and external CSS loader from `assets/theme.css`
-  - [cli.py](file:///home/owner/KIRAG/cli.py) — **NEW** — Command-line interface providing headless management of RAG infra, queries, container operations, settings, and indexing
-  - [api/](file:///home/owner/KIRAG/api) — **NEW** — FastAPI REST API layer:
+  - [cli.py](file:///home/owner/KIRAG/cli.py) — Command-line interface providing headless management of RAG infra, queries, container operations, settings, and indexing
+  - [api/](file:///home/owner/KIRAG/api) — FastAPI REST API layer:
     - [main.py](file:///home/owner/KIRAG/api/main.py) — Main app definition, middleware config, lifespan hooks
     - [models.py](file:///home/owner/KIRAG/api/models.py) — Pydantic models mapping REST request/response contracts
     - [deps.py](file:///home/owner/KIRAG/api/deps.py) — Shared API dependencies
@@ -51,14 +52,14 @@ The suite features **built-in Docker lifecycle management** to dynamically run t
   - rag/ — Local RAG Core Module:
     - [__init__.py](file:///home/owner/KIRAG/rag/__init__.py) — Module initialisation and feature documentation
     - [analyzer.py](file:///home/owner/KIRAG/rag/analyzer.py) — LLM prompt assembly with 5 medicolegal system prompt templates, streaming/non-streaming chat completions via vLLM API, automatic context truncation, model equivalence mapping, and reasoning model detection
-    - [cache.py](file:///home/owner/KIRAG/rag/cache.py) — Redis caching layer for queries (1h TTL), embeddings (24h TTL), and chat sessions (2h TTL) with key prefix namespacing
+    - [cache.py](file:///home/owner/KIRAG/rag/cache.py) — Redis caching layer for queries (1h TTL), embeddings (24h TTL), and chat sessions (2h TTL) with bulk `mget`/`mset` pipelining
     - [chunker.py](file:///home/owner/KIRAG/rag/chunker.py) — Medicolegal-aware document chunker with section boundary detection, paragraph-aware splitting (800 char / 100 char overlap), and rich metadata extraction (dates, authors, doc types, sections, patient names)
     - [db.py](file:///home/owner/KIRAG/rag/db.py) — PostgreSQL database layer with connection pooling (`ThreadedConnectionPool`), schema management (`ocr_runs`, `documents`, `chunks` tables), CRUD operations, corpus statistics, and cascading deletion
-    - [embedding.py](file:///home/owner/KIRAG/rag/embedding.py) — Sentence-Transformer embedding with singleton model loading, Qdrant collection management (auto-named per model to prevent dimension collisions), batch upsert with progress generator, and Cross-Encoder reranker model loader
+    - [embedding.py](file:///home/owner/KIRAG/rag/embedding.py) — Sentence-Transformer embedding with auto-CUDA acceleration, Qdrant collection management (auto-named per model to prevent dimension collisions), batch upsert with backoff retries, and Cross-Encoder reranker model loader
     - [metadata_helper.py](file:///home/owner/KIRAG/rag/metadata_helper.py) — Automated case metadata extraction: client names, DOB, and injury/diagnosis from PostgreSQL chunks using heuristic regex patterns
     - [retriever.py](file:///home/owner/KIRAG/rag/retriever.py) — Dense vector retriever with cosine similarity search, metadata filtering (run_id, doc_type, author, date range), Cross-Encoder reranking, Jaccard-based MMR diversity re-ranking, and PostgreSQL metadata enrichment
     - [storage.py](file:///home/owner/KIRAG/rag/storage.py) — MinIO blob storage for PDFs and Markdown files with bucket auto-creation, upload/download/delete operations, and run-level cleanup
-  - tests/ — Comprehensive unit and integration test suite (28 files, 385 tests):
+  - tests/ — Comprehensive unit and integration test suite (28 files, 443 tests):
     - [test_app.py](file:///home/owner/KIRAG/tests/test_app.py), [test_app_callbacks.py](file:///home/owner/KIRAG/tests/test_app_callbacks.py), [test_cleanup_manager.py](file:///home/owner/KIRAG/tests/test_cleanup_manager.py), [test_docker_manager.py](file:///home/owner/KIRAG/tests/test_docker_manager.py)
     - [test_download_models.py](file:///home/owner/KIRAG/tests/test_download_models.py), [test_e2e_app.py](file:///home/owner/KIRAG/tests/test_e2e_app.py), [test_external_md_upload.py](file:///home/owner/KIRAG/tests/test_external_md_upload.py), [test_html_utils_all.py](file:///home/owner/KIRAG/tests/test_html_utils_all.py)
     - [test_indexing_service.py](file:///home/owner/KIRAG/tests/test_indexing_service.py), [test_integration_rag.py](file:///home/owner/KIRAG/tests/test_integration_rag.py), [test_metadata_helper.py](file:///home/owner/KIRAG/tests/test_metadata_helper.py)
@@ -75,7 +76,7 @@ The suite features **built-in Docker lifecycle management** to dynamically run t
 
 > For the complete practitioner routine and detailed workflow instructions, see [medicolegal_rag_guide.md](file:///home/owner/KIRAG/medicolegal_rag_guide.md).
 
-The frontend is a single-page Gradio application ([app.py](file:///home/owner/KIRAG/app.py)) built around a dark-mode glassmorphism design system with a **5-panel navigation architecture**. A persistent left sidebar provides global navigation and Docker inference controls. The design is optimised for the daily workflow of medicolegal practitioners managing 3–5 separate client cases per day.
+The frontend is a single-page Gradio application ([app.py](file:///home/owner/KIRAG/app.py)) built around a dark-mode glassmorphism design system with a **6-panel navigation architecture**. A persistent left sidebar provides global navigation and Docker inference controls. The design is optimised for the daily workflow of medicolegal practitioners managing 3–5 separate client cases per day.
 
 ### 🗺️ Full-Page UI Layout Map
 
@@ -85,7 +86,7 @@ block-beta
 
     block:navsidebar:1
         columns 1
-        nav["🧭 Navigation Sidebar<br/>📥 Ingestion Pipeline<br/>🔍 Layout Inspector<br/>📊 Case Dashboard<br/>💬 RAG Processing<br/>🖥️ System Diagnostics<br/>───────────<br/>🐳 Inference Server<br/>🎭 Active Role<br/>📐 Layout Density"]
+        nav["🧭 Navigation Sidebar<br/>📥 Ingestion Pipeline<br/>🔍 Layout Inspector<br/>📊 Case Dashboard<br/>🧠 Embedding Pipeline<br/>💬 RAG Processing<br/>🖥️ System Diagnostics<br/>───────────<br/>🐳 Inference Server<br/>🎭 Active Role<br/>📐 Layout Density"]
     end
 
     block:contentarea:4
@@ -133,8 +134,7 @@ block-beta
 
     block:panel4:4
         columns 4
-        p4sidebar["RAG Sidebar<br/>🔧 Infrastructure<br/>📦 Indexing<br/>📥 Upload MD<br/>⚙️ Settings<br/>🔍 Filters"]
-        p4chat["💬 Chat Interface (1000px)<br/>Active Case Banner<br/>Analysis Mode Selector<br/>⬅️ Hide Controls Toggle<br/>🚀 Ask / ⏹️ Stop / 🗑️ Clear<br/>📝.md 📄.txt 📊.csv Export<br/>📜 RAG System Log"]
+        p4["Panel 4: Embedding Pipeline<br/>Hardware Acceleration · Chunking · External MD Upload · Qdrant Telemetry"]
     end
 
     block:spacer5:1
@@ -144,7 +144,18 @@ block-beta
 
     block:panel5:4
         columns 4
-        p5["Panel 5: System Diagnostics<br/>Backing Services Health · GPU/VRAM Metrics · Reset & Cleanup"]
+        p5sidebar["RAG Sidebar<br/>🔧 Infrastructure<br/>⚙️ Settings<br/>🔍 Filters"]
+        p5chat["💬 Chat Interface (1000px)<br/>Active Case Banner<br/>Analysis Mode Selector<br/>⬅️ Hide Controls Toggle<br/>🚀 Ask / ⏹️ Stop / 🗑️ Clear<br/>📝.md 📄.txt 📊.csv Export<br/>📜 RAG System Log"]
+    end
+
+    block:spacer6:1
+        columns 1
+        space6[" "]
+    end
+
+    block:panel6:4
+        columns 4
+        p6["Panel 6: System Diagnostics<br/>Backing Services Health · GPU/VRAM Metrics · Reset & Cleanup"]
     end
 ```
 
@@ -205,16 +216,16 @@ Custom WebKit scrollbars for premium feel:
 
 ---
 
-### 🏗️ Interface Architecture — 5-Panel Navigation
+### 🏗️ Interface Architecture — 6-Panel Navigation
 
-The application uses a persistent **left navigation sidebar** with 5 navigation buttons. Only one content panel is visible at a time. The sidebar also hosts global controls (Inference Server, Active Role, Layout Density). Navigation toggling is handled by [select_view()](file:///home/owner/KIRAG/app_handlers.py#L45-L65) which updates the page title, button active states, and panel visibility in a single return.
+The application uses a persistent **left navigation sidebar** with 6 navigation buttons. Only one content panel is visible at a time. The sidebar also hosts global controls (Inference Server, Active Role, Layout Density). Navigation toggling is handled by [select_view()](file:///home/owner/KIRAG/app_handlers.py#L45-L65) which updates the page title, button active states, and panel visibility in a single return.
 
 #### Global Navigation Sidebar ([app.py:L115-L179](file:///home/owner/KIRAG/app.py#L115-L179))
 
 | Section | Contents | Key Features |
 |:---|:---|:---|
 | **Logo & Branding** | "IQ-RAG Client" title, "Mission Control" subtitle | Styled `.sidebar-logo-container` |
-| **Panel Navigation** | 5 `gr.Button` components: 📥 Ingestion Pipeline, 🔍 Layout Inspector, 📊 Case Dashboard, 💬 RAG Processing, 🖥️ System Diagnostics | Active button highlighted via `active-nav-btn` CSS class; `.click()` handlers call `select_view(idx)` |
+| **Panel Navigation** | 6 `gr.Button` components: 📥 Ingestion Pipeline, 🔍 Layout Inspector, 📊 Case Dashboard, 🧠 Embedding Pipeline, 💬 RAG Processing, 🖥️ System Diagnostics | Active button highlighted via `active-nav-btn` CSS class; `.click()` handlers call `select_view(idx)` |
 | **🐳 Inference Server (Docker)** | HF token (password field), Model selector dropdown, Docker port (number), GPU memory slider (0.1–1.0), Max Content Length slider (2048–model max, up to 1M), Start/Stop/Recreate buttons | Creates and manages the `olmocr` vLLM container (default image `vllm/vllm-openai:v0.8.5`, overridable via `OLMOCR_VLLM_IMAGE`). Model change auto-syncs between Pipeline and Docker dropdowns and adjusts max content length limits via `MODEL_MAX_CONTENT_LENGTHS` |
 | **Sidebar Footer** | Active Role dropdown (Admin, Clinical Reviewer, Legal Specialist), Comfortable/Compact layout toggle buttons, Version label (`IQ-RAG Workstation v2.0.3`) | Compact mode toggles `.layout-compact` CSS class via JS |
 
@@ -299,11 +310,11 @@ The application uses a persistent **left navigation sidebar** with 5 navigation 
 
 | Mode | System Prompt Focus | Output Format |
 |:---|:---|:---|
-| 💬 **Free Q&A** | Answer based strictly on retrieved excerpts; cite exact PDF page numbers with document type, author, and identifying details for every claim; flag gaps | Cited narrative paragraphs |
-| 📅 **Timeline Generator** | Extract every dated clinical event in strict chronological order | Markdown table: `Date \| Event \| Provider/Author \| Source (PDF Page & Verifying Details)` |
-| 🏥 **Injury Summary** | Structured report: Patient Details → Mechanism → Injuries → Treatment → Status → Medications → Providers → Outstanding Issues | Numbered heading report with page-level citations |
-| 🔍 **Inconsistency Finder** | Cross-reference accounts of the same events; rate severity (Minor/Moderate/Major) | Table: `Issue \| Source A Says \| Source B Says \| Severity` |
-| 💊 **Medication Tracker** | Track prescriptions, dose changes, cessations, allergies | Table: `Medication \| Dose/Freq \| Date Started \| Date Stopped \| Prescriber \| Source (PDF Page & Verifying Details)` |
+| 💬 **Free Q&A** | Answer based strictly on retrieved excerpts; cite exact PDF page number range with document type, author, and identifying details for every claim; flag gaps (never use raw system tags like `[Source 26]`) | Cited narrative paragraphs |
+| 📅 **Timeline Generator** | Extract every dated clinical event in strict chronological order | Markdown table: `Date \| Event \| Provider/Author \| Source (PDF Page Range & Verifying Details)` |
+| 🏥 **Injury Summary** | Structured report: Patient Details → Mechanism → Injuries → Treatment → Status → Medications → Providers → Outstanding Issues | Numbered heading report with page-level citations & verifying details |
+| 🔍 **Inconsistency Finder** | Cross-reference accounts of the same events; rate severity (Minor/Moderate/Major) | Table: `Issue \| Source A Says \| Source B Says \| Severity \| Citations & Verifying Details` |
+| 💊 **Medication Tracker** | Track prescriptions, dose changes, cessations, allergies | Table: `Medication \| Dose/Freq \| Date Started \| Date Stopped \| Prescriber \| Source (PDF Page Range & Verifying Details)` |
 
 #### Panel 5: System Diagnostics ([app.py:L390-L414](file:///home/owner/KIRAG/app.py#L390-L414))
 
@@ -460,15 +471,25 @@ Once started, interactive OpenAPI/Swagger documentation is available at:
 | | `POST` | `/api/docker/start` | Start the existing vLLM container |
 | | `POST` | `/api/docker/stop` | Stop the running vLLM container |
 | | `POST` | `/api/docker/create` | Recreate the vLLM container with new parameters |
+| | `POST` | `/api/docker/shutdown` | Stop and remove the vLLM inference container |
 | **RAG** | `POST` | `/api/rag/query` | Query RAG system (returns SSE text stream or JSON response) |
 | | `POST` | `/api/rag/index` | Index a specific run directory into PostgreSQL + Qdrant |
 | | `POST` | `/api/rag/index-all` | Scan and index all completed OCR runs in the workspace |
+| | `POST` | `/api/rag/upload-markdown` | Upload and index external markdown files into corpus |
 | | `GET` | `/api/rag/corpus/stats` | Retrieve aggregate corpus stats |
-| | `POST` | `/api/rag/infra/start` | Start the database, vector store, caching, and storage backends |
+| | `GET` | `/api/rag/corpus/cases` | Retrieve list of all indexed cases |
+| | `POST` | `/api/rag/infra/start` | Start PostgreSQL, Redis, MinIO, Qdrant stack & init schemas |
+| | `POST` | `/api/rag/infra/stop` | Stop all RAG infrastructure services |
+| | `GET` | `/api/rag/infra/status` | Retrieve RAG infrastructure services status |
 | **Diagnostics**| `GET` | `/api/diagnostics/health` | Perform latency checks on all services & GPU metrics |
+| | `GET` | `/api/diagnostics/gpu` | Retrieve GPU hardware metrics only |
+| | `GET` | `/api/diagnostics/services` | Retrieve latency and health of backing services |
 | | `GET` | `/api/diagnostics/report` | Download the full system markdown diagnostic report |
 | **Documents** | `GET` | `/api/documents/runs` | Browse completed OCR runs and list extracted files |
+| | `GET` | `/api/documents/runs/{run}/files` | List markdown files in a specific run |
 | | `GET` | `/api/documents/runs/{run}/markdown/{file}`| Retrieve the raw text content of an extracted markdown file |
+| **Settings** | `GET` | `/api/settings/` | Retrieve current application settings (with masked HF token) |
+| | `PUT` | `/api/settings/` | Merge provided fields into application settings and save |
 
 ---
 
@@ -647,7 +668,7 @@ This workstation processes **medicolegal PII** (patient names, DOBs, injuries, c
 
 ## 🧪 Verification & Testing
 
-The repository includes a comprehensive testing suite comprising **385 unit and integration tests** across **28 test files**, validating components, lifecycle states, callbacks, and processing operations.
+The repository includes a comprehensive testing suite comprising **443 unit and integration tests** across **28 test files**, validating components, lifecycle states, callbacks, and processing operations.
 
 To run the test suite, ensure the virtual environment is active, then execute:
 

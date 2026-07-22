@@ -81,6 +81,90 @@ def get_vllm_loading_progress() -> dict[str, Any] | None:
         )
         if res.returncode == 0 and res.stdout:
             lines = res.stdout.splitlines()
+
+            # Check for CUDA graphs capture
+            for line in reversed(lines):
+                if "Capturing CUDA graphs" in line:
+                    match = re.search(r"Capturing CUDA graphs.*:\s*(\d+)%\s*\|\s*.*?\|\s*(\d+)/(\d+)", line)
+                    if match:
+                        return {
+                            "pct": 100,
+                            "shards_loaded": "Graph",
+                            "shards_total": "Active",
+                            "eta": f"Capturing CUDA graphs ({match.group(2)}/{match.group(3)})",
+                        }
+
+            # Check for autotuning
+            for line in reversed(lines):
+                if "Tuning fp4_gemm:" in line:
+                    match = re.search(r"Tuning fp4_gemm:\s*(\d+)%\s*\|\s*.*?\|\s*(\d+)/(\d+)", line)
+                    if match:
+                        return {
+                            "pct": 100,
+                            "shards_loaded": "Tuning",
+                            "shards_total": "Active",
+                            "eta": f"Autotuning FP4 GEMM ({match.group(2)}/{match.group(3)})",
+                        }
+                if "Autotuning process starts" in line:
+                    return {
+                        "pct": 100,
+                        "shards_loaded": "Tuning",
+                        "shards_total": "Active",
+                        "eta": "Autotuning FP4 GEMM starting...",
+                    }
+
+            # Check for profiling/warmup
+            for line in reversed(lines):
+                if "Profiling CUDA graph memory" in line or "Estimated CUDA graph memory" in line:
+                    return {
+                        "pct": 100,
+                        "shards_loaded": "Warmup",
+                        "shards_total": "Active",
+                        "eta": "Profiling CUDA graph memory...",
+                    }
+                if "Initial profiling/warmup run" in line:
+                    return {
+                        "pct": 100,
+                        "shards_loaded": "Warmup",
+                        "shards_total": "Active",
+                        "eta": "Warming up engine...",
+                    }
+
+            # Check for torch compilation
+            for line in reversed(lines):
+                if "torch.compile took" in line or "saved AOT compiled function" in line:
+                    return {
+                        "pct": 100,
+                        "shards_loaded": "Compile",
+                        "shards_total": "Active",
+                        "eta": "Compilation complete! Initializing engine & KV cache...",
+                    }
+                if "Compiling a graph for compile range" in line:
+                    return {
+                        "pct": 100,
+                        "shards_loaded": "Compile",
+                        "shards_total": "Active",
+                        "eta": "Compiling model graphs & CUDA PTX (torch.compile)...",
+                    }
+                if "for vLLM's torch.compile" in line:
+                    return {
+                        "pct": 100,
+                        "shards_loaded": "Compile",
+                        "shards_total": "Active",
+                        "eta": "Compiling model graphs & CUDA PTX (torch.compile)...",
+                    }
+
+            # Check for loading weights / model loading
+            for line in reversed(lines):
+                if "Loading weights took" in line or "Model loading took" in line:
+                    return {
+                        "pct": 100,
+                        "shards_loaded": "Init",
+                        "shards_total": "Active",
+                        "eta": "Initializing engine...",
+                    }
+
+            # Fallback to safetensors loading shards
             for line in reversed(lines):
                 if "Loading safetensors checkpoint shards:" in line:
                     match = re.search(
@@ -240,6 +324,7 @@ def get_gpu_metrics_data() -> dict[str, Any]:
     vram_used = 0.0
     vram_total = 0.0
     vram_pct = 0.0
+    local_torch_vram = 0.0
 
     try:
         import torch
@@ -248,10 +333,12 @@ def get_gpu_metrics_data() -> dict[str, Any]:
         if cuda_available:
             gpu_name = torch.cuda.get_device_name(0)
             vram_total = torch.cuda.get_device_properties(0).total_memory / (1024 * 1024)
-            vram_used = torch.cuda.memory_allocated(0) / (1024 * 1024)
+            local_torch_vram = torch.cuda.memory_allocated(0) / (1024 * 1024)
+            vram_used = local_torch_vram
     except Exception:
         pass
 
+    smi_vram_used = 0.0
     try:
         res = subprocess.run(
             [
@@ -268,13 +355,26 @@ def get_gpu_metrics_data() -> dict[str, Any]:
             lines = res.stdout.strip().split("\n")
             parts = lines[0].split(",")
             gpu_name = parts[0].strip()
-            vram_used = float(parts[1].strip())
-            vram_total = float(parts[2].strip())
+            
+            raw_used = parts[1].strip() if len(parts) > 1 else ""
+            raw_total = parts[2].strip() if len(parts) > 2 else ""
+
+            if raw_used and raw_used.upper() != "[N/A]":
+                try:
+                    smi_vram_used = float(raw_used)
+                    vram_used = smi_vram_used
+                except (ValueError, TypeError):
+                    pass
+
+            if raw_total and raw_total.upper() != "[N/A]":
+                try:
+                    vram_total = float(raw_total)
+                except (ValueError, TypeError):
+                    pass
     except Exception:
         pass
 
     if cuda_available and vram_total > 0:
-        vram_pct = (vram_used / vram_total) * 100.0
         processes = []
         try:
             res_proc = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=3)
@@ -293,7 +393,7 @@ def get_gpu_metrics_data() -> dict[str, Any]:
                                 break
                             continue
                         match = re.search(
-                            r"\|\s+(\d+)\s+(?:N/A|\d+)\s+(?:N/A|\d+)\s+(\d+)\s+([CG]|[C\+G])\s+(.+?)\s+(\d+)\s*MiB\s*\|",
+                            r"\|\s+(\d+)\s+(?:N/A|\d+)\s+(?:N/A|\d+)\s+(\d+)\s+([CG]|[C\+G])\s+(.+?)\s+(\d+)(?:\.\.\.|\s*MiB)?\s*\|",
                             line,
                         )
                         if match:
@@ -302,6 +402,8 @@ def get_gpu_metrics_data() -> dict[str, Any]:
                             proc_type = match.group(3)
                             proc_name = match.group(4).strip()
                             vram_used_proc = int(match.group(5))
+                            if "..." in line:
+                                vram_used_proc *= 10
                             processes.append(
                                 {
                                     "gpu_id": gpu_id,
@@ -313,6 +415,17 @@ def get_gpu_metrics_data() -> dict[str, Any]:
                             )
         except Exception:
             pass
+
+        # Use system-wide process sum if global nvidia-smi query didn't give a positive value
+        proc_vram_sum = float(sum(p["vram"] for p in processes))
+        if smi_vram_used > 0.0:
+            vram_used = smi_vram_used
+        elif proc_vram_sum > 0.0:
+            vram_used = max(proc_vram_sum, local_torch_vram)
+        else:
+            vram_used = local_torch_vram
+
+        vram_pct = (vram_used / vram_total) * 100.0
 
         docker_map = get_docker_containers()
         essential_keywords = ["xorg", "gnome-shell", "gdm", "kwin", "wayland", "systemd", "lightdm"]
@@ -367,7 +480,7 @@ def get_gpu_metrics_data() -> dict[str, Any]:
             )
 
         vram_free = max(0.0, vram_total - vram_used)
-        vram_potential_free = vram_free + vram_reclaimable
+        vram_potential_free = min(vram_total, vram_free + vram_reclaimable)
 
         return {
             "cuda_available": True,

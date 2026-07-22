@@ -661,32 +661,10 @@ def build_rag_chat_ui():
 
                 gr.Markdown("---")
                 index_all_btn = gr.Button("📥 Index All Runs", variant="secondary", size="sm")
-                index_status = gr.Markdown("")
+                index_status = gr.HTML("")
 
-            # Upload External Markdown
-            with gr.Accordion("📥 Upload External Markdown", open=False):
-                gr.Markdown(
-                    "Upload markdown files directly into a new or existing case, bypassing the ingestion pipeline."
-                )
-                external_md_uploader = gr.File(
-                    label="Select Markdown Files (.md)",
-                    file_count="multiple",
-                    file_types=[".md"],
-                )
-                target_case_dropdown = gr.Dropdown(
-                    label="Target Case",
-                    choices=[("🆕 Create New Case", "new")]
-                    + [choice for choice in _get_indexed_run_choices() if choice[1] != ""],
-                    value="new",
-                    interactive=True,
-                )
-                new_case_name = gr.Textbox(
-                    label="New Case Name",
-                    placeholder="e.g. My Custom Case",
-                    visible=True,
-                )
-                upload_md_btn = gr.Button("📥 Upload & Index", variant="primary", size="sm")
-                upload_status = gr.Markdown("")
+            target_case_dropdown = gr.State("new")
+            embedding_model_input = gr.State(settings.get("embedding_model", "BAAI/bge-large-en-v1.5"))
 
             # Analysis settings
             with gr.Accordion("⚙️ Analysis Settings", open=False):
@@ -717,20 +695,6 @@ def build_rag_chat_ui():
                     maximum=500,
                     step=1,
                     value=settings.get("retrieval_top_k", 8),
-                )
-                current_embedding_model = settings.get("embedding_model", "BAAI/bge-large-en-v1.5")
-                embedding_choices = [
-                    "BAAI/bge-large-en-v1.5",
-                ]
-                if current_embedding_model not in embedding_choices:
-                    embedding_choices.append(current_embedding_model)
-
-                embedding_model = gr.Dropdown(
-                    label="Embedding Model Name",
-                    choices=embedding_choices,
-                    value=current_embedding_model,
-                    interactive=True,
-                    allow_custom_value=False,
                 )
 
                 gr.HTML("<hr class='inline-section-divider'>")
@@ -933,20 +897,9 @@ def build_rag_chat_ui():
         ]
         return gr.update(choices=choices, value="new")
 
-    def toggle_new_case_textbox(choice):
-        return gr.update(visible=(choice == "new"))
-
-    target_case_dropdown.change(
-        toggle_new_case_textbox, inputs=[target_case_dropdown], outputs=[new_case_name]
-    )
-
     refresh_corpus_btn.click(
         _refresh_case_selector,
         outputs=[active_case_selector],
-    )
-    refresh_corpus_btn.click(
-        _refresh_target_case_choices,
-        outputs=[target_case_dropdown],
     )
 
     # Index single run
@@ -960,9 +913,6 @@ def build_rag_chat_ui():
     ).then(
         _refresh_case_selector,
         outputs=[active_case_selector],
-    ).then(
-        _refresh_target_case_choices,
-        outputs=[target_case_dropdown],
     )
 
     # Index all runs
@@ -975,25 +925,6 @@ def build_rag_chat_ui():
     ).then(
         _refresh_case_selector,
         outputs=[active_case_selector],
-    ).then(
-        _refresh_target_case_choices,
-        outputs=[target_case_dropdown],
-    )
-
-    # Upload external markdown
-    upload_md_btn.click(
-        upload_and_index_markdown_ui_wrapper,
-        inputs=[external_md_uploader, target_case_dropdown, new_case_name],
-        outputs=[upload_status, rag_log_viewer],
-    ).then(
-        refresh_corpus_display,
-        outputs=[corpus_stats],
-    ).then(
-        _refresh_active_case_after_upload,
-        outputs=[active_case_selector],
-    ).then(
-        _refresh_target_case_choices,
-        outputs=[target_case_dropdown],
     )
 
     # ── Active Case Selector → update banner + populate filters ──
@@ -1109,7 +1040,7 @@ def build_rag_chat_ui():
             analysis_model_url,
             analysis_model_name,
             retrieval_top_k,
-            embedding_model,
+            embedding_model_input,
             use_reranker,
             reranker_model,
             reranker_device,
@@ -1176,7 +1107,7 @@ def build_rag_chat_ui():
         "analysis_model_url": analysis_model_url,
         "analysis_model_name": analysis_model_name,
         "retrieval_top_k": retrieval_top_k,
-        "embedding_model": embedding_model,
+        "embedding_model": embedding_model_input,
         "analysis_config_status": analysis_config_status,
     }
 

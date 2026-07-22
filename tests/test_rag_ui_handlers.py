@@ -335,12 +335,28 @@ class TestRAGUIHandlers(unittest.TestCase):
 
     def test_update_delete_button_label(self):
         from rag_ui_dashboard import _update_delete_button_label
-        
+
         res1 = _update_delete_button_label("")
         self.assertEqual(res1.get("value"), "🗑️ Delete Selected")
 
         res2 = _update_delete_button_label("r1,r2")
         self.assertEqual(res2.get("value"), "🗑️ Delete Selected (2)")
+
+    def test_embedding_pipeline_settings_and_info(self):
+        with patch("settings_manager.save_settings") as mock_save:
+            res = rag_ui_handlers.save_embedding_settings("BAAI/bge-large-en-v1.5", "auto", 800, 100, 64)
+            self.assertIn("saved successfully", res)
+            mock_save.assert_called_once()
+
+        with patch("settings_manager.save_settings", side_effect=Exception("Save fail")):
+            res_err = rag_ui_handlers.save_embedding_settings("model", "cuda", 500, 50, 32)
+            self.assertIn("Save error", res_err)
+
+        with patch("rag.embedding.get_collection_info", return_value={"points_count": 42, "status": "green"}), \
+             patch("rag.embedding.get_collection_name", return_value="olmocr_documents_test"):
+            html = rag_ui_handlers.get_embedding_pipeline_info_html()
+            self.assertIn("olmocr_documents_test", html)
+            self.assertIn("42 points", html)
 
 
 
