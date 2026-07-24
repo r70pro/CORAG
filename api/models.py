@@ -53,6 +53,7 @@ class DockerCreateRequest(BaseModel):
     model: str = "allenai/olmOCR-2-7B-1025-FP8"
     gpu_mem: float = Field(0.8, ge=0.1, le=1.0)
     max_model_len: int = Field(15360, ge=512)
+    tensor_parallel_size: int = Field(1, ge=1, le=8)
 
 
 class DockerStatusResponse(BaseModel):
@@ -142,6 +143,7 @@ class SettingsUpdateRequest(BaseModel):
     docker_port: int | None = None
     docker_gpu_mem: float | None = None
     docker_max_model_len: int | None = None
+    docker_tensor_parallel: int | None = None
     hf_token: str | None = None
     analysis_model_name: str | None = None
     analysis_server_url: str | None = None

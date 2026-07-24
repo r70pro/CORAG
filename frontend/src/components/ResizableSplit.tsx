@@ -51,7 +51,7 @@ export const ResizableSplit: React.FC<ResizableSplitProps> = ({
     return fallbackSizes;
   }, [storageKey, count, fallbackSizes]);
 
-  const [sizes, setSizes] = useState<number[]>(getStoredSizes);
+  const [sizes, setSizes] = useState<number[]>(fallbackSizes);
   const [isDragging, setIsDragging] = useState<number | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -61,7 +61,7 @@ export const ResizableSplit: React.FC<ResizableSplitProps> = ({
     startSizes: number[];
   } | null>(null);
 
-  // Sync ONLY if child count or storageKey changes
+  // Read stored sizes after initial client hydration to prevent SSR hydration mismatch
   useEffect(() => {
     setSizes(getStoredSizes());
   }, [count, storageKey, getStoredSizes]);

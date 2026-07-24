@@ -129,7 +129,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const handleRecreateDocker = async () => {
     setDockerMsg("Recreating container...");
     const res = await createDockerContainer({
-      hf_token: hfToken,
+      hf_token: (hfToken && hfToken !== "********") ? hfToken : undefined,
       port: dockerPort,
       model: dockerModel,
       gpu_mem: gpuMem,

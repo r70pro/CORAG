@@ -107,7 +107,24 @@ def stop_docker_container():
     return True, "Container is not running."
 
 
-def create_docker_container(hf_token, port, model, gpu_mem, max_model_len):
+def resolve_vllm_image() -> str:
+    if os.environ.get("OLMOCR_VLLM_IMAGE"):
+        return os.environ["OLMOCR_VLLM_IMAGE"]
+    for img in [
+        "nvcr.io/nvidia/vllm:26.05.post1-py3",
+        "nvcr.io/nvidia/vllm:26.05-py3",
+        "vllm/vllm-openai:v0.20.0",
+    ]:
+        try:
+            res = subprocess.run(["docker", "inspect", img], capture_output=True, check=False)
+            if res.returncode == 0:
+                return img
+        except Exception:
+            pass
+    return "nvcr.io/nvidia/vllm:26.05.post1-py3"
+
+
+def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tensor_parallel_size=1):
     status = get_docker_status()
     # Fall back to default model if model is invalid, empty, or literally "model"
     if not model or not str(model).strip() or str(model).strip() == "model":
@@ -120,31 +137,81 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len):
         port_int = int(port)
     except (TypeError, ValueError):
         port_int = 8000
+
+    # Coerce tensor_parallel_size to an integer >= 1
+    try:
+        tp_int = max(1, int(tensor_parallel_size))
+    except (TypeError, ValueError):
+        tp_int = 1
+
+    # Coerce gpu_mem defensively
+    try:
+        gpu_mem_float = float(gpu_mem)
+        if gpu_mem_float <= 0 or gpu_mem_float > 1.0:
+            gpu_mem_float = 0.8
+    except (TypeError, ValueError):
+        gpu_mem_float = 0.8
+
+    # Coerce max_model_len defensively
+    try:
+        max_model_len_int = int(max_model_len)
+        if max_model_len_int <= 0:
+            max_model_len_int = 15360
+    except (TypeError, ValueError):
+        max_model_len_int = 15360
+
     if status != "not_found" and status != "error":
         try:
             subprocess.run(["docker", "rm", "-f", "olmocr"], check=True, capture_output=True)
         except subprocess.CalledProcessError as e:
-            return False, f"Failed to remove existing container: {e.stderr.decode().strip()}"
+            err_msg = (
+                e.stderr.decode("utf-8", errors="replace")
+                if isinstance(e.stderr, bytes)
+                else str(e.stderr or "")
+            ).strip()
+            return False, f"Failed to remove existing container: {err_msg}"
 
     hf_cache_dir = os.path.expanduser("~/.cache/huggingface")
     os.makedirs(hf_cache_dir, exist_ok=True)
 
+    # Resolve HF_TOKEN: filter out dummy/masked tokens ("********", "tok", empty strings)
+    token_str = str(hf_token).strip() if hf_token else ""
+    if not token_str or token_str in ("********", "tok"):
+        token_str = os.environ.get("HF_TOKEN", "").strip()
+    if not token_str or token_str in ("********", "tok"):
+        dotenv_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        if os.path.exists(dotenv_file):
+            try:
+                with open(dotenv_file, encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip().startswith("HF_TOKEN="):
+                            val = line.strip().split("=", 1)[1].strip().strip("'\"")
+                            if val and val not in ("********", "tok"):
+                                token_str = val
+                                os.environ["HF_TOKEN"] = val
+                                break
+            except Exception:
+                pass
+
     # Pass secrets via a temporary env-file rather than `-e HF_TOKEN=...`.
-    # Only write HF_TOKEN if non-empty to avoid corrupting HF authorization headers.
+    # Only write HF_TOKEN if non-empty and not masked.
     env_file = None
     try:
         import tempfile
 
         fd, env_path = tempfile.mkstemp(prefix="olmocr_env_", suffix=".env")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            if hf_token and str(hf_token).strip():
-                fh.write(f"HF_TOKEN={str(hf_token).strip()}\n")
+            if token_str and token_str != "********":
+                fh.write(f"HF_TOKEN={token_str}\n")
             fh.write("PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True\n")
+            # Disable PyTorch AOT Autograd caching to prevent pickling launcher errors
+            fh.write("TORCH_AOT_AUTOGRAD_CACHE=0\n")
             # Newer vLLM releases reject max_model_len values above the model's
             # derived maximum. Allow the app's configured value to override it.
             fh.write("VLLM_ALLOW_LONG_MAX_MODEL_LEN=1\n")
         env_file = env_path
 
+        target_image = resolve_vllm_image()
         cmd = [
             "docker",
             "run",
@@ -162,24 +229,29 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len):
             f"{hf_cache_dir}:/root/.cache/huggingface",
             "--env-file",
             env_path,
-            os.environ.get("OLMOCR_VLLM_IMAGE", "vllm/vllm-openai:v0.20.0"),
+            target_image,
+            "vllm",
+            "serve",
+            model,
             "--host",
             "0.0.0.0",
-            "--model",
-            model,
-            "--gpu_memory_utilization",
-            f"{float(gpu_mem):.2f}",
-            "--max_model_len",
-            str(int(max_model_len)),
+            "--enforce-eager",
+            "--gpu-memory-utilization",
+            f"{gpu_mem_float:.2f}",
+            "--max-model-len",
+            str(max_model_len_int),
             "--max-num-batched-tokens",
-            str(max(int(max_model_len), 4096)),
+            str(max(max_model_len_int, 4096)),
+            "--tensor-parallel-size",
+            str(tp_int),
             "--trust-remote-code",
         ]
         try:
             subprocess.run(cmd, check=True, capture_output=True, text=True)
             return True, "Container created and started successfully."
         except subprocess.CalledProcessError as e:
-            return False, f"Failed to create container: {e.stderr.strip()}"
+            err_msg = str(e.stderr or "").strip()
+            return False, f"Failed to create container: {err_msg}"
         finally:
             # Always remove the temp env-file (best-effort; ignore cleanup errors).
             try:

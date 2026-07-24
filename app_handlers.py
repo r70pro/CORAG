@@ -116,32 +116,59 @@ def ui_stop_container(port):
     return msg, badge
 
 
-def ui_recreate_container(hf_token, port, model, gpu_mem, max_model_len):
+def ui_recreate_container(hf_token, port, model, gpu_mem, max_model_len, tensor_parallel_size=1):
     create_fn = get_app_fn("create_docker_container", create_docker_container)
     status_fn = get_app_fn("get_docker_status_str", get_docker_status_str)
     save_settings_fn = get_app_fn("save_settings", save_settings)
 
-    # Coerce the port defensively: an empty/non-numeric Gradio Number widget
-    # must not raise TypeError here.
+    # Normalize model name if empty, invalid, or literally "model"
+    if not model or not str(model).strip() or str(model).strip() == "model":
+        model_str = "allenai/olmOCR-2-7B-1025-FP8"
+    else:
+        model_str = str(model).strip()
+
+    # Coerce the port defensively
     try:
         port_int = int(port)
     except (TypeError, ValueError):
         port_int = 8000
 
-    success, msg = create_fn(hf_token, port_int, model, gpu_mem, max_model_len)
+    try:
+        tp_int = max(1, int(tensor_parallel_size))
+    except (TypeError, ValueError):
+        tp_int = 1
+
+    try:
+        gpu_mem_float = float(gpu_mem)
+        if gpu_mem_float <= 0 or gpu_mem_float > 1.0:
+            gpu_mem_float = 0.8
+    except (TypeError, ValueError):
+        gpu_mem_float = 0.8
+
+    try:
+        max_len_int = int(max_model_len)
+        if max_len_int <= 0:
+            max_len_int = 15360
+    except (TypeError, ValueError):
+        max_len_int = 15360
+
+    success, msg = create_fn(hf_token, port_int, model_str, gpu_mem_float, max_len_int, tp_int)
     _, badge = status_fn(port_int)
 
     settings = load_settings()
-    settings.update(
-        {
-            "hf_token": hf_token,
-            "docker_port": port_int,
-            "model_name": model,
-            "docker_gpu_mem": float(gpu_mem),
-            "docker_max_model_len": int(max_model_len) if max_model_len else 0,
-            "server_url": f"http://localhost:{port_int}/v1",
-        }
-    )
+    new_settings = {
+        "docker_port": port_int,
+        "model_name": model_str,
+        "docker_gpu_mem": gpu_mem_float,
+        "docker_max_model_len": max_len_int,
+        "docker_tensor_parallel": tp_int,
+        "server_url": f"http://localhost:{port_int}/v1",
+    }
+    # Only update hf_token if user provided a new non-masked token
+    if hf_token and str(hf_token).strip() and str(hf_token).strip() != "********":
+        new_settings["hf_token"] = str(hf_token).strip()
+
+    settings.update(new_settings)
     save_settings_fn(settings)
     new_url = f"http://localhost:{port_int}/v1"
     return msg, badge, new_url

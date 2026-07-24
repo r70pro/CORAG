@@ -240,8 +240,9 @@ export const SystemDiagnostics: React.FC = () => {
     const timeStr = new Date().toLocaleTimeString();
     addLogMessage(`[${timeStr}] [Docker] Recreating vLLM inference container...`);
     const settings = await fetchSettings().catch(() => ({}));
+    const rawToken = settings?.hf_token || "";
     const res = await createDockerContainer({
-      hf_token: settings?.hf_token || "",
+      hf_token: (rawToken && rawToken !== "********") ? rawToken : undefined,
       port: settings?.docker_port || 8000,
       model: settings?.model_name || "allenai/olmOCR-2-7B-1025-FP8",
       gpu_mem: settings?.docker_gpu_mem || 0.8,

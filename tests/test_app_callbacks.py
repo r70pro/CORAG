@@ -455,8 +455,16 @@ class TestAppCallbacks(unittest.TestCase):
 
     def test_app_handlers_invalid_port_and_download_report(self):
         import app_handlers
-        with patch("app_handlers.create_docker_container", return_value=(True, "Created")), \
-             patch("app_handlers.get_docker_status_str", return_value=("ready", "Badge")), \
+        mock_create = MagicMock(return_value=(True, "Created"))
+        mock_status = MagicMock(return_value=("ready", "Badge"))
+        def mock_get_app_fn(name, fallback):
+            if name == "create_docker_container":
+                return mock_create
+            elif name == "get_docker_status_str":
+                return mock_status
+            return fallback
+
+        with patch("app_handlers.get_app_fn", side_effect=mock_get_app_fn), \
              patch("app_handlers.load_settings", return_value={}), \
              patch("app_handlers.save_settings"):
             msg, badge, new_url = app_handlers.ui_recreate_container("tok", "invalid_port", "model", 0.8, 15000)

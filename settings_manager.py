@@ -146,6 +146,7 @@ def load_settings():
         "docker_port": 8000,
         "docker_gpu_mem": 0.80,
         "docker_max_model_len": 15360,
+        "docker_tensor_parallel": 1,
         "hf_token": os.environ.get("HF_TOKEN", ""),
         # RAG Analysis settings
         "analysis_model_name": "nvidia/Phi-4-reasoning-plus-NVFP4",

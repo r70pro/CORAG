@@ -20,6 +20,27 @@ DEFAULT_MINIO_ACCESS_KEY = "minio_access_5c6d3284f18b"
 DEFAULT_MINIO_SECRET_KEY = UNSAFE_DEFAULT_MINIO_SECRET_KEY
 
 
+def _ensure_dotenv_loaded():
+    if "OLMOCR_PG_PASS" not in os.environ or "OLMOCR_MINIO_SECRET_KEY" not in os.environ:
+        dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        if os.path.exists(dotenv_path):
+            try:
+                with open(dotenv_path, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
+                        k, v = line.split("=", 1)
+                        k, v = k.strip(), v.strip().strip("'\"")
+                        if k and v and k not in os.environ:
+                            os.environ[k] = v
+            except Exception:
+                pass
+
+
+_ensure_dotenv_loaded()
+
+
 def get_db_password() -> str:
     return os.environ.get("OLMOCR_PG_PASS", DEFAULT_DB_PASSWORD)
 

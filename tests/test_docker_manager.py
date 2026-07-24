@@ -201,9 +201,16 @@ class TestDockerManager(unittest.TestCase):
         mock_status.return_value = "not_found"
         mock_run.reset_mock()
         mock_run.return_value = MagicMock(returncode=0)
-        success, msg = docker_manager.create_docker_container("token", 8000, "model", 0.8, 16000)
+        success, msg = docker_manager.create_docker_container("token", 8000, "model", 0.8, 16000, tensor_parallel_size=4)
         self.assertTrue(success)
         self.assertEqual(mock_run.call_count, 1)
+        executed_cmd = mock_run.call_args[0][0]
+        self.assertIn("nvcr.io/nvidia/vllm:26.05-py3", executed_cmd)
+        self.assertIn("--gpu-memory-utilization", executed_cmd)
+        self.assertIn("--max-model-len", executed_cmd)
+        self.assertIn("--tensor-parallel-size", executed_cmd)
+        tp_idx = executed_cmd.index("--tensor-parallel-size")
+        self.assertEqual(executed_cmd[tp_idx + 1], "4")
 
     @patch("subprocess.run")
     def test_cleanup_docker(self, mock_run):

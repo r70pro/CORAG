@@ -100,7 +100,12 @@ def cmd_docker_create(args: argparse.Namespace) -> None:
     from docker_manager import create_docker_container
 
     success, msg = create_docker_container(
-        args.hf_token or "", args.port, args.model, args.gpu_mem, args.max_model_len
+        args.hf_token or "",
+        args.port,
+        args.model,
+        args.gpu_mem,
+        args.max_model_len,
+        args.tensor_parallel_size,
     )
     print(msg)
     sys.exit(0 if success else 1)
@@ -322,6 +327,7 @@ def main() -> None:
     d_create.add_argument("--port", type=int, default=8000)
     d_create.add_argument("--gpu-mem", type=float, default=0.8)
     d_create.add_argument("--max-model-len", type=int, default=15360)
+    d_create.add_argument("--tensor-parallel-size", "-tp", type=int, default=1)
     d_create.add_argument("--hf-token", default=None)
 
     # ── rag ──

@@ -186,6 +186,13 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                     step=1024,
                     value=min(settings.get("docker_max_model_len", 131072), initial_max_len),
                 )
+                docker_tensor_parallel_input = gr.Slider(
+                    label="Tensor Parallel Size (GPUs)",
+                    minimum=1,
+                    maximum=8,
+                    step=1,
+                    value=settings.get("docker_tensor_parallel", 1),
+                )
 
                 with gr.Row():
                     docker_start_btn = gr.Button("▶️ Start", variant="secondary")
@@ -727,6 +734,7 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
             docker_model_name_input,
             docker_gpu_mem_input,
             docker_max_model_len_input,
+            docker_tensor_parallel_input,
         ],
         outputs=[docker_action_status, backend_status_badge, server_url_input],
     )
@@ -788,6 +796,7 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
             docker_model_name_input,
             docker_gpu_mem_input,
             docker_max_model_len_input,
+            docker_tensor_parallel_input,
         ],
         outputs=[docker_action_status, backend_status_badge, server_url_input],
     )

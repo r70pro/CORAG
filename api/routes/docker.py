@@ -69,6 +69,7 @@ def stop_container():
 @router.post("/create", response_model=MessageResponse, summary="Create/recreate container")
 def create_container(req: DockerCreateRequest):
     """Create or recreate the vLLM inference container with the given parameters."""
+    import os
     from docker_manager import create_docker_container
     from settings_manager import load_settings, save_settings
 
@@ -79,26 +80,31 @@ def create_container(req: DockerCreateRequest):
         if not model or model == "model":
             model = "allenai/olmOCR-2-7B-1025-FP8"
 
-    hf_token = req.hf_token if req.hf_token else settings.get("hf_token", "")
+    hf_token = req.hf_token if req.hf_token and req.hf_token != "********" else settings.get("hf_token", "")
+    if hf_token == "********":
+        hf_token = os.environ.get("HF_TOKEN", "")
+
     port = req.port if req.port else settings.get("docker_port", 8000)
     gpu_mem = req.gpu_mem if req.gpu_mem else settings.get("docker_gpu_mem", 0.8)
     max_model_len = req.max_model_len if req.max_model_len else settings.get("docker_max_model_len", 15360)
+    tensor_parallel_size = req.tensor_parallel_size if req.tensor_parallel_size else settings.get("docker_tensor_parallel", 1)
 
     success, msg = create_docker_container(
-        hf_token, port, model, gpu_mem, max_model_len
+        hf_token, port, model, gpu_mem, max_model_len, tensor_parallel_size
     )
     # Persist the new settings
     if success:
-        settings.update(
-            {
-                "hf_token": hf_token,
-                "docker_port": port,
-                "model_name": model,
-                "docker_gpu_mem": gpu_mem,
-                "docker_max_model_len": max_model_len,
-                "server_url": f"http://localhost:{port}/v1",
-            }
-        )
+        new_settings = {
+            "docker_port": port,
+            "model_name": model,
+            "docker_gpu_mem": gpu_mem,
+            "docker_max_model_len": max_model_len,
+            "docker_tensor_parallel": tensor_parallel_size,
+            "server_url": f"http://localhost:{port}/v1",
+        }
+        if hf_token and hf_token != "********":
+            new_settings["hf_token"] = hf_token
+        settings.update(new_settings)
         save_settings(settings)
     return MessageResponse(success=success, message=msg)
 

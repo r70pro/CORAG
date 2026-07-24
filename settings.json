@@ -1,6 +1,6 @@
 {
   "server_url": "http://localhost:8000/v1",
-  "model_name": "model",
+  "model_name": "allenai/olmOCR-2-7B-1025-FP8",
   "workers": 4,
   "max_concurrent_requests": 20,
   "target_longest_image_dim": 1288,
@@ -8,7 +8,8 @@
   "guided_decoding": true,
   "docker_port": 8000,
   "docker_gpu_mem": 0.8,
-  "docker_max_model_len": 15000,
+  "docker_max_model_len": 15360,
+  "docker_tensor_parallel": 1,
   "hf_token": "tok",
   "analysis_model_name": "nvidia/Phi-4-reasoning-plus-NVFP4",
   "analysis_server_url": "http://localhost:8000/v1",
