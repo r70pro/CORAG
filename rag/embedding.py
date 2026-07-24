@@ -9,6 +9,7 @@ Handles:
 """
 
 import hashlib
+import logging
 import os
 import re
 import threading
@@ -26,6 +27,8 @@ from qdrant_client.models import (
 )
 
 from settings_manager import load_settings
+
+logger = logging.getLogger(__name__)
 
 # Default configuration
 DEFAULT_QDRANT_CONFIG = {
@@ -133,10 +136,12 @@ def load_embedding_model(model_name=None, device=None):
 
         from sentence_transformers import SentenceTransformer
 
-        print(f"Loading embedding model '{model_name}' on {device}...")
+        logger.info(f"Loading embedding model '{model_name}' on {device}...")
         _embedding_model = SentenceTransformer(model_name, device=device)
         _embedding_model_name = model_name
-        print(f"Embedding model loaded. Dimension: {_embedding_model.get_embedding_dimension()}")
+        logger.info(
+            f"Embedding model loaded. Dimension: {_embedding_model.get_embedding_dimension()}"
+        )
         return _embedding_model
 
 
@@ -215,7 +220,6 @@ def encode_texts(texts: list[str], model_name=None, batch_size=64) -> list[list[
                 pass
 
     return embeddings
-
 
 
 def encode_query(query: str, model_name=None) -> list[float]:
@@ -308,7 +312,7 @@ def init_collection(dimension=None, model_name=None):
                 f"This usually means the embedding model was changed. Delete the "
                 f"collection (e.g. via the cleanup tools) and re-index."
             )
-        print(f"Qdrant collection '{collection_name}' already exists.")
+        logger.info(f"Qdrant collection '{collection_name}' already exists.")
         return
 
     client.create_collection(
@@ -325,8 +329,8 @@ def init_collection(dimension=None, model_name=None):
             field_schema=PayloadSchemaType.INTEGER,
         )
     except Exception as e:
-        print(f"Warning: could not create Qdrant payload index for date_int: {e}")
-    print(f"Created Qdrant collection '{collection_name}' with dimension {dimension}.")
+        logger.warning(f"Warning: could not create Qdrant payload index for date_int: {e}")
+    logger.info(f"Created Qdrant collection '{collection_name}' with dimension {dimension}.")
 
 
 def delete_collection(model_name=None):
@@ -335,9 +339,9 @@ def delete_collection(model_name=None):
     collection_name = get_collection_name(model_name)
     try:
         client.delete_collection(collection_name=collection_name)
-        print(f"Deleted Qdrant collection '{collection_name}'.")
+        logger.info(f"Deleted Qdrant collection '{collection_name}'.")
     except Exception as e:
-        print(f"Error deleting collection: {e}")
+        logger.error(f"Error deleting collection: {e}")
 
 
 def get_collection_info(model_name=None):
@@ -423,7 +427,7 @@ def upsert_chunks_generator(
             try:
                 delete_run_vectors(run_id, model_name=model_name)
             except Exception as e:
-                print(f"Warning: could not pre-delete vectors for run {run_id}: {e}")
+                logger.warning(f"Warning: could not pre-delete vectors for run {run_id}: {e}")
 
     # Process in batches to support streaming progress
     total = len(chunks)
@@ -495,8 +499,7 @@ def upsert_chunks_generator(
                 time.sleep(0.5 * (2**attempt))
         yield {"stage": "indexing", "current": min(i + batch_size, total), "total": total}
 
-    print(f"Upserted {len(points)} vectors into Qdrant collection '{collection_name}'.")
-
+    logger.info(f"Upserted {len(points)} vectors into Qdrant collection '{collection_name}'.")
 
 
 def upsert_chunks(chunks: list[dict], model_name=None, batch_size=32) -> list[dict]:
@@ -541,9 +544,9 @@ def delete_run_vectors(run_id: str, model_name=None):
                 ]
             ),
         )
-        print(f"Deleted vectors for run {run_id} from Qdrant.")
+        logger.info(f"Deleted vectors for run {run_id} from Qdrant.")
     except Exception as e:
-        print(f"Error deleting run vectors: {e}")
+        logger.error(f"Error deleting run vectors: {e}")
 
 
 def load_reranker_model(model_name=None, device=None):
@@ -574,8 +577,8 @@ def load_reranker_model(model_name=None, device=None):
 
         from sentence_transformers import CrossEncoder
 
-        print(f"Loading reranker model '{model_name}' on {device}...")
+        logger.info(f"Loading reranker model '{model_name}' on {device}...")
         _reranker_model = CrossEncoder(model_name, device=device)
         _reranker_model_name = model_name
-        print("Reranker model loaded successfully.")
+        logger.info("Reranker model loaded successfully.")
         return _reranker_model

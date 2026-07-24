@@ -39,7 +39,7 @@ services:
     container_name: olmocr_minio
     restart: unless-stopped
     environment:
-      MINIO_ROOT_USER: ${OLMOCR_MINIO_ACCESS_KEY:-change_me_minio_user}
+      MINIO_ROOT_USER: ${OLMOCR_MINIO_ACCESS_KEY:-minio_access_5c6d3284f18b}
       MINIO_ROOT_PASSWORD: ${OLMOCR_MINIO_SECRET_KEY:-change_me_minio_secret}
     ports:
       - "127.0.0.1:9000:9000"

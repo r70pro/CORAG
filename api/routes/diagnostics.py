@@ -7,7 +7,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import FileResponse
 
-from api.models import GPUInfo, HealthResponse, ServiceHealth
+from api.models import CleanupRequest, CleanupResponse, GPUInfo, HealthResponse, ServiceHealth
 
 router = APIRouter()
 
@@ -93,4 +93,32 @@ def download_report():
         report_path,
         media_type="text/markdown",
         filename="diagnostic_report.md",
+    )
+
+
+@router.post(
+    "/cleanup", response_model=CleanupResponse, summary="Perform system reset and disk cleanup"
+)
+def execute_cleanup(req: CleanupRequest):
+    """Execute cleanup of selected components to reclaim disk space."""
+    from api.models import CleanupResponse
+    from cleanup_manager import perform_reset_cleanup
+
+    components = req.components or []
+    clean_runs = "runs" in components or "workspace" in components
+    clean_gradio = "temp" in components or "cache" in components or "gradio" in components
+    clean_pycache = "pycache" in components or "bytecode" in components
+    clean_hf = "hf" in components or "models" in components
+
+    res = perform_reset_cleanup(clean_runs, clean_gradio, clean_pycache, clean_hf)
+    if isinstance(res, str):
+        clean_msg = res.replace("### ", "").replace("**", "").replace("`", "").strip()
+    else:
+        clean_msg = str(res)
+
+    return CleanupResponse(
+        success=True,
+        message=clean_msg,
+        reclaimed_bytes=0,
+        reclaimed_str="",
     )

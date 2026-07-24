@@ -281,8 +281,10 @@ class TestRAGUIHandlers(unittest.TestCase):
     @patch("rag.embedding.delete_run_vectors")
     @patch("rag.storage.delete_run_objects")
     @patch("rag.cache.invalidate_query_cache")
+    @patch("rag.db.get_all_runs")
     @patch("rag.db.get_runs_with_stats")
-    def test_bulk_delete_handling(self, mock_get_runs, mock_invalidate, mock_del_objects, mock_del_vectors, mock_del_db):
+    def test_bulk_delete_handling(self, mock_get_runs, mock_get_all_runs, mock_invalidate, mock_del_objects, mock_del_vectors, mock_del_db):
+        mock_get_all_runs.side_effect = lambda: mock_get_runs()
         with gr.Blocks():
             with patch("rag_ui_dashboard._build_dashboard_html", return_value="dashboard"):
                 with patch("rag_ui_dashboard._get_indexed_run_choices", return_value=[("lbl", "r1")]):

@@ -36,7 +36,9 @@ def get_embedding_telemetry_html():
             try:
                 import torch
 
-                active_device = "CUDA GPU (NVIDIA GB10)" if torch.cuda.is_available() else "CPU Mode"
+                active_device = (
+                    "CUDA GPU (NVIDIA GB10)" if torch.cuda.is_available() else "CPU Mode"
+                )
             except Exception:
                 active_device = "CPU Mode"
 
@@ -127,7 +129,9 @@ def build_embedding_pipeline_ui():
                     "</div>"
                 )
             with gr.Column(scale=1):
-                refresh_telemetry_btn = gr.Button("🔄 Refresh Telemetry", variant="secondary", size="sm")
+                refresh_telemetry_btn = gr.Button(
+                    "🔄 Refresh Telemetry", variant="secondary", size="sm"
+                )
 
         # Telemetry Row
         telemetry_html_comp = gr.HTML(value=get_embedding_telemetry_html)
@@ -207,7 +211,9 @@ def build_embedding_pipeline_ui():
         # Section 3: Direct External Markdown Upload & Indexing
         gr.HTML("<hr class='inline-section-divider'>")
         gr.Markdown("### 📥 Direct External Markdown Upload & Indexing")
-        gr.Markdown("Upload markdown files directly into a new or existing case, bypassing OCR ingestion to chunk and generate dense vectors.")
+        gr.Markdown(
+            "Upload markdown files directly into a new or existing case, bypassing OCR ingestion to chunk and generate dense vectors."
+        )
 
         with gr.Row():
             with gr.Column(scale=2, elem_classes=["glass-panel"]):
@@ -277,9 +283,7 @@ def build_embedding_pipeline_ui():
             outputs=[upload_status_card, log_console],
         ).then(get_embedding_telemetry_html, outputs=[telemetry_html_comp]).then(
             _get_updated_case_choices, outputs=[target_case_dropdown]
-        ).then(
-            _get_updated_run_selector_choices, outputs=[run_selector]
-        )
+        ).then(_get_updated_run_selector_choices, outputs=[run_selector])
 
         # Event Handlers
         save_config_btn.click(

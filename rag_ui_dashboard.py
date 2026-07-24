@@ -1,8 +1,11 @@
+import logging
 import os
 
 import gradio as gr
 
 from rag_ui_state import log_to_rag
+
+logger = logging.getLogger(__name__)
 
 
 def get_rag_ui_fn(name, fallback):
@@ -35,7 +38,7 @@ def _build_dashboard_html():
         run_ids = [r.get("run_id") for r in runs if r.get("run_id")]
         cases_metadata = get_all_cases_metadata(run_ids)
     except Exception as e:
-        print(f"Warning: could not pre-load case metadata: {e}")
+        logger.warning(f"Warning: could not pre-load case metadata: {e}")
 
     return make_case_dashboard_html(runs, cases_metadata)
 
@@ -307,9 +310,11 @@ def build_case_dashboard_ui():
         get_choices_fn = get_rag_ui_fn("_get_indexed_run_choices", _get_indexed_run_choices)
 
         try:
-            from rag.db import get_runs_with_stats
+            from rag.db import get_all_runs, get_runs_with_stats
 
-            runs = get_runs_with_stats()
+            runs = get_all_runs()
+            if not runs:
+                runs = get_runs_with_stats()
             run_ids = [run.get("run_id") for run in runs if run.get("run_id")]
         except Exception as e:
             log_to_rag(f"Failed to fetch runs for delete all: {e}")

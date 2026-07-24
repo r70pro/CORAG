@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 import zipfile
 from io import BytesIO
@@ -8,6 +9,8 @@ import pypdfium2 as pdfium
 from pypdf import PdfReader
 
 import process_state
+
+logger = logging.getLogger(__name__)
 
 
 def is_safe_filename(filename):
@@ -75,7 +78,7 @@ def render_pdf_page(pdf_path, page_num):
         bitmap = page.render(scale=2)
         return bitmap.to_pil()
     except Exception as e:
-        print(f"Error rendering PDF page: {e}")
+        logger.error(f"Error rendering PDF page: {e}")
         return None
 
 
@@ -101,7 +104,7 @@ def get_page_mapping_and_pdf_path(selected_file, run_id_state):
         reader = PdfReader(pdf_path)
         total_pages = len(reader.pages)
     except Exception as e:
-        print(f"Error reading PDF page count: {e}")
+        logger.error(f"Error reading PDF page count: {e}")
         total_pages = 0
 
     page_ranges = []
@@ -127,7 +130,7 @@ def get_page_mapping_and_pdf_path(selected_file, run_id_state):
                                 page_ranges = pdf_page_numbers
                                 break
                 except Exception as e:
-                    print(f"Error reading jsonl {jsonl_path}: {e}")
+                    logger.error(f"Error reading jsonl {jsonl_path}: {e}")
                 if page_ranges:
                     break
 
@@ -177,7 +180,7 @@ def on_file_selected(selected_file, run_id_state):
                     with open(file_path, encoding="utf-8") as f:
                         full_markdown = f.read()
                 except Exception as e:
-                    print(f"Error reading file: {e}")
+                    logger.error(f"Error reading file: {e}")
                     full_markdown = f"Error reading file: {e}"
 
     return (

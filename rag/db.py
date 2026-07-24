@@ -8,6 +8,7 @@ Manages:
 """
 
 import json
+import logging
 import os
 import sys
 import threading
@@ -18,6 +19,8 @@ import psycopg2.extras
 from psycopg2.pool import ThreadedConnectionPool
 
 from secrets_config import get_db_password
+
+logger = logging.getLogger(__name__)
 
 # Default connection parameters
 DEFAULT_DB_CONFIG = {
@@ -257,7 +260,7 @@ def is_run_indexed(run_id, check_vector_store=True):
                         return False
                 except Exception as e:
                     # Fallback to postgres database status if Qdrant check fails
-                    print(f"Warning: Qdrant check in is_run_indexed failed: {e}")
+                    logger.warning(f"Warning: Qdrant check in is_run_indexed failed: {e}")
 
             return True
 

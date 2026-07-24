@@ -6,6 +6,7 @@ This module connects user queries to the most relevant document chunks.
 """
 
 import datetime
+import logging
 from typing import Any
 
 from qdrant_client.models import (
@@ -22,6 +23,8 @@ from rag.embedding import (
     get_qdrant_client,
     init_collection,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def search_similar(
@@ -90,7 +93,30 @@ def search_similar(
     if author_filter:
         must_conditions.append(FieldCondition(key="author", match=MatchValue(value=author_filter)))
     if run_id_filter:
-        must_conditions.append(FieldCondition(key="run_id", match=MatchValue(value=run_id_filter)))
+        resolved_run_id = run_id_filter
+        if "/" in run_id_filter or "\\" in run_id_filter or run_id_filter.startswith("run_"):
+            try:
+                import os
+                import re
+
+                from rag.db import get_indexed_runs
+
+                runs = get_indexed_runs()
+                clean_filter = re.sub(r"\s*\(\d+\s+files?\)", "", run_id_filter).strip()
+                for r in runs:
+                    r_id = r.get("run_id", "")
+                    r_dir = r.get("run_dir", "")
+                    r_base = os.path.basename(r_dir)
+                    if (
+                        r_id in (run_id_filter, clean_filter)
+                        or r_dir in (run_id_filter, clean_filter)
+                        or r_base in (run_id_filter, clean_filter)
+                    ):
+                        resolved_run_id = r_id
+                        break
+            except Exception:
+                pass
+        must_conditions.append(FieldCondition(key="run_id", match=MatchValue(value=resolved_run_id)))
     if doc_id_filter:
         must_conditions.append(FieldCondition(key="doc_id", match=MatchValue(value=doc_id_filter)))
     date_from_norm = _normalize_iso_date(date_from) if date_from else None
@@ -102,13 +128,13 @@ def search_similar(
             from_int = int(date_from_norm.replace("-", ""))
             must_conditions.append(FieldCondition(key="date_int", range=Range(gte=float(from_int))))
         except Exception as e:
-            print(f"Warning: could not parse date_from to int: {e}")
+            logger.warning(f"Warning: could not parse date_from to int: {e}")
     if date_to_norm:
         try:
             to_int = int(date_to_norm.replace("-", ""))
             must_conditions.append(FieldCondition(key="date_int", range=Range(lte=float(to_int))))
         except Exception as e:
-            print(f"Warning: could not parse date_to to int: {e}")
+            logger.warning(f"Warning: could not parse date_to to int: {e}")
 
     query_filter = Filter(must=must_conditions) if must_conditions else None
 
@@ -137,10 +163,10 @@ def search_similar(
                     with_payload=True,
                 )
             except Exception as e2:
-                print(f"Error searching after collection initialization: {e2}")
+                logger.error(f"Error searching after collection initialization: {e2}")
                 return []
         else:
-            print(f"Error searching Qdrant: {e}")
+            logger.error(f"Error searching Qdrant: {e}")
             return []
 
     if not results:
@@ -154,7 +180,7 @@ def search_similar(
         for row in db_results:
             db_chunks[row["qdrant_point_id"]] = row
     except Exception as e:
-        print(f"Warning: could not enrich from DB: {e}")
+        logger.warning(f"Warning: could not enrich from DB: {e}")
 
     # Build result list
     enriched_results = []
@@ -223,13 +249,13 @@ def search_similar(
 
             # Sort by new scores descending
             enriched_results.sort(key=lambda x: x["score"], reverse=True)
-            print(
+            logger.info(
                 f"Reranking completed successfully for {len(enriched_results)} chunks using {reranker_model}."
             )
             if progress_callback:
                 progress_callback(0.8, "Rerank completed. Applying diversity filters...")
         except Exception as e:
-            print(f"Error during reranking: {e}. Falling back to default retrieval.")
+            logger.error(f"Error during reranking: {e}. Falling back to default retrieval.")
             if progress_callback:
                 progress_callback(
                     0.8, f"Reranking failed: {e}. Falling back to default retrieval..."

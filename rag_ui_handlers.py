@@ -503,5 +503,6 @@ def get_embedding_pipeline_info_html():
         """
         return html
     except Exception as e:
-        return f"<div style='font-size:0.8rem; color:#ef4444;'>Error loading vector metrics: {e}</div>"
-
+        return (
+            f"<div style='font-size:0.8rem; color:#ef4444;'>Error loading vector metrics: {e}</div>"
+        )

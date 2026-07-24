@@ -1,7 +1,10 @@
+import logging
 import os
 import subprocess
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 def get_docker_status():
@@ -44,13 +47,38 @@ def get_docker_status_str(port):
         return "not_found", "<span class='badge-idle'>Docker: Not Created</span>"
     elif status == "exited":
         return "stopped", "<span class='badge-stopped'>Docker: Stopped</span>"
-    elif status == "running":
+    elif status in ("running", "restarting"):
         if check_server_ready(port):
             return "ready", "<span class='badge-success'>Inference Server: Ready</span>"
         else:
             return "starting", "<span class='badge-running'>Server: Starting / Loading Model</span>"
     else:
         return "error", "<span class='badge-failed'>Docker: Error</span>"
+
+
+def get_docker_logs(tail: int = 200) -> str:
+    """Fetch stdout/stderr logs from the vLLM docker container."""
+    try:
+        res = subprocess.run(
+            ["docker", "logs", "--tail", str(int(tail)), "olmocr"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if res.returncode == 0:
+            output = res.stdout or ""
+            if res.stderr:
+                output = (output + "\n" + res.stderr) if output else res.stderr
+            return output.strip() or "No log output available from container."
+        elif (
+            "no such object" in res.stderr.lower()
+            or "no such container" in res.stderr.lower()
+        ):
+            return "Container 'olmocr' not found."
+        else:
+            return f"Error reading logs: {res.stderr.strip()}"
+    except Exception as e:
+        return f"Failed to retrieve container logs: {e}"
 
 
 def start_docker_container():
@@ -70,7 +98,7 @@ def start_docker_container():
 
 def stop_docker_container():
     status = get_docker_status()
-    if status == "running":
+    if status in ["running", "restarting"]:
         try:
             subprocess.run(["docker", "stop", "olmocr"], check=True, capture_output=True)
             return True, "Container stopped successfully."
@@ -81,8 +109,13 @@ def stop_docker_container():
 
 def create_docker_container(hf_token, port, model, gpu_mem, max_model_len):
     status = get_docker_status()
+    # Fall back to default model if model is invalid, empty, or literally "model"
+    if not model or not str(model).strip() or str(model).strip() == "model":
+        model = "allenai/olmOCR-2-7B-1025-FP8"
+    else:
+        model = str(model).strip()
+
     # Coerce the port to a sane integer default before any int() conversion
-    # so an empty/non-numeric Gradio Number widget cannot raise TypeError.
     try:
         port_int = int(port)
     except (TypeError, ValueError):
@@ -97,17 +130,15 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len):
     os.makedirs(hf_cache_dir, exist_ok=True)
 
     # Pass secrets via a temporary env-file rather than `-e HF_TOKEN=...`.
-    # The `-e` form embeds the token in the container's inspect output and the
-    # host process arguments (visible to anyone running `ps`/`docker inspect`),
-    # whereas an env-file is only readable by root and removed immediately after
-    # the container is created.
+    # Only write HF_TOKEN if non-empty to avoid corrupting HF authorization headers.
     env_file = None
     try:
         import tempfile
 
         fd, env_path = tempfile.mkstemp(prefix="olmocr_env_", suffix=".env")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(f"HF_TOKEN={hf_token}\n")
+            if hf_token and str(hf_token).strip():
+                fh.write(f"HF_TOKEN={str(hf_token).strip()}\n")
             fh.write("PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True\n")
             # Newer vLLM releases reject max_model_len values above the model's
             # derived maximum. Allow the app's configured value to override it.
@@ -131,7 +162,9 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len):
             f"{hf_cache_dir}:/root/.cache/huggingface",
             "--env-file",
             env_path,
-            os.environ.get("OLMOCR_VLLM_IMAGE", "vllm/vllm-openai:v0.8.5"),
+            os.environ.get("OLMOCR_VLLM_IMAGE", "vllm/vllm-openai:v0.20.0"),
+            "--host",
+            "0.0.0.0",
             "--model",
             model,
             "--gpu_memory_utilization",
@@ -140,6 +173,7 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len):
             str(int(max_model_len)),
             "--max-num-batched-tokens",
             str(max(int(max_model_len), 4096)),
+            "--trust-remote-code",
         ]
         try:
             subprocess.run(cmd, check=True, capture_output=True, text=True)
@@ -156,7 +190,7 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len):
         # Defensive cleanup in case an exception escaped the inner try/finally.
         if env_file is not None and os.path.exists(env_file):
             try:
-                os.remove(env_file)
+                os.remove(env_path)
             except OSError:
                 pass
 
@@ -181,9 +215,11 @@ def cleanup_docker():
     # (e.g. in a persistent deployment) by setting KEEP_CONTAINERS_ON_EXIT.
     if os.environ.get("KEEP_CONTAINERS_ON_EXIT") == "true":
         return
-    print("Application shutting down. Stopping local OLMOCR Docker container to release VRAM...")
+    logger.info(
+        "Application shutting down. Stopping local OLMOCR Docker container to release VRAM..."
+    )
     try:
         subprocess.run(["docker", "stop", "olmocr"], capture_output=True)
-        print("Docker container stopped successfully.")
+        logger.info("Docker container stopped successfully.")
     except Exception as e:
-        print(f"Error stopping container on shutdown: {e}")
+        logger.error(f"Error stopping container on shutdown: {e}")

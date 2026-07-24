@@ -31,6 +31,10 @@ _MODEL_EQUIVALENTS = {
     "microsoft/Phi-4-reasoning-plus": "nvidia/Phi-4-reasoning-plus-NVFP4",
 }
 
+# RAG analysis retrieval constants
+STRUCTURED_MODE_MIN_TOP_K = 50
+STRUCTURED_MODE_SCORE_THRESHOLD = 0.05
+
 
 def _get_loaded_models(server_url: str) -> list[str]:
     """Fetch (and cache) the list of model IDs currently loaded in vLLM."""
@@ -182,10 +186,19 @@ INSTRUCTIONS:
 
 ANALYSIS_MODE_MAP = {
     "💬 Free Q&A": "free_qa",
+    "free_qa": "free_qa",
     "📅 Timeline Generator": "timeline",
+    "📋 Timeline": "timeline",
+    "timeline": "timeline",
+    "timeline_generator": "timeline",
     "🏥 Injury Summary": "injury_summary",
+    "⚕️ Medical Summary": "injury_summary",
+    "injury_summary": "injury_summary",
     "🔍 Inconsistency Finder": "inconsistency_finder",
+    "⚖️ Injury Audit": "inconsistency_finder",
+    "inconsistency_finder": "inconsistency_finder",
     "💊 Medication Tracker": "medication_tracker",
+    "medication_tracker": "medication_tracker",
 }
 
 
@@ -548,9 +561,9 @@ def analyze(
     # used so the expanded candidate pool is actually retrieved (independent of
     # whether a case filter is active).
     if mode in ["timeline", "injury_summary", "inconsistency_finder", "medication_tracker"]:
-        top_k = max(top_k, 50)
+        top_k = max(top_k, STRUCTURED_MODE_MIN_TOP_K)
         if "score_threshold" not in search_kwargs:
-            search_kwargs["score_threshold"] = 0.05
+            search_kwargs["score_threshold"] = STRUCTURED_MODE_SCORE_THRESHOLD
 
     # Step 1: Retrieve relevant chunks
     results = search_similar(

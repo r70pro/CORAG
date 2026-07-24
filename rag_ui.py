@@ -6,7 +6,6 @@ extracted to sub-modules. Exposes all functions and globals via a dynamic
 module class to guarantee full compatibility with the existing test suites.
 """
 
-import os
 import sys
 import types
 
@@ -20,31 +19,23 @@ import rag_ui_state  # noqa: F401
 
 # Re-expose RAG logs and shared state dynamically via RagUiModule below
 from rag_ui_state import extract_text_content, get_rag_logs, log_to_rag  # noqa: F401
-
-# Re-expose settings helpers for testing/compatibility
 from settings_manager import WORKSPACE_DIR, load_settings  # noqa: F401
+from settings_manager import get_available_runs as _sm_get_available_runs
 
 
-def get_available_runs():
+def get_available_runs(workspace_dir: str | None = None):
+    """Canonical forwarding wrapper for rag_ui namespace."""
     import sys
 
-    rag_ui = sys.modules[__name__]
-    workspace = getattr(rag_ui, "WORKSPACE_DIR", WORKSPACE_DIR)
-    runs = []
-    if not os.path.exists(workspace):
-        return runs
-
-    for name in sorted(os.listdir(workspace), reverse=True):
-        run_dir = os.path.join(workspace, name)
-        if not os.path.isdir(run_dir) or not name.startswith("run_"):
-            continue
-        md_dir = os.path.join(run_dir, "markdown", "inputs")
-        if os.path.exists(md_dir):
-            md_files = [f for f in os.listdir(md_dir) if f.endswith(".md")]
-            if md_files:
-                display = f"{name} ({len(md_files)} file{'s' if len(md_files) != 1 else ''})"
-                runs.append((display, run_dir))
-    return runs
+    rag_ui_mod = sys.modules.get("rag_ui")
+    ws_override = workspace_dir
+    if ws_override is None and rag_ui_mod is not None:
+        sm_mod = sys.modules.get("settings_manager")
+        sm_ws = getattr(sm_mod, "WORKSPACE_DIR", None)
+        rag_ws = getattr(rag_ui_mod, "WORKSPACE_DIR", None)
+        if rag_ws is not None and rag_ws != sm_ws:
+            ws_override = rag_ws
+    return _sm_get_available_runs(workspace_dir=ws_override)
 
 
 # --- Forwarding wrappers to keep functions in rag_ui namespace for patching ---
@@ -664,7 +655,9 @@ def build_rag_chat_ui():
                 index_status = gr.HTML("")
 
             target_case_dropdown = gr.State("new")
-            embedding_model_input = gr.State(settings.get("embedding_model", "BAAI/bge-large-en-v1.5"))
+            embedding_model_input = gr.State(
+                settings.get("embedding_model", "BAAI/bge-large-en-v1.5")
+            )
 
             # Analysis settings
             with gr.Accordion("⚙️ Analysis Settings", open=False):

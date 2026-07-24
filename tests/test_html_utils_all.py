@@ -59,6 +59,43 @@ class TestHTMLUtilsAll(unittest.TestCase):
         self.assertIn("4.8 MB", res)
         self.assertIn("Total (3 files)", res)
 
+    def test_structured_data_helpers(self):
+        # get_progress_data
+        prog = hu.get_progress_data(completed=5, total=10, elapsed_secs=10)
+        self.assertEqual(prog["percentage"], 50)
+        self.assertEqual(prog["eta_str"], "10s remaining")
+
+        # get_file_status_data
+        file_mapping = {0: "doc1.pdf", 1: "doc2.pdf"}
+        file_page_counts = {0: 5, 1: 10}
+        statuses = hu.get_file_status_data(file_mapping, file_page_counts, completed_files_set={0}, failed_files_set={1})
+        self.assertEqual(len(statuses), 2)
+        self.assertEqual(statuses[0]["status"], "completed")
+        self.assertEqual(statuses[1]["status"], "failed")
+
+        # get_progress_data minutes & hours branches
+        prog_m = hu.get_progress_data(completed=1, total=10, elapsed_secs=60)
+        self.assertIn("m", prog_m["eta_str"])
+        self.assertIn("m", prog_m["elapsed_str"])
+
+        prog_h = hu.get_progress_data(completed=1, total=10, elapsed_secs=3600)
+        self.assertIn("h", prog_h["eta_str"])
+        self.assertIn("h", prog_h["elapsed_str"])
+
+        prog_done = hu.get_progress_data(completed=10, total=10, elapsed_secs=10)
+        self.assertEqual(prog_done["eta_str"], "Complete")
+
+        # get_file_status_data defaults
+        stat_default = hu.get_file_status_data({0: "a.pdf"}, {0: 1}, completed_files_set=set(), failed_files_set=None)
+        self.assertEqual(stat_default[0]["status"], "pending")
+
+        # get_case_dashboard_data with None cases_metadata
+        runs_data = [{"run_id": "run_1", "run_dir": "/workspace/run_1", "total_documents": 2}]
+        dash_none = hu.get_case_dashboard_data(runs_data, None)
+        self.assertEqual(len(dash_none), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

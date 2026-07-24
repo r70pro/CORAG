@@ -46,12 +46,12 @@ class TestDownloadModels(unittest.TestCase):
     def test_download_all_attempts_fail(self, mock_sleep, mock_snapshot):
         mock_snapshot.side_effect = Exception("Auth failed")
         
-        with patch("builtins.print"), patch("traceback.print_exc") as mock_traceback:
+        with patch("download_models.logger.exception") as mock_exception:
             import download_models
             download_models.download_all_models()
             
         self.assertEqual(mock_sleep.call_count, 4 * len(download_models.MODELS))  # 4 retries per model
-        self.assertEqual(mock_traceback.call_count, len(download_models.MODELS))
+        self.assertEqual(mock_exception.call_count, len(download_models.MODELS))
 
     @patch("settings_manager.load_settings")
     @patch("download_models.snapshot_download")
@@ -83,11 +83,11 @@ class TestDownloadModels(unittest.TestCase):
             with patch.dict(os.environ, {}):
                 if "HF_TOKEN" in os.environ:
                     del os.environ["HF_TOKEN"]
-                with patch("builtins.print") as mock_print:
+                with patch("download_models.logger.warning") as mock_warn:
                     import download_models
                     importlib.reload(download_models)
                     self.assertIsNone(download_models.HF_TOKEN)
-                    mock_print.assert_any_call("Warning: HF_TOKEN environment variable not set, and hf_token not configured in settings.json.")
+                    mock_warn.assert_called()
 
     @patch("download_models.snapshot_download")
     @patch("download_models.time.sleep")
@@ -98,11 +98,11 @@ class TestDownloadModels(unittest.TestCase):
         with patch.dict(os.environ, {}):
             if "HF_TOKEN" in os.environ:
                 del os.environ["HF_TOKEN"]
-            with patch("builtins.print") as mock_print:
+            with patch("download_models.logger.warning") as mock_warn:
                 import download_models
                 importlib.reload(download_models)
                 self.assertIsNone(download_models.HF_TOKEN)
-                mock_print.assert_any_call("Warning: HF_TOKEN environment variable not set, and hf_token not configured in settings.json.")
+                mock_warn.assert_called()
 
 
 if __name__ == "__main__":

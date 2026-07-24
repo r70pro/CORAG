@@ -239,7 +239,6 @@ def cache_embeddings_bulk(
     pipe.execute()
 
 
-
 # ── Chat session history ──────────────────────────────────────
 
 

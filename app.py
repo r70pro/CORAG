@@ -1,4 +1,5 @@
 import atexit
+import logging
 from collections.abc import Generator
 from typing import Any
 
@@ -84,6 +85,8 @@ from ui_adapters import file_selection_to_gradio, pipeline_result_to_gradio
 # Styling and theme properties
 from ui_theme import custom_css, dark_theme  # noqa: F401
 
+logger = logging.getLogger(__name__)
+
 # Register exit hooks
 atexit.register(cleanup_docker)
 atexit.register(cleanup_active_runs)
@@ -102,10 +105,9 @@ settings = load_settings()
 # using the documented unsafe defaults. This guards against accidentally
 # running the RAG stack with publicly-known passwords.
 if credentials_are_default():
-    print(
-        "⚠️  SECURITY WARNING: PostgreSQL and/or MinIO are using the default "
-        "placeholder credentials from .env. Set strong, unique values for "
-        "OLMOCR_PG_PASS and OLMOCR_MINIO_SECRET_KEY before exposing this "
+    logger.warning(
+        "⚠️  SECURITY WARNING: PostgreSQL, MinIO, or API credentials are using default "
+        "placeholder values from .env. Set strong, unique values before exposing this "
         "workstation on any network."
     )
 

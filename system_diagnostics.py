@@ -85,7 +85,9 @@ def get_vllm_loading_progress() -> dict[str, Any] | None:
             # Check for CUDA graphs capture
             for line in reversed(lines):
                 if "Capturing CUDA graphs" in line:
-                    match = re.search(r"Capturing CUDA graphs.*:\s*(\d+)%\s*\|\s*.*?\|\s*(\d+)/(\d+)", line)
+                    match = re.search(
+                        r"Capturing CUDA graphs.*:\s*(\d+)%\s*\|\s*.*?\|\s*(\d+)/(\d+)", line
+                    )
                     if match:
                         return {
                             "pct": 100,
@@ -203,8 +205,10 @@ def get_vllm_loading_progress() -> dict[str, Any] | None:
 
 
 def check_backing_services_data(
-    service_history: dict[str, list[float]], vllm_port: int = 8000
+    service_history: dict[str, list[float]] | None = None, vllm_port: int = 8000
 ) -> dict[str, Any]:
+    if service_history is None:
+        service_history = {}
     services_data = {}
     all_healthy = True
     failed_services = []

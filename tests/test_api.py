@@ -364,5 +364,62 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["response"], "Answer chunk")
 
+    # ── Authentication & Security ─────────────────────────────────────────────
+
+    def test_api_key_authentication(self):
+        with patch.dict(os.environ, {"KIRAG_API_KEY": "test-secret-key"}):
+            # Test without API key header -> should fail with 401
+            res = self.client.get("/")
+            self.assertEqual(res.status_code, 401)
+
+            # Test with invalid API key header -> 401
+            res = self.client.get("/", headers={"X-API-Key": "wrong-key"})
+            self.assertEqual(res.status_code, 401)
+
+            # Test with valid X-API-Key header -> 200
+            res = self.client.get("/", headers={"X-API-Key": "test-secret-key"})
+            self.assertEqual(res.status_code, 200)
+
+            # Test with valid Bearer token -> 200
+            res = self.client.get("/", headers={"Authorization": "Bearer test-secret-key"})
+            self.assertEqual(res.status_code, 200)
+
+    def test_cors_headers(self):
+        # OPTIONS preflight request from allowed origin
+        response = self.client.options(
+            "/",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("access-control-allow-origin"), "http://localhost:3000")
+
+    # ── Consolidated Phase 1 Core Endpoints ─────────────────────────────────────
+
+    @patch("system_diagnostics.check_backing_services_data")
+    @patch("system_diagnostics.get_gpu_metrics_data")
+    def test_consolidated_health(self, mock_gpu, mock_backing):
+        mock_backing.return_value = {"postgres": "healthy"}
+        mock_gpu.return_value = {"utilization": "5%"}
+        res = self.client.get("/api/health")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["status"], "healthy")
+
+    @patch("rag.db.get_corpus_stats")
+    @patch("rag.db.get_indexed_runs")
+    @patch("rag.embedding.get_collection_info")
+    def test_consolidated_case_summary(self, mock_qdrant, mock_runs, mock_stats):
+        mock_stats.return_value = {"indexed_runs": 1, "total_chunks": 10}
+        mock_runs.return_value = [{"run_id": "r1", "display_name": "Run 1", "created_at": "2026-07-22"}]
+        mock_qdrant.return_value = {"points_count": 10, "status": "green"}
+
+        res = self.client.get("/api/case-summary")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["stats"]["indexed_runs"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
+

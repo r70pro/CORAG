@@ -6,7 +6,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from api.models import DockerCreateRequest, DockerStatusResponse, MessageResponse
+from api.models import (
+    DockerCreateRequest,
+    DockerLogsResponse,
+    DockerStatusResponse,
+    MessageResponse,
+)
 
 router = APIRouter()
 
@@ -33,6 +38,16 @@ def get_status():
     return DockerStatusResponse(status=status, message=status_text, badge_html=badge_html)
 
 
+@router.get("/logs", response_model=DockerLogsResponse, summary="Get container logs")
+def get_logs(tail: int = 200):
+    """Return stdout/stderr logs from the vLLM container."""
+    from docker_manager import get_docker_logs, get_docker_status
+
+    logs = get_docker_logs(tail=tail)
+    status = get_docker_status()
+    return DockerLogsResponse(logs=logs, container_status=status)
+
+
 @router.post("/start", response_model=MessageResponse, summary="Start container")
 def start_container():
     """Start the existing vLLM inference container."""
@@ -57,20 +72,31 @@ def create_container(req: DockerCreateRequest):
     from docker_manager import create_docker_container
     from settings_manager import load_settings, save_settings
 
+    settings = load_settings()
+    model = req.model
+    if not model or model == "model":
+        model = settings.get("model_name", "allenai/olmOCR-2-7B-1025-FP8")
+        if not model or model == "model":
+            model = "allenai/olmOCR-2-7B-1025-FP8"
+
+    hf_token = req.hf_token if req.hf_token else settings.get("hf_token", "")
+    port = req.port if req.port else settings.get("docker_port", 8000)
+    gpu_mem = req.gpu_mem if req.gpu_mem else settings.get("docker_gpu_mem", 0.8)
+    max_model_len = req.max_model_len if req.max_model_len else settings.get("docker_max_model_len", 15360)
+
     success, msg = create_docker_container(
-        req.hf_token, req.port, req.model, req.gpu_mem, req.max_model_len
+        hf_token, port, model, gpu_mem, max_model_len
     )
     # Persist the new settings
     if success:
-        settings = load_settings()
         settings.update(
             {
-                "hf_token": req.hf_token,
-                "docker_port": req.port,
-                "model_name": req.model,
-                "docker_gpu_mem": req.gpu_mem,
-                "docker_max_model_len": req.max_model_len,
-                "server_url": f"http://localhost:{req.port}/v1",
+                "hf_token": hf_token,
+                "docker_port": port,
+                "model_name": model,
+                "docker_gpu_mem": gpu_mem,
+                "docker_max_model_len": max_model_len,
+                "server_url": f"http://localhost:{port}/v1",
             }
         )
         save_settings(settings)
@@ -84,3 +110,4 @@ def shutdown_container():
 
     success, msg = shutdown_docker_container()
     return MessageResponse(success=success, message=msg)
+

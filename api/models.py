@@ -38,6 +38,7 @@ class RunInfo(BaseModel):
 
     display_name: str
     run_dir: str
+    run_id: str = ""
     file_count: int = 0
 
 
@@ -60,6 +61,13 @@ class DockerStatusResponse(BaseModel):
     status: str = Field(description="ready | starting | stopped | not_found | error")
     message: str = ""
     badge_html: str = ""
+
+
+class DockerLogsResponse(BaseModel):
+    """Container logs snapshot."""
+
+    logs: str = ""
+    container_status: str = ""
 
 
 # ── RAG ───────────────────────────────────────────────────────────────────────
@@ -189,3 +197,76 @@ class MessageResponse(BaseModel):
 
     success: bool = True
     message: str = ""
+
+
+# ── Case Management & Deletion ────────────────────────────────────────────────
+
+
+class DeleteCasesRequest(BaseModel):
+    """Request body to delete one, multiple, or all indexed cases."""
+
+    run_ids: list[str] = Field(default_factory=list, description="List of run IDs to delete")
+    delete_all: bool = Field(
+        False, description="If True, delete all cases from vector store and DB"
+    )
+
+
+# ── Embedding & Vector Store ──────────────────────────────────────────────────
+
+
+class EmbeddingTelemetryResponse(BaseModel):
+    """Telemetry data for Qdrant vector store and Redis embedding cache."""
+
+    active_device: str = "auto"
+    device_target: str = "auto"
+    qdrant_points: int = 0
+    collection_name: str = "cases"
+    vector_dim: int = 1024
+    metric: str = "Cosine Similarity"
+    redis_cached_count: str = "N/A"
+    telemetry_html: str = ""
+
+
+class EmbeddingConfigRequest(BaseModel):
+    """Configuration updates for dense vector embedding."""
+
+    embedding_model: str = "BAAI/bge-large-en-v1.5"
+    embedding_device: str = "auto"
+    chunk_size: int = 800
+    chunk_overlap: int = 100
+    embedding_batch_size: int = 64
+
+
+# ── Chat Export ───────────────────────────────────────────────────────────────
+
+
+class ExportChatRequest(BaseModel):
+    """Request payload to export chat history."""
+
+    history: list[dict] = Field(
+        ..., description="List of message objects [{role, content}] or tuples"
+    )
+    mode: str = Field("free_qa", description="Analysis mode key")
+    case_id: str = Field("", description="Active case ID")
+    export_format: str = Field("md", description="md | txt | csv | docx | timeline_docx")
+
+
+# ── Diagnostics & Cleanup ─────────────────────────────────────────────────────
+
+
+class CleanupRequest(BaseModel):
+    """Request body for disk space cleanup."""
+
+    components: list[str] = Field(
+        default_factory=list,
+        description="List of component keys to clean e.g. ['runs', 'cache', 'logs', 'embeddings']",
+    )
+
+
+class CleanupResponse(BaseModel):
+    """Response envelope for system cleanup."""
+
+    success: bool = True
+    message: str = ""
+    reclaimed_bytes: int = 0
+    reclaimed_str: str = ""

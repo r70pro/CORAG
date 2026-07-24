@@ -1,6 +1,110 @@
 from typing import Any
 
 
+def get_progress_data(completed: int, total: int, elapsed_secs: float = 0) -> dict[str, Any]:
+    """Return structured metadata for ingestion progress."""
+    pct = int((completed / total) * 100) if total > 0 else 0
+    eta_str = ""
+    if completed > 0 and elapsed_secs > 0 and completed < total:
+        rate = completed / elapsed_secs
+        remaining = (total - completed) / rate
+        if remaining < 60:
+            eta_str = f"{int(remaining)}s remaining"
+        elif remaining < 3600:
+            eta_str = f"{int(remaining // 60)}m {int(remaining % 60)}s remaining"
+        else:
+            eta_str = f"{int(remaining // 3600)}h {int((remaining % 3600) // 60)}m remaining"
+    elif completed >= total and total > 0:
+        eta_str = "Complete"
+
+    elapsed_str = ""
+    if elapsed_secs > 0:
+        if elapsed_secs < 60:
+            elapsed_str = f"{int(elapsed_secs)}s elapsed"
+        elif elapsed_secs < 3600:
+            elapsed_str = f"{int(elapsed_secs // 60)}m {int(elapsed_secs % 60)}s elapsed"
+        else:
+            elapsed_str = (
+                f"{int(elapsed_secs // 3600)}h {int((elapsed_secs % 3600) // 60)}m elapsed"
+            )
+
+    return {
+        "completed": completed,
+        "total": total,
+        "percentage": pct,
+        "elapsed_seconds": elapsed_secs,
+        "elapsed_str": elapsed_str,
+        "eta_str": eta_str,
+    }
+
+
+def get_file_status_data(
+    file_mapping: dict[int, str],
+    file_page_counts: dict[int, int],
+    completed_files_set: set[int],
+    failed_files_set: set[int] | None = None,
+) -> list[dict[str, Any]]:
+    """Return structured status list for files in an ingestion run."""
+    if failed_files_set is None:
+        failed_files_set = set()
+
+    items = []
+    for idx in sorted(file_mapping.keys()):
+        name = file_mapping[idx]
+        pages = file_page_counts.get(idx, 0)
+        if idx in failed_files_set:
+            status = "failed"
+        elif idx in completed_files_set:
+            status = "completed"
+        else:
+            status = "pending"
+
+        items.append(
+            {
+                "index": idx,
+                "filename": name,
+                "pages": pages,
+                "status": status,
+            }
+        )
+    return items
+
+
+def get_case_dashboard_data(
+    runs: list[dict[str, Any]], cases_metadata: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    """Return structured case dashboard metadata."""
+    import os
+
+    if cases_metadata is None:
+        cases_metadata = {}
+
+    result = []
+    for run in runs:
+        run_dir = run.get("run_dir", "")
+        run_name = os.path.basename(run_dir) if run_dir else run.get("run_id", "unknown")
+        run_id = run.get("run_id", "")
+        meta = cases_metadata.get(run_id) or {"names": [], "dob": "—", "injuries": []}
+
+        result.append(
+            {
+                "run_id": run_id,
+                "run_name": run_name,
+                "run_dir": run_dir,
+                "client_name": ", ".join(meta["names"]) if meta["names"] else "Unknown Client",
+                "dob": meta["dob"],
+                "injuries": meta["injuries"],
+                "documents_count": run.get("total_documents", 0),
+                "chunks_count": run.get("total_chunks", 0),
+                "authors_count": run.get("unique_authors", 0),
+                "earliest_date": run.get("earliest_date"),
+                "latest_date": run.get("latest_date"),
+                "indexed_at": str(run.get("indexed_at", "")),
+            }
+        )
+    return result
+
+
 def make_progress_bar_html(completed: int, total: int, elapsed_secs: float = 0) -> str:
     pct = int((completed / total) * 100) if total > 0 else 0
     # ETA calculation

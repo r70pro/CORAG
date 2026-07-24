@@ -30,12 +30,24 @@ class TestRAGIntegration(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        # Auto start RAG infra if it's not running
-        if not is_rag_infrastructure_ready():
-            print("RAG Infrastructure not ready. Starting it for integration tests...")
+        # Check if services are healthy and responding
+        services_healthy = (
+            is_rag_infrastructure_ready()
+            and rag_db.is_healthy()
+            and rag_cache.is_healthy()
+            and rag_storage.is_healthy()
+            and rag_emb.is_healthy()
+        )
+        if not services_healthy:
+            print("RAG Infrastructure not fully ready. Starting it for integration tests...")
             success, msg = start_and_init_rag()
-            if not success:
-                raise unittest.SkipTest(f"Skipping integration tests: Failed to start RAG infra: {msg}")
+            if not success or not (
+                rag_db.is_healthy()
+                and rag_cache.is_healthy()
+                and rag_storage.is_healthy()
+                and rag_emb.is_healthy()
+            ):
+                raise unittest.SkipTest(f"Skipping integration tests: RAG infra unavailable: {msg}")
             cls.started_infra = True
 
         # Ensure all services are initialized

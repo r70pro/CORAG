@@ -68,11 +68,11 @@ class TestSettingsManager(unittest.TestCase):
         os.makedirs(env_file_path, exist_ok=True)
 
         with patch("os.path.dirname", return_value=temp_env_dir):
-            with patch("builtins.print") as mock_print:
+            with patch("settings_manager.logger.error") as mock_log:
                 import importlib
                 importlib.reload(settings_manager)
-                mock_print.assert_called()
-                self.assertTrue(any("Error loading .env file:" in call[0][0] for call in mock_print.call_args_list))
+                mock_log.assert_called()
+                self.assertTrue(any("Error loading .env file:" in call[0][0] for call in mock_log.call_args_list))
 
         shutil.rmtree(temp_env_dir)
 
@@ -110,10 +110,10 @@ class TestSettingsManager(unittest.TestCase):
             f.write("{invalid json}")
 
         with patch("settings_manager.SETTINGS_FILE", self.settings_file):
-            with patch("builtins.print") as mock_print:
+            with patch("settings_manager.logger.error") as mock_log:
                 settings = settings_manager.load_settings()
                 self.assertEqual(settings.get("server_url"), "http://localhost:8000/v1") # fallback to defaults
-                mock_print.assert_called()
+                mock_log.assert_called()
 
     def test_save_settings_success_and_exception(self):
         # 1. Success
@@ -169,6 +169,87 @@ class TestSettingsManager(unittest.TestCase):
             self.assertEqual(runs[0][0], "run_case_1 (2 files)")
             self.assertEqual(runs[0][1], run_ok)
 
+    def test_safe_stream(self):
+        class MockOriginal:
+            def __init__(self):
+                self.mode = "w"
+            def write(self, data):
+                if data == "errno5":
+                    err = OSError()
+                    err.errno = 5
+                    raise err
+                elif data == "errno2":
+                    err = OSError()
+                    err.errno = 2
+                    raise err
+                elif data == "error":
+                    raise Exception("generic error")
+                return len(data)
+            def flush(self):
+                if getattr(self, "flush_fail", None) == 5:
+                    err = OSError()
+                    err.errno = 5
+                    raise err
+                elif getattr(self, "flush_fail", None) == 2:
+                    err = OSError()
+                    err.errno = 2
+                    raise err
+                elif getattr(self, "flush_fail", None) == "err":
+                    raise Exception("generic error")
+            def isatty(self):
+                if getattr(self, "isatty_fail", False):
+                    raise Exception("isatty error")
+                return True
+
+        mock_orig = MockOriginal()
+        stream = settings_manager.SafeStream(mock_orig)
+
+        # write tests
+        stream.write("ok")
+        stream.write("errno5")  # should pass silently
+        with self.assertRaises(OSError):
+            stream.write("errno2")
+        stream.write("error")  # generic Exception caught and passed
+
+        # flush tests
+        stream.flush()
+        mock_orig.flush_fail = 5
+        stream.flush()  # should pass silently
+        mock_orig.flush_fail = 2
+        with self.assertRaises(OSError):
+            stream.flush()
+        mock_orig.flush_fail = "err"
+        stream.flush()  # generic Exception caught and passed
+
+        # isatty tests
+        mock_orig.isatty_fail = False
+        self.assertTrue(stream.isatty())
+        mock_orig.isatty_fail = True
+        self.assertFalse(stream.isatty())
+
+        # getattr test
+        self.assertEqual(stream.mode, "w")
+
+        # None stream
+        none_stream = settings_manager.SafeStream(None)
+        none_stream.write("test")
+        none_stream.flush()
+        self.assertFalse(none_stream.isatty())
+
+    def test_resolve_hf_home_fallback(self):
+        with patch("os.access", return_value=False), patch("os.path.isdir", return_value=False):
+            hf_home = settings_manager._resolve_hf_home()
+            self.assertTrue(hf_home.endswith(".cache/huggingface") or ".cache" in hf_home)
+
+    def test_load_settings_hf_token_handling(self):
+        with patch.dict(os.environ, {"HF_TOKEN": "env_token_val"}):
+            with patch("settings_manager.SETTINGS_FILE", self.settings_file):
+                with open(self.settings_file, "w") as f:
+                    json.dump({"hf_token": ""}, f)
+                settings = settings_manager.load_settings()
+                self.assertEqual(settings.get("hf_token"), "env_token_val")
+
 
 if __name__ == "__main__":
     unittest.main()
+

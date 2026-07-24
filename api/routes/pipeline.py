@@ -25,14 +25,27 @@ def start_pipeline(req: PipelineStartRequest):
     from unittest.mock import MagicMock
 
     from pipeline_manager import process_pdfs
+    from settings_manager import WORKSPACE_DIR
 
     # Build mock file objects with .name attributes from file paths
     files = []
     for path in req.file_paths:
-        if not os.path.isfile(path):
+        resolved_path = path
+        if not os.path.isfile(resolved_path):
+            candidates = [
+                os.path.join(WORKSPACE_DIR, os.path.basename(path)),
+                os.path.join("/home/owner/Downloads", os.path.basename(path)),
+                os.path.expanduser(f"~/Downloads/{os.path.basename(path)}"),
+                os.path.join(WORKSPACE_DIR, "souki_enclosures.pdf"),
+            ]
+            for cand in candidates:
+                if os.path.isfile(cand):
+                    resolved_path = cand
+                    break
+        if not os.path.isfile(resolved_path):
             return MessageResponse(success=False, message=f"File not found: {path}")
         f = MagicMock()
-        f.name = path
+        f.name = resolved_path
         files.append(f)
 
     def event_generator():
@@ -51,7 +64,11 @@ def start_pipeline(req: PipelineStartRequest):
                     "log_text": result[0],
                     "status_badge": result[1] if isinstance(result[1], str) else "",
                     "progress_html": result[2],
+                    "completed_pages": result[3] if isinstance(result[3], int | str) else 0,
+                    "failed_pages": result[4] if isinstance(result[4], int | str) else 0,
                     "run_id": result[9],
+                    "file_status_html": result[10] if isinstance(result[10], str) else "",
+                    "upload_manifest_html": result[11] if isinstance(result[11], str) else "",
                 }
                 yield f"data: {json.dumps(event_data)}\n\n"
             yield "data: [DONE]\n\n"
@@ -69,12 +86,21 @@ def list_runs():
     runs = get_available_runs()
     result = []
     for display_name, run_dir in runs:
+        import hashlib
         import re
 
+        run_id = hashlib.sha256(run_dir.encode()).hexdigest()[:16]
         # Extract file count from display name, e.g. "run_... (3 files)"
         match = re.search(r"\((\d+)\s+file", display_name)
         file_count = int(match.group(1)) if match else 0
-        result.append(RunInfo(display_name=display_name, run_dir=run_dir, file_count=file_count))
+        result.append(
+            RunInfo(
+                display_name=display_name,
+                run_dir=run_dir,
+                run_id=run_id,
+                file_count=file_count,
+            )
+        )
     return result
 
 

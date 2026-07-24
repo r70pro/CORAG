@@ -1,0 +1,511 @@
+"use client";
+
+import React, { useState } from "react";
+import {
+  FileSpreadsheet,
+  Upload,
+  Play,
+  Square,
+  Settings2,
+  Save,
+  ChevronDown,
+  ChevronUp,
+  Cpu,
+  Layers,
+  FileText,
+} from "lucide-react";
+import { triggerIngestSSE, stopPipelineRun, updateSettings } from "@/lib/api";
+import { ResizableSplit } from "@/components/ResizableSplit";
+
+export const IngestionPipeline: React.FC = () => {
+  const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [activeRunId, setActiveRunId] = useState<string>("");
+  const [statusBadge, setStatusBadge] = useState<string>("Idle");
+  const [progressPct, setProgressPct] = useState<number>(0);
+  const [completedPages, setCompletedPages] = useState<number>(0);
+  const [failedPages, setFailedPages] = useState<number>(0);
+  const [totalPages, setTotalPages] = useState<number>(9);
+  const [logMessages, setLogMessages] = useState<string[]>([
+    "Ready for PDF OCR ingestion.",
+  ]);
+
+  // Parameters
+  const [serverUrl, setServerUrl] = useState<string>("http://localhost:8000/v1");
+  const [modelName, setModelName] = useState<string>("allenai/olmOCR-2-7B-1025-FP8");
+  const [workers, setWorkers] = useState<number>(4);
+  const [maxConcurrent, setMaxConcurrent] = useState<number>(20);
+  const [targetDim, setTargetDim] = useState<number>(1288);
+  const [maxRetries, setMaxRetries] = useState<number>(8);
+  const [guidedDecoding, setGuidedDecoding] = useState<boolean>(true);
+  const [advancedOpen, setAdvancedOpen] = useState<boolean>(false);
+  const [configStatus, setConfigStatus] = useState<string>("");
+
+  // Source Files
+  const [pdfFiles, setPdfFiles] = useState<File[]>([]);
+  const [selectedFilePath, setSelectedFilePath] = useState<string>("/home/owner/Downloads/Docling_test_file.pdf");
+
+  // Manifest & File Status HTML representations
+  const [manifestItems, setManifestItems] = useState<string[]>([
+    "Docling_test_file.pdf (2.18 MB)",
+  ]);
+  const [fileStatuses, setFileStatuses] = useState<
+    { name: string; pages: number; status: string }[]
+  >([
+    { name: "Docling_test_file.pdf", pages: 12, status: "Ready" },
+  ]);
+
+  const handleSaveConfig = async () => {
+    setConfigStatus("Saving...");
+    const res = await updateSettings({
+      server_url: serverUrl,
+      model_name: modelName,
+      workers,
+      max_concurrent: maxConcurrent,
+      target_dim: targetDim,
+      max_retries: maxRetries,
+      guided_decoding: guidedDecoding,
+    });
+    setConfigStatus(res.message || "Saved");
+  };
+
+  const handleStartPipeline = () => {
+    setIsProcessing(true);
+    setStatusBadge("Processing");
+    setProgressPct(5);
+
+    const targetPaths = pdfFiles.length > 0
+      ? pdfFiles.map((f) => f.name)
+      : [selectedFilePath];
+
+    triggerIngestSSE(
+      {
+        file_paths: targetPaths,
+        server_url: serverUrl,
+        model_name: modelName,
+        workers,
+        max_concurrent: maxConcurrent,
+        max_retries: maxRetries,
+        target_dim: targetDim,
+        guided_decoding: guidedDecoding,
+      },
+      (eventData: unknown) => {
+        const data = (eventData || {}) as Record<string, unknown>;
+        if (data.log_text && typeof data.log_text === "string") {
+          setLogMessages((prev) => [...prev, data.log_text as string]);
+        }
+        if (data.status_badge && typeof data.status_badge === "string") {
+          setStatusBadge(data.status_badge);
+        }
+        if (data.run_id && typeof data.run_id === "string") {
+          setActiveRunId(data.run_id);
+        }
+        if (typeof data.completed_pages === "number") {
+          setCompletedPages(data.completed_pages);
+        }
+        if (typeof data.failed_pages === "number") {
+          setFailedPages(data.failed_pages);
+        }
+        if (data.progress_html && typeof data.progress_html === "string") {
+          const matchPct = data.progress_html.match(/(\d+)%/);
+          if (matchPct && matchPct[1]) {
+            setProgressPct(parseInt(matchPct[1], 10));
+          }
+          const matchPages = data.progress_html.match(/(\d+)\/(\d+)\s+Pages/);
+          if (matchPages && matchPages[1] && matchPages[2]) {
+            setCompletedPages(parseInt(matchPages[1], 10));
+            setTotalPages(parseInt(matchPages[2], 10));
+          }
+        }
+      },
+      (err) => {
+        setLogMessages((prev) => [...prev, `[Error] ${String(err)}`]);
+        setStatusBadge("Error");
+        setIsProcessing(false);
+      },
+      () => {
+        setProgressPct(100);
+        setStatusBadge("Completed");
+        setIsProcessing(false);
+        setLogMessages((prev) => [...prev, "[Complete] OCR Ingestion pipeline completed successfully. ✅"]);
+      }
+    );
+  };
+
+  const handleStopPipeline = async () => {
+    if (!activeRunId) return;
+    setLogMessages((prev) => [...prev, "[Stop] Sending stop signal to active run..."]);
+    const res = await stopPipelineRun(activeRunId);
+    setLogMessages((prev) => [...prev, `[Stop Result] ${res.message}`]);
+    setStatusBadge("Stopped");
+    setIsProcessing(false);
+  };
+
+  return (
+    <div className="p-4 md:p-6 space-y-4 w-full h-full flex flex-col min-h-0 overflow-hidden">
+      {/* Page Header */}
+      <div className="glass-panel bg-slate-900/60 p-4 rounded-2xl border border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-4 shadow-lg shrink-0">
+        <div className="space-y-1">
+          <div className="flex items-center space-x-2">
+            <div className="p-2 rounded-xl bg-indigo-600/20 text-indigo-400 border border-indigo-500/30">
+              <FileSpreadsheet className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-slate-100 tracking-wide flex items-center gap-2">
+                Ingestion Pipeline
+                <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded-md bg-indigo-950 text-indigo-300 border border-indigo-800/50">
+                  vLLM OCR Engine
+                </span>
+              </h2>
+              <p className="text-xs text-slate-400">
+                High-throughput document OCR processing, batch queuing & guided decoding
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Header Stats & KPI Pills */}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center space-x-1.5 bg-slate-950/80 border border-slate-800 rounded-xl px-2.5 py-1 text-xs font-mono text-slate-300">
+            <span className="text-slate-500">Queue:</span>
+            <span className="text-cyan-300 font-bold">{fileStatuses.length} files ({totalPages} pgs)</span>
+          </div>
+
+          <div className="flex items-center space-x-1.5 bg-slate-950/80 border border-slate-800 rounded-xl px-2.5 py-1 text-xs font-mono text-slate-300">
+            <span className="text-slate-500">Workers:</span>
+            <span className="text-indigo-300 font-bold">{workers} Threads</span>
+          </div>
+
+          <div className="flex items-center space-x-1.5 bg-slate-950/80 border border-slate-800 rounded-xl px-2.5 py-1 text-xs font-mono text-slate-300">
+            <span className="text-slate-500">Target Dim:</span>
+            <span className="text-amber-300 font-bold">{targetDim}px</span>
+          </div>
+
+          <span
+            className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
+              statusBadge === "Running"
+                ? "bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse"
+                : statusBadge === "Completed"
+                ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                : "bg-slate-800 text-slate-400 border border-slate-700"
+            }`}
+          >
+            ● {statusBadge}
+          </span>
+        </div>
+      </div>
+
+      <div className="flex-1 min-h-0 w-full">
+        <ResizableSplit direction="horizontal" storageKey="ingestion_main" initialSizes={[25, 75]} minSizes={[0, 0]}>
+          {/* Left Column: Pipeline Settings */}
+          <div className="glass-panel p-4 rounded-2xl space-y-4 border border-slate-800 h-full min-h-0 overflow-y-auto relative z-10">
+            <h3 className="text-xs font-bold text-slate-200 flex items-center gap-1.5 uppercase tracking-wider">
+              <Settings2 className="w-4 h-4 text-indigo-400" /> Pipeline Settings
+            </h3>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-400 mb-1">vLLM OpenAI Server URL</label>
+                <input
+                  type="text"
+                  value={serverUrl}
+                  onChange={(e) => setServerUrl(e.target.value)}
+                  placeholder="http://localhost:8000/v1"
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-200"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-400 mb-1">Model Name</label>
+                <select
+                  value={modelName}
+                  onChange={(e) => setModelName(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-200"
+                >
+                  <option value="allenai/olmOCR-2-7B-1025-FP8">allenai/olmOCR-2-7B-1025-FP8</option>
+                  <option value="nvidia/Phi-4-reasoning-plus-NVFP4">nvidia/Phi-4-reasoning-plus-NVFP4</option>
+                  <option value="Qwen/Qwen2-VL-7B-Instruct">Qwen/Qwen2-VL-7B-Instruct</option>
+                </select>
+              </div>
+
+              {/* Advanced Parameters Accordion */}
+              <div className="border border-slate-800 rounded-xl overflow-hidden relative z-10">
+                <button
+                  type="button"
+                  onClick={() => setAdvancedOpen(!advancedOpen)}
+                  className="w-full px-3 py-2 bg-slate-900/60 flex items-center justify-between text-xs font-bold text-slate-300 cursor-pointer select-none"
+                >
+                  <span>Advanced Parameters</span>
+                  {advancedOpen ? <ChevronUp className="w-3.5 h-3.5 pointer-events-none" /> : <ChevronDown className="w-3.5 h-3.5 pointer-events-none" />}
+                </button>
+
+                {advancedOpen && (
+                  <div className="p-3 space-y-3 bg-slate-950/40">
+                    <div>
+                      <div className="flex justify-between text-slate-400 mb-1">
+                        <span>Workers</span>
+                        <span className="font-mono text-indigo-300">{workers}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={1}
+                        max={64}
+                        value={workers}
+                        onChange={(e) => setWorkers(Number(e.target.value))}
+                        className="w-full accent-indigo-500 cursor-pointer"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between text-slate-400 mb-1">
+                        <span>Max Concurrent Requests</span>
+                        <span className="font-mono text-indigo-300">{maxConcurrent}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={1}
+                        max={2000}
+                        step={10}
+                        value={maxConcurrent}
+                        onChange={(e) => setMaxConcurrent(Number(e.target.value))}
+                        className="w-full accent-indigo-500 cursor-pointer"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between text-slate-400 mb-1">
+                        <span>Target Image Dim</span>
+                        <span className="font-mono text-indigo-300">{targetDim}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={512}
+                        max={2048}
+                        step={64}
+                        value={targetDim}
+                        onChange={(e) => setTargetDim(Number(e.target.value))}
+                        className="w-full accent-indigo-500 cursor-pointer"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between text-slate-400 mb-1">
+                        <span>Max Page Retries</span>
+                        <span className="font-mono text-indigo-300">{maxRetries}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={1}
+                        max={20}
+                        value={maxRetries}
+                        onChange={(e) => setMaxRetries(Number(e.target.value))}
+                        className="w-full accent-indigo-500 cursor-pointer"
+                      />
+                    </div>
+
+                    <label className="flex items-center space-x-2 text-slate-300 cursor-pointer pt-1">
+                      <input
+                        type="checkbox"
+                        checked={guidedDecoding}
+                        onChange={(e) => setGuidedDecoding(e.target.checked)}
+                        className="accent-indigo-500 rounded cursor-pointer"
+                      />
+                      <span>Guided Decoding (YAML)</span>
+                    </label>
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={handleSaveConfig}
+                className="w-full py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs flex items-center justify-center gap-1.5 border border-slate-700 cursor-pointer select-none"
+              >
+                <Save className="w-3.5 h-3.5 pointer-events-none" /> Save Configuration
+              </button>
+              {configStatus && <p className="text-[11px] font-mono text-emerald-400 text-center">{configStatus}</p>}
+            </div>
+          </div>
+
+          {/* Right Main Area with Vertical Resizable Split */}
+          <div className="flex flex-col h-full min-h-0 pl-1">
+            <ResizableSplit direction="vertical" storageKey="ingestion_log_split" initialSizes={[65, 35]} minSizes={[0, 0]}>
+              {/* Top Execution, Dropzone & Manifest Area */}
+              <div className="space-y-4 h-full min-h-0 overflow-y-auto pr-1">
+                {/* Upload + Monitoring Row */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {/* Upload Area */}
+                  <div className="md:col-span-2 glass-panel p-4 rounded-2xl space-y-3 border border-slate-800 relative z-10">
+                    <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2">
+                      <Upload className="w-4 h-4 text-indigo-400 pointer-events-none" /> Source Documents
+                    </h3>
+
+                    <div className="border-2 border-dashed border-slate-700/80 rounded-xl p-3 text-center space-y-1 hover:border-indigo-500/60 transition-colors">
+                      <input
+                        type="file"
+                        multiple
+                        accept=".pdf"
+                        onChange={(e) => {
+                          const files = Array.from(e.target.files || []);
+                          setPdfFiles(files);
+                          if (files.length > 0) {
+                            setManifestItems(files.map((f) => `${f.name} (${(f.size / (1024 * 1024)).toFixed(2)} MB)`));
+                            setFileStatuses(files.map((f) => ({ name: f.name, pages: 10, status: "Ready" })));
+                          }
+                        }}
+                        className="hidden"
+                        id="pdf-file-input"
+                      />
+                      <label htmlFor="pdf-file-input" className="cursor-pointer space-y-1 block">
+                        <div className="w-8 h-8 mx-auto rounded-xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center">
+                          <Upload className="w-4 h-4 pointer-events-none" />
+                        </div>
+                        <div className="text-xs font-semibold text-slate-200">
+                          {pdfFiles.length > 0
+                            ? `${pdfFiles.length} file(s) selected`
+                            : "Upload / Drag-and-drop PDFs"}
+                        </div>
+                        <div className="text-[10px] text-slate-400 font-mono">
+                          Target default: {selectedFilePath}
+                        </div>
+                      </label>
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-400 text-[11px] mb-1">Target File Path / Fallback</label>
+                      <input
+                        type="text"
+                        value={selectedFilePath}
+                        onChange={(e) => {
+                          setSelectedFilePath(e.target.value);
+                          setManifestItems([`${e.target.value.split("/").pop()} (Target PDF)`]);
+                          setFileStatuses([{ name: e.target.value.split("/").pop() || e.target.value, pages: 12, status: "Ready" }]);
+                        }}
+                        placeholder="/home/owner/Downloads/Docling_test_file.pdf"
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-slate-200 font-mono"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={handleStartPipeline}
+                        disabled={isProcessing}
+                        className="flex-1 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/20 cursor-pointer select-none"
+                      >
+                        <Play className="w-4 h-4 pointer-events-none" /> Start Batch Processing
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleStopPipeline}
+                        disabled={!isProcessing}
+                        className="px-4 py-2 rounded-xl bg-rose-950/60 hover:bg-rose-900/60 disabled:opacity-40 text-rose-300 font-semibold text-xs flex items-center gap-1.5 border border-rose-800/60 cursor-pointer select-none"
+                      >
+                        <Square className="w-3.5 h-3.5 text-rose-400 pointer-events-none" /> Stop Process
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Monitoring Cards */}
+                  <div className="md:col-span-1 glass-panel p-4 rounded-2xl space-y-3 border border-slate-800">
+                    <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2">
+                      📊 Monitoring
+                    </h3>
+
+                    <div className="space-y-3">
+                      <div>
+                        <div className="flex justify-between items-center text-xs text-slate-400 mb-1">
+                          <span>Batch Progress</span>
+                          <span className="font-mono text-indigo-300">{progressPct}%</span>
+                        </div>
+                        <div className="w-full bg-slate-900 rounded-full h-2.5 overflow-hidden border border-slate-800">
+                          <div
+                            className="bg-gradient-to-r from-indigo-500 to-cyan-400 h-full transition-all duration-300 rounded-full"
+                            style={{ width: `${progressPct}%` }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 pt-1">
+                        <div className="bg-slate-900/80 p-2.5 rounded-xl border border-slate-800 text-center">
+                          <div className="text-base font-bold text-emerald-400">{completedPages}</div>
+                          <div className="text-[10px] text-slate-400">Completed Pages</div>
+                        </div>
+
+                        <div className="bg-slate-900/80 p-2.5 rounded-xl border border-slate-800 text-center">
+                          <div className="text-base font-bold text-rose-400">{failedPages}</div>
+                          <div className="text-[10px] text-slate-400">Failed Pages</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Manifest & File Status Tables (Side by Side) */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="glass-panel p-4 rounded-2xl space-y-2 border border-slate-800">
+                    <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                      <FileText className="w-3.5 h-3.5 text-indigo-400" /> Upload Manifest
+                    </h4>
+                    <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 text-xs font-mono text-slate-300 space-y-1 max-h-28 overflow-y-auto">
+                      {manifestItems.map((item, i) => (
+                        <div key={i} className="flex items-center gap-1.5">
+                          <span className="text-indigo-400">📄</span>
+                          <span>{item}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="glass-panel p-4 rounded-2xl space-y-2 border border-slate-800">
+                    <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                      <Layers className="w-3.5 h-3.5 text-indigo-400" /> Per-File Status
+                    </h4>
+                    <div className="bg-slate-950 rounded-xl border border-slate-800 overflow-hidden max-h-28 overflow-y-auto text-xs">
+                      <table className="w-full text-left font-mono">
+                        <thead className="bg-slate-900 text-slate-400 text-[10px]">
+                          <tr>
+                            <th className="p-1.5">File</th>
+                            <th className="p-1.5">Pages</th>
+                            <th className="p-1.5">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60 text-[11px] text-slate-300">
+                          {fileStatuses.map((fs, i) => (
+                            <tr key={i}>
+                              <td className="p-1.5">{fs.name}</td>
+                              <td className="p-1.5">{fs.pages}</td>
+                              <td className="p-1.5">
+                                <span className="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[10px]">
+                                  {fs.status}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Resizable System Output Log Viewer */}
+              <div className="glass-panel p-4 rounded-2xl border border-slate-800 flex flex-col h-full min-h-0 space-y-2">
+                <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5 shrink-0">
+                  <Cpu className="w-3.5 h-3.5 text-cyan-400" /> System Output Log
+                </h4>
+                <div className="flex-1 min-h-0 bg-slate-950 p-3 rounded-xl border border-slate-800 text-[11px] font-mono text-slate-300 space-y-1 overflow-y-auto">
+                  {logMessages.map((msg, i) => (
+                    <div key={i} className="flex items-start gap-1.5">
+                      <span className="text-slate-400">{`>`}</span>
+                      <span>{msg}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </ResizableSplit>
+          </div>
+        </ResizableSplit>
+      </div>
+    </div>
+  );
+};

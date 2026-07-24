@@ -453,16 +453,25 @@ class TestAppCallbacks(unittest.TestCase):
         self.assertTrue("System Graphics" in html)
         self.assertTrue("python: other_script.py" in html)
 
-    def test_app_reload_with_custom_model(self):
-        import importlib
-        from settings_manager import load_settings
-        settings = load_settings()
-        settings["model_name"] = "custom-model-name"
-        with patch("settings_manager.load_settings", return_value=settings):
-            importlib.reload(app)
+    def test_app_handlers_invalid_port_and_download_report(self):
+        import app_handlers
+        with patch("app_handlers.create_docker_container", return_value=(True, "Created")), \
+             patch("app_handlers.get_docker_status_str", return_value=("ready", "Badge")), \
+             patch("app_handlers.load_settings", return_value={}), \
+             patch("app_handlers.save_settings"):
+            msg, badge, new_url = app_handlers.ui_recreate_container("tok", "invalid_port", "model", 0.8, 15000)
+            self.assertTrue("created" in msg.lower())
+            self.assertTrue(isinstance(badge, str))
+
+        with patch("system_diagnostics.generate_diagnostic_report_file", return_value="/tmp/diag.txt"):
+            res1 = app_handlers.trigger_download_report(None)
+            self.assertEqual(res1.get("value"), "/tmp/diag.txt")
+            res2 = app_handlers.trigger_download_report(8000)
+            self.assertEqual(res2.get("value"), "/tmp/diag.txt")
 
 
 if __name__ == "__main__":
     from unittest.mock import MagicMock
     unittest.main()
+
 

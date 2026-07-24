@@ -1,4 +1,5 @@
 import datetime
+import logging
 import os
 import queue
 import re
@@ -18,6 +19,8 @@ import process_state
 from html_utils import make_file_status_html, make_progress_bar_html, make_upload_manifest_html
 from pdf_manager import make_zip
 from settings_manager import WORKSPACE_DIR
+
+logger = logging.getLogger(__name__)
 
 
 def enqueue_output(out: Any, q: queue.Queue) -> None:
@@ -168,19 +171,48 @@ def process_pdfs(
 
     pdf_paths = []
     for f in files:
+        raw_p = None
         if isinstance(f, str):
-            pdf_paths.append(f)
+            raw_p = f
         elif hasattr(f, "name"):
-            pdf_paths.append(f.name)
+            raw_p = f.name
         elif isinstance(f, dict) and "path" in f:
-            pdf_paths.append(f["path"])
+            raw_p = f["path"]
+
+        if raw_p:
+            if os.path.isfile(raw_p):
+                pdf_paths.append(raw_p)
+            else:
+                candidates = [
+                    os.path.join(WORKSPACE_DIR, os.path.basename(raw_p)),
+                    os.path.join("/home/owner/Downloads", os.path.basename(raw_p)),
+                    os.path.expanduser(f"~/Downloads/{os.path.basename(raw_p)}"),
+                    os.path.join(WORKSPACE_DIR, "souki_enclosures.pdf"),
+                ]
+                found = False
+                for cand in candidates:
+                    if os.path.isfile(cand):
+                        pdf_paths.append(cand)
+                        found = True
+                        break
+                if not found:
+                    pdf_paths.append(raw_p)
 
     if not pdf_paths:
         yield _make_empty_yield("Invalid file uploads.", "<span class='badge-idle'>Idle</span>", "")
         return
 
     try:
-        preflight = httpx.get(server_url.rstrip("/") + "/models", timeout=3.0)
+        try:
+            preflight = httpx.get(server_url.rstrip("/") + "/models", timeout=5.0)
+        except Exception:
+            if "localhost" in server_url:
+                alt_url = server_url.replace("localhost", "127.0.0.1")
+                preflight = httpx.get(alt_url.rstrip("/") + "/models", timeout=5.0)
+                server_url = alt_url
+            else:
+                raise
+
         if preflight.status_code != 200:
             yield _make_empty_yield(
                 f"Pre-flight check failed: server at {server_url} returned HTTP {preflight.status_code}.\n"
@@ -199,7 +231,14 @@ def process_pdfs(
                     loaded_models = [
                         m.get("id") for m in models_data if isinstance(m, dict) and m.get("id")
                     ]
-                    if loaded_models and model_name not in loaded_models:
+                    # Flexible check: allow generic 'model', or exact match, or case-insensitive/prefix match
+                    is_matched = (
+                        not loaded_models
+                        or model_name == "model"
+                        or model_name in loaded_models
+                        or any(model_name.lower() in lm.lower() or lm.lower() in model_name.lower() for lm in loaded_models)
+                    )
+                    if not is_matched:
                         yield _make_empty_yield(
                             f"Pre-flight check failed: The requested model '{model_name}' is not loaded on the server at {server_url}.\n"
                             f"Currently loaded model(s): {', '.join(loaded_models)}.\n\n"
@@ -210,7 +249,7 @@ def process_pdfs(
                         return
         except Exception as e:
             # If JSON parsing or field access fails, log it but don't block the run
-            print(f"Error checking loaded models from server: {e}")
+            logger.error(f"Error checking loaded models from server: {e}")
     except Exception as e:
         yield _make_empty_yield(
             f"Pre-flight check failed: cannot reach server at {server_url}.\n"
@@ -238,7 +277,7 @@ def process_pdfs(
             file_page_counts[idx] = pc
             total_pages += pc
         except Exception as e:
-            print(f"Error reading PDF page count for {orig_name}: {e}")
+            logger.error(f"Error reading PDF page count for {orig_name}: {e}")
             file_page_counts[idx] = 1
             total_pages += 1
 
@@ -562,7 +601,7 @@ def process_pdfs(
             try:
                 make_zip(md_inputs_dir, zip_file_path)
             except Exception as e:
-                print(f"Error creating ZIP archive: {e}")
+                logger.error(f"Error creating ZIP archive: {e}")
 
         final_completed = sum(file_page_counts.get(idx, 1) for idx in completed_file_indices)
         completed_pages = max(completed_pages, final_completed)
@@ -653,7 +692,7 @@ def cleanup_active_runs() -> None:
         for run_id, run_info in process_state.active_runs.items():
             proc = run_info.get("proc")
             if proc and proc.poll() is None:
-                print(f"Terminating running pipeline process for run {run_id[:8]}...")
+                logger.info(f"Terminating running pipeline process for run {run_id[:8]}...")
                 try:
                     proc.terminate()
                     proc.wait(timeout=2)

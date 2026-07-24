@@ -1,6 +1,9 @@
+import logging
 import os
 import socket
 import time
+
+logger = logging.getLogger(__name__)
 
 # Force IPv4 DNS resolution to prevent hangs on broken IPv6 routes to Hugging Face
 if getattr(socket.getaddrinfo, "__name__", None) != "_ipv4_getaddrinfo":
@@ -16,7 +19,7 @@ if getattr(socket.getaddrinfo, "__name__", None) != "_ipv4_getaddrinfo":
 if "HF_HUB_DOWNLOAD_TIMEOUT" not in os.environ:
     os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "30"
 
-from huggingface_hub import snapshot_download
+from huggingface_hub import snapshot_download  # noqa: E402
 
 # Load Hugging Face token dynamically from environment or settings.json
 try:
@@ -31,10 +34,10 @@ if not HF_TOKEN:
     HF_TOKEN = settings.get("hf_token")
 
 if not HF_TOKEN:
-    print(
-        "Warning: HF_TOKEN environment variable not set, and hf_token not configured in settings.json."
+    logger.warning(
+        "HF_TOKEN environment variable not set, and hf_token not configured in settings.json. "
+        "Proceeding without token (some gated/NVFP4 models may fail to download)..."
     )
-    print("Proceeding without token (some gated/NVFP4 models may fail to download)...")
 
 MODELS = [
     "Qwen/Qwen3.6-35B-A3B",
@@ -48,31 +51,30 @@ MODELS = [
 
 
 def download_all_models(models=MODELS, token=HF_TOKEN):
-    print("Starting download of NVFP4 models...")
+    logger.info("Starting download of NVFP4 models...")
     actual_token = token if token else None
     for model in models:
         success = False
         for attempt in range(1, 6):
-            print(f"Downloading {model} (Attempt {attempt}/5)...")
+            logger.info(f"Downloading {model} (Attempt {attempt}/5)...")
             try:
                 path = snapshot_download(repo_id=model, token=actual_token, max_workers=4)
-                print(f"Successfully downloaded {model} to {path}")
+                logger.info(f"Successfully downloaded {model} to {path}")
                 success = True
                 break
             except Exception as e:
-                print(f"Error downloading {model} on attempt {attempt}: {e}")
+                logger.error(f"Error downloading {model} on attempt {attempt}: {e}")
                 if attempt < 5:
-                    print("Waiting 10 seconds before retrying...")
+                    logger.info("Waiting 10 seconds before retrying...")
                     time.sleep(10)
                 else:
-                    import traceback
-
-                    traceback.print_exc()
+                    logger.exception(f"Failed attempt {attempt} for {model}")
         if not success:
-            print(f"Failed to download {model} after 5 attempts.")
+            logger.error(f"Failed to download {model} after 5 attempts.")
 
-    print("All downloads complete.")
+    logger.info("All downloads complete.")
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     download_all_models()

@@ -14,7 +14,10 @@ Designed for:
 """
 
 import hashlib
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 # ── Date extraction patterns ──────────────────────────────────
 # Covers: DD/MM/YY, DD.MM.YY, DD/MM/YYYY, DD.MM.YYYY, DD-MM-YYYY,
@@ -292,6 +295,12 @@ def _make_chunk_id(doc_id: str, chunk_index: int) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
+# ── Chunking configuration constants ──────────────────────────
+MIN_SECTION_SIZE_CHARS = 200  # Minimum character count between section boundaries
+DEFAULT_CHUNK_SIZE_TOKENS = 512
+DEFAULT_CHUNK_OVERLAP_TOKENS = 64
+
+
 def _split_into_sections(text: str) -> list[tuple[int, int, str]]:
     """Split text into sections based on letter/document boundaries.
 
@@ -304,7 +313,7 @@ def _split_into_sections(text: str) -> list[tuple[int, int, str]]:
     for pattern in LETTER_BOUNDARY_PATTERNS:
         for match in pattern.finditer(text):
             pos = match.start()
-            # Don't create tiny sections — minimum 200 chars from previous
+            # Don't create tiny sections — minimum MIN_SECTION_SIZE_CHARS from previous
             if pos > 0:
                 boundary_positions.add(pos)
 
@@ -312,7 +321,7 @@ def _split_into_sections(text: str) -> list[tuple[int, int, str]]:
     sorted_positions = sorted(boundary_positions)
     filtered_positions = [sorted_positions[0]]
     for pos in sorted_positions[1:]:
-        if pos - filtered_positions[-1] >= 200:
+        if pos - filtered_positions[-1] >= MIN_SECTION_SIZE_CHARS:
             filtered_positions.append(pos)
 
     sections = []
@@ -549,7 +558,7 @@ def chunk_documents_from_run(
                                 md_name = source_basename[:-4] + ".md"
                                 page_ranges_by_source[md_name] = page_ranges
                 except Exception as e:
-                    print(f"Error reading JSONL {jsonl_path}: {e}")
+                    logger.error(f"Error reading JSONL {jsonl_path}: {e}")
 
     # Process each markdown file
     for md_file in sorted(os.listdir(md_inputs_dir)):
@@ -561,7 +570,7 @@ def chunk_documents_from_run(
             with open(md_path, encoding="utf-8") as f:
                 markdown_text = f.read()
         except Exception as e:
-            print(f"Error reading {md_path}: {e}")
+            logger.error(f"Error reading {md_path}: {e}")
             continue
 
         # Generate deterministic doc_id from run_id and filename

@@ -248,6 +248,24 @@ class TestDockerManager(unittest.TestCase):
         success2, msg2 = docker_manager.create_docker_container("token", 8000, "model", 0.8, 16000)
         self.assertTrue(success2)
 
+    @patch("subprocess.run")
+    def test_get_docker_logs(self, mock_run):
+        # Case: success with stdout and stderr
+        mock_run.return_value = MagicMock(returncode=0, stdout="info log", stderr="warn log")
+        logs = docker_manager.get_docker_logs(50)
+        self.assertIn("info log", logs)
+        self.assertIn("warn log", logs)
+
+        # Case: container not found
+        mock_run.return_value = MagicMock(returncode=1, stderr="no such container: olmocr")
+        logs = docker_manager.get_docker_logs(50)
+        self.assertIn("not found", logs.lower())
+
+        # Case: command exception
+        mock_run.side_effect = Exception("docker error")
+        logs = docker_manager.get_docker_logs(50)
+        self.assertIn("failed", logs.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

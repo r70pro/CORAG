@@ -1,6 +1,9 @@
 import json
+import logging
 import os
 import sys
+
+logger = logging.getLogger(__name__)
 
 
 # Wrap stdout/stderr to prevent crash with [Errno 5] Input/output error
@@ -42,6 +45,7 @@ class SafeStream:
     def __getattr__(self, name):
         return getattr(self.original, name)
 
+
 sys.stdout = SafeStream(sys.stdout)
 sys.stderr = SafeStream(sys.stderr)
 
@@ -62,7 +66,7 @@ if os.path.exists(dotenv_path):
                     if key and val and key not in os.environ:
                         os.environ[key] = val
     except Exception as e:
-        print(f"Error loading .env file: {e}")
+        logger.error(f"Error loading .env file: {e}")
 
 
 # Redirect Hugging Face cache to writeable workspace directory.
@@ -162,11 +166,15 @@ def load_settings():
             with open(SETTINGS_FILE) as f:
                 user_settings = json.load(f)
                 # Avoid overwriting hf_token with an empty string if env has a token
-                if "hf_token" in user_settings and not user_settings["hf_token"] and defaults.get("hf_token"):
+                if (
+                    "hf_token" in user_settings
+                    and not user_settings["hf_token"]
+                    and defaults.get("hf_token")
+                ):
                     user_settings.pop("hf_token")
                 defaults.update(user_settings)
         except Exception as e:
-            print(f"Error loading settings: {e}")
+            logger.error(f"Error loading settings: {e}")
     return defaults
 
 
@@ -180,27 +188,49 @@ def save_settings(settings):
         return f"Error saving settings: {e}"
 
 
-def get_available_runs():
+def get_available_runs(workspace_dir: str | None = None):
     """Scan workspace for completed OCR runs that have markdown output.
+
+    Args:
+        workspace_dir: Optional override path for workspace directory. Defaults to WORKSPACE_DIR.
 
     Returns:
         List of (display_name, run_dir_path) tuples for the dropdown.
     """
     runs = []
-    workspace = WORKSPACE_DIR
-    if not os.path.exists(workspace):
-        return runs
+    import sys
 
-    for name in sorted(os.listdir(workspace), reverse=True):
-        run_dir = os.path.join(workspace, name)
-        if not os.path.isdir(run_dir) or not name.startswith("run_"):
+    sm_mod = sys.modules.get("settings_manager")
+    primary_ws = workspace_dir or getattr(sm_mod, "WORKSPACE_DIR", WORKSPACE_DIR)
+
+    candidate_dirs = []
+    if primary_ws:
+        candidate_dirs.append(primary_ws)
+
+    seen_names = set()
+
+    for ws in candidate_dirs:
+        if not os.path.exists(ws):
             continue
-        md_dir = os.path.join(run_dir, "markdown", "inputs")
-        if os.path.exists(md_dir):
-            md_files = [f for f in os.listdir(md_dir) if f.endswith(".md")]
-            if md_files:
-                # Format: "run_20260711_092213 (1 file, 9 pages)"
-                display = f"{name} ({len(md_files)} file{'s' if len(md_files) != 1 else ''})"
-                runs.append((display, run_dir))
+        try:
+            dir_names = sorted(os.listdir(ws), reverse=True)
+        except Exception:
+            continue
+        for name in dir_names:
+            if name in seen_names or not name.startswith("run_"):
+                continue
+            run_dir = os.path.join(ws, name)
+            if not os.path.isdir(run_dir):
+                continue
+            md_dir = os.path.join(run_dir, "markdown", "inputs")
+            if os.path.exists(md_dir):
+                md_files = [f for f in os.listdir(md_dir) if f.endswith(".md")]
+                if md_files:
+                    seen_names.add(name)
+                    display = f"{name} ({len(md_files)} file{'s' if len(md_files) != 1 else ''})"
+                    runs.append((display, run_dir))
 
+    # Sort runs by name descending
+    runs.sort(key=lambda r: os.path.basename(r[1]), reverse=True)
     return runs
+
