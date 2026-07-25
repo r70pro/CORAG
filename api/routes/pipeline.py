@@ -23,7 +23,9 @@ async def upload_pipeline_files(
 ):
     """Upload one or more PDF files for ingestion pipeline processing."""
     import os
+
     from fastapi import HTTPException
+
     from settings_manager import WORKSPACE_DIR
 
     try:

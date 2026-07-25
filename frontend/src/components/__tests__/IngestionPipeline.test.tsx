@@ -1,5 +1,6 @@
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, act } from "@testing-library/react";
+import { triggerIngestSSE } from "@/lib/api";
 import { IngestionPipeline } from "../IngestionPipeline";
 
 jest.mock("@/lib/api", () => ({
@@ -8,6 +9,8 @@ jest.mock("@/lib/api", () => ({
   updateSettings: jest.fn().mockResolvedValue({ success: true }),
   fetchSettings: jest.fn().mockResolvedValue({ server_url: "http://localhost:8000", model_name: "test-model" }),
 }));
+
+const mockTriggerIngestSSE = triggerIngestSSE as jest.Mock;
 
 describe("IngestionPipeline Component", () => {
   test("renders PDF document ingestion interface", async () => {
@@ -19,14 +22,12 @@ describe("IngestionPipeline Component", () => {
   });
 
   test("calculates progress percentage correctly from progress HTML without false 100%", async () => {
-    const { triggerIngestSSE } = require("@/lib/api");
     let sseCallback: (data: unknown) => void = () => {};
 
-    triggerIngestSSE.mockImplementation((_opts: unknown, onData: (data: unknown) => void) => {
+    mockTriggerIngestSSE.mockImplementation((_opts: unknown, onData: (data: unknown) => void) => {
       sseCallback = onData;
     });
 
-    const { act } = require("@testing-library/react");
     await act(async () => {
       render(<IngestionPipeline />);
     });
@@ -46,14 +47,12 @@ describe("IngestionPipeline Component", () => {
   });
 
   test("parses and updates per-file status dynamically from SSE event payload", async () => {
-    const { triggerIngestSSE } = require("@/lib/api");
     let sseCallback: (data: unknown) => void = () => {};
 
-    triggerIngestSSE.mockImplementation((_opts: unknown, onData: (data: unknown) => void) => {
+    mockTriggerIngestSSE.mockImplementation((_opts: unknown, onData: (data: unknown) => void) => {
       sseCallback = onData;
     });
 
-    const { act } = require("@testing-library/react");
     await act(async () => {
       render(<IngestionPipeline />);
     });

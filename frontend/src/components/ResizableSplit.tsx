@@ -31,11 +31,10 @@ export const ResizableSplit: React.FC<ResizableSplitProps> = ({
   };
 
   // Memoize fallback defaults
-  const initialSizesKey = initialSizes ? JSON.stringify(initialSizes) : "";
   const fallbackSizes = React.useMemo(() => {
     if (initialSizes && initialSizes.length === count) return initialSizes;
     return new Array(count).fill(100 / count);
-  }, [count, initialSizesKey]);
+  }, [count, initialSizes]);
 
   const defaultMinSizes = React.useMemo(() => {
     if (minSizes && minSizes.length === count) return minSizes;

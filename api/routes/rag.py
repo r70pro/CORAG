@@ -411,6 +411,7 @@ async def upload_markdown(
     """Upload and index external markdown files into the corpus."""
     import os
     import tempfile
+
     from fastapi import HTTPException
 
     from indexing_service import CorpusIndexingService

@@ -137,7 +137,21 @@ def load_embedding_model(model_name=None, device=None):
         from sentence_transformers import SentenceTransformer
 
         logger.info(f"Loading embedding model '{model_name}' on {device}...")
-        _embedding_model = SentenceTransformer(model_name, device=device)
+        try:
+            _embedding_model = SentenceTransformer(model_name, device=device)
+        except Exception as e:
+            if device != "cpu":
+                logger.warning(
+                    f"Failed to load embedding model '{model_name}' on {device}: {e}. "
+                    f"Falling back to CPU."
+                )
+                if "torch" in sys.modules:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                _embedding_model = SentenceTransformer(model_name, device="cpu")
+            else:
+                raise
         _embedding_model_name = model_name
         logger.info(
             f"Embedding model loaded. Dimension: {_embedding_model.get_embedding_dimension()}"
