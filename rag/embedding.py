@@ -12,6 +12,7 @@ import hashlib
 import logging
 import os
 import re
+import sys
 import threading
 from collections.abc import Generator
 
