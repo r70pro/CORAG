@@ -245,7 +245,7 @@ Before indexing, Markdown content is converted into dense 1,024-dimensional vect
 **Collision Prevention**: Different embedding models produce vectors of different dimensionality. The system automatically isolates collections using [get_collection_name(model_name)](file:///home/owner/KIRAG/rag/embedding.py#L38-L54) (e.g. `olmocr_documents_baaibge-large-en-v1.5`).
 
 **Routine:**
-1. Click **`🧠 Embedding Pipeline`** on the main left sidebar (4th navigation button down).
+1. Click **`🧠 Embedding Pipeline`** on the main left sidebar (3rd navigation button down).
 2. Select the **Compute Engine Device** (`auto` for CUDA acceleration) and adjust the **Embedding Batch Size** slider.
 3. Select or enter the **Embedding Model Name**.
 4. Adjust **Max Chunk Size** (200–2,000 chars) and **Chunk Overlap** (0–500 chars).

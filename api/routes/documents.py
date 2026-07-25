@@ -74,23 +74,30 @@ def get_run_pdf(run_name: str):
     if ".." in run_name:
         raise HTTPException(status_code=400, detail="Invalid run name")
 
+    headers = {
+        "Content-Disposition": "inline; filename=document.pdf",
+        "Cross-Origin-Resource-Policy": "cross-origin",
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "public, max-age=3600",
+    }
+
     inputs_dir = os.path.join(WORKSPACE_DIR, run_name, "inputs")
     if not os.path.exists(inputs_dir):
         # Fallback check for Downloads or WORKSPACE_DIR
         fallback = os.path.join("/home/owner/Downloads", "Docling_test_file.pdf")
         if os.path.isfile(fallback):
-            return FileResponse(fallback, media_type="application/pdf")
+            return FileResponse(fallback, media_type="application/pdf", headers=headers)
         raise HTTPException(status_code=404, detail="Inputs directory not found")
 
     pdf_files = [f for f in os.listdir(inputs_dir) if f.endswith(".pdf")]
     if not pdf_files:
         fallback = os.path.join("/home/owner/Downloads", "Docling_test_file.pdf")
         if os.path.isfile(fallback):
-            return FileResponse(fallback, media_type="application/pdf")
+            return FileResponse(fallback, media_type="application/pdf", headers=headers)
         raise HTTPException(status_code=404, detail="No PDF found in run inputs")
 
     pdf_path = os.path.join(inputs_dir, pdf_files[0])
-    return FileResponse(pdf_path, media_type="application/pdf")
+    return FileResponse(pdf_path, media_type="application/pdf", headers=headers)
 
 
 @router.get("/runs/{run_name}/info", summary="Get detailed page mapping and info for a document")

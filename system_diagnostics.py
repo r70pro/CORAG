@@ -378,6 +378,14 @@ def get_gpu_metrics_data() -> dict[str, Any]:
     except Exception:
         pass
 
+    if cuda_available and vram_total == 0.0:
+        try:
+            import psutil
+
+            vram_total = psutil.virtual_memory().total / (1024 * 1024)
+        except Exception:
+            pass
+
     if cuda_available and vram_total > 0:
         processes = []
         try:
@@ -406,8 +414,6 @@ def get_gpu_metrics_data() -> dict[str, Any]:
                             proc_type = match.group(3)
                             proc_name = match.group(4).strip()
                             vram_used_proc = int(match.group(5))
-                            if "..." in line:
-                                vram_used_proc *= 10
                             processes.append(
                                 {
                                     "gpu_id": gpu_id,
@@ -429,7 +435,7 @@ def get_gpu_metrics_data() -> dict[str, Any]:
         else:
             vram_used = local_torch_vram
 
-        vram_pct = (vram_used / vram_total) * 100.0
+        vram_pct = min(100.0, (vram_used / vram_total) * 100.0)
 
         docker_map = get_docker_containers()
         essential_keywords = ["xorg", "gnome-shell", "gdm", "kwin", "wayland", "systemd", "lightdm"]

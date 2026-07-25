@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import {
   fetchDockerStatus,
+  fetchDockerModels,
   startDockerContainer,
   stopDockerContainer,
   createDockerContainer,
@@ -36,25 +37,40 @@ export type ViewType =
   | "diagnostics";
 
 interface SidebarProps {
-  currentView: ViewType;
-  onSelectView: (view: ViewType) => void;
-  activeRole: string;
-  onRoleChange: (role: string) => void;
+  currentView?: ViewType;
+  activeView?: ViewType;
+  onSelectView?: (view: ViewType) => void;
+  onViewChange?: (view: ViewType) => void;
+  activeRole?: string;
+  onRoleChange?: (role: string) => void;
   density?: "comfortable" | "compact";
   onDensityChange?: (density: "comfortable" | "compact") => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
   currentView,
+  activeView,
   onSelectView,
+  onViewChange,
   activeRole,
   onRoleChange,
   density = "comfortable",
   onDensityChange,
 }) => {
+  const selectedView = currentView || activeView || "ingestion";
+  const handleViewChange = (v: ViewType) => {
+    if (onSelectView) onSelectView(v);
+    if (onViewChange) onViewChange(v);
+  };
+
   const [dockerOpen, setDockerOpen] = useState<boolean>(true);
   const [hfToken, setHfToken] = useState<string>("");
   const [dockerModel, setDockerModel] = useState<string>("allenai/olmOCR-2-7B-1025-FP8");
+  const [availableModels, setAvailableModels] = useState<string[]>([
+    "allenai/olmOCR-2-7B-1025-FP8",
+    "nvidia/Phi-4-reasoning-plus-NVFP4",
+    "Qwen/Qwen2-VL-7B-Instruct",
+  ]);
   const [dockerPort, setDockerPort] = useState<number>(8000);
   const [gpuMem, setGpuMem] = useState<number>(0.8);
   const [maxLen, setMaxLen] = useState<number>(15360);
@@ -65,8 +81,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const navItems = [
     { id: "ingestion", label: "📥 Ingestion Pipeline", icon: FileSpreadsheet },
     { id: "inspector", label: "🔍 Layout Inspector", icon: FileSearch },
-    { id: "dashboard", label: "📊 Case Dashboard", icon: LayoutDashboard },
     { id: "embedding", label: "🧠 Embedding Pipeline", icon: Brain },
+    { id: "dashboard", label: "📊 Case Dashboard", icon: LayoutDashboard },
     { id: "chat", label: "💬 RAG Processing", icon: MessageSquareText },
     { id: "diagnostics", label: "🖥️ System Diagnostics", icon: Activity },
   ];
@@ -76,6 +92,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (statusRes) {
       setDockerStatus(statusRes.status || "Unknown");
       setDockerMsg(statusRes.message || "");
+    }
+    const modelsRes = await fetchDockerModels();
+    if (modelsRes && modelsRes.models && modelsRes.models.length > 0) {
+      setAvailableModels((prev) => Array.from(new Set([...modelsRes.models, ...prev])));
     }
     const settings = await fetchSettings();
     if (settings) {
@@ -95,6 +115,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
       if (statusRes) {
         setDockerStatus(statusRes.status || "Unknown");
         setDockerMsg(statusRes.message || "");
+      }
+      const modelsRes = await fetchDockerModels();
+      if (modelsRes && modelsRes.models && modelsRes.models.length > 0 && isMounted) {
+        setAvailableModels((prev) => Array.from(new Set([...modelsRes.models, ...prev])));
       }
       const settings = await fetchSettings();
       if (!isMounted) return;
@@ -175,12 +199,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {/* Navigation Section */}
         <nav className="space-y-1">
           {navItems.map((item) => {
-            const isActive = currentView === item.id;
+            const isActive = selectedView === item.id;
             return (
               <button
                 key={item.id}
                 type="button"
-                onClick={() => onSelectView(item.id as ViewType)}
+                onClick={() => handleViewChange(item.id as ViewType)}
                 className={`w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer select-none ${
                   isActive
                     ? "bg-indigo-600/25 text-indigo-200 border border-indigo-500/40 shadow-md shadow-indigo-500/10"
@@ -191,6 +215,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </button>
             );
           })}
+
         </nav>
 
         {/* Inference Server (Docker) Accordion */}
@@ -226,10 +251,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   onChange={(e) => setDockerModel(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-[11px]"
                 >
-                  <option value="allenai/olmOCR-2-7B-1025-FP8">allenai/olmOCR-2-7B-1025-FP8</option>
-                  <option value="nvidia/Phi-4-reasoning-plus-NVFP4">nvidia/Phi-4-reasoning-plus-NVFP4</option>
-                  <option value="Qwen/Qwen2-VL-7B-Instruct">Qwen/Qwen2-VL-7B-Instruct</option>
+                  {availableModels.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
                 </select>
+
               </div>
 
               <div>
@@ -323,9 +351,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </label>
           <select
             value={activeRole}
-            onChange={(e) => onRoleChange(e.target.value)}
+            onChange={(e) => onRoleChange && onRoleChange(e.target.value)}
             className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none cursor-pointer"
           >
+
             <option value="Admin">Admin</option>
             <option value="Clinical Reviewer">Clinical Reviewer</option>
             <option value="Legal Specialist">Legal Specialist</option>

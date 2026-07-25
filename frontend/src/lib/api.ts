@@ -64,6 +64,17 @@ export async function fetchCaseSummary() {
   }
 }
 
+// Fetch Case Timeline Events
+export async function fetchCaseTimeline(runId: string) {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/cases/${runId}/timeline`);
+    return await res.json();
+  } catch (err) {
+    return { run_id: runId, events: [], error: String(err) };
+  }
+}
+
+
 // Fetch Pipeline Runs
 export async function fetchPipelineRuns() {
   try {
@@ -83,6 +94,18 @@ export async function fetchDockerStatus() {
     return { status: "unknown", is_ready: false };
   }
 }
+
+// Fetch Cached / Available Docker Models
+export async function fetchDockerModels() {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/docker/models`);
+    if (!res.ok) return { models: [] };
+    return await res.json();
+  } catch {
+    return { models: [] };
+  }
+}
+
 
 // Fetch Docker Container Logs
 export async function fetchDockerLogs(tail: number = 200) {

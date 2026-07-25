@@ -1,6 +1,7 @@
 import React from "react";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { SystemDiagnostics } from "../SystemDiagnostics";
+import { fetchSystemHealth, executeCleanup } from "@/lib/api";
 
 jest.mock("@/lib/api", () => ({
   fetchSystemHealth: jest.fn().mockResolvedValue({
@@ -18,17 +19,21 @@ jest.mock("@/lib/api", () => ({
   API_BASE_URL: "http://127.0.0.1:8001",
 }));
 
+const mockFetchSystemHealth = fetchSystemHealth as jest.Mock;
+const mockExecuteCleanup = executeCleanup as jest.Mock;
+
 describe("SystemDiagnostics Component", () => {
   test("renders system health & diagnostics dashboard", async () => {
     render(<SystemDiagnostics />);
 
-    expect(screen.getByText("System Diagnostics")).toBeInTheDocument();
-    expect(screen.getByText(/Infrastructure health telemetry/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("System Diagnostics")).toBeInTheDocument();
+      expect(screen.getByText(/Infrastructure health telemetry/i)).toBeInTheDocument();
+    });
   });
 
   test("handles object/dictionary health.services gracefully without map exception", async () => {
-    const { fetchSystemHealth } = require("@/lib/api");
-    fetchSystemHealth.mockResolvedValueOnce({
+    mockFetchSystemHealth.mockResolvedValueOnce({
       status: "healthy",
       services: {
         postgres: { is_up: true, latency: 2.4, extra_info: "port: 5432" }
@@ -44,13 +49,16 @@ describe("SystemDiagnostics Component", () => {
   });
 
   test("handles cleanup network errors gracefully", async () => {
-    const { executeCleanup } = require("@/lib/api");
-    executeCleanup.mockResolvedValueOnce({
+    mockExecuteCleanup.mockResolvedValueOnce({
       success: false,
       message: "Network error connecting to API server at http://127.0.0.1:8001: TypeError: NetworkError",
     });
 
     render(<SystemDiagnostics />);
+
+    await waitFor(() => {
+      expect(screen.getByText("System Diagnostics")).toBeInTheDocument();
+    });
 
     const cleanButton = screen.getByRole("button", { name: /Clean Selected Components/i });
     fireEvent.click(cleanButton);

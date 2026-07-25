@@ -612,7 +612,8 @@ def make_case_dashboard_html(
         # Use pre-fetched metadata (batch-loaded by the caller to avoid N+1 queries)
         meta = cases_metadata.get(run_id) or {"names": [], "dob": "—", "injuries": []}
 
-        client_display = ", ".join(meta["names"]) if meta["names"] else "Unknown Client"
+        client_display = ", ".join(meta["names"]) if meta["names"] else (f"Case {run_id[:8]}" if run_id else "Unknown Client")
+
         dob_display = meta["dob"] if meta["dob"] != "—" else "Not Extracted"
 
         if meta["injuries"]:

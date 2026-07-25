@@ -1,11 +1,10 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Activity,
   Brain,
   Cpu,
-  Database,
   FileSearch,
   FileSpreadsheet,
   FolderKanban,
@@ -14,9 +13,6 @@ import {
   MessageSquareText,
   RefreshCw,
   Server,
-  Sparkles,
-  ChevronDown,
-  Layers,
   CheckCircle2,
   AlertTriangle,
   Loader2,
@@ -62,7 +58,6 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
   onSelectCase,
 }) => {
   // Telemetry state
-  const [healthStatus, setHealthStatus] = useState<string>("checking");
   const [allHealthy, setAllHealthy] = useState<boolean>(true);
   const [services, setServices] = useState<ServiceHealthInfo[]>([]);
   const [failedServices, setFailedServices] = useState<string[]>([]);
@@ -80,13 +75,12 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
   const healthPopoverRef = useRef<HTMLDivElement>(null);
   const vramPopoverRef = useRef<HTMLDivElement>(null);
 
-  const loadHeaderData = async () => {
+  const loadHeaderData = useCallback(async () => {
     setIsFetching(true);
     try {
       // Fetch Health & GPU
       const healthData = await fetchSystemHealth();
       if (healthData) {
-        setHealthStatus(healthData.status || "healthy");
         setAllHealthy(healthData.all_healthy ?? (healthData.status === "healthy"));
         setServices(Array.isArray(healthData.services) ? healthData.services : []);
         setFailedServices(Array.isArray(healthData.failed_services) ? healthData.failed_services : []);
@@ -131,17 +125,30 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
         onSelectCase(caseOptions[0].id);
       }
     } catch {
-      setHealthStatus("offline");
+      // Failed to load header telemetry
     } finally {
       setIsFetching(false);
     }
-  };
+  }, [activeCaseId, onSelectCase]);
 
   useEffect(() => {
-    loadHeaderData();
-    const interval = setInterval(loadHeaderData, 10000);
-    return () => clearInterval(interval);
-  }, []);
+    let active = true;
+    const fetchTelemetry = async () => {
+      if (active) {
+        await loadHeaderData();
+      }
+    };
+    fetchTelemetry();
+    const interval = setInterval(() => {
+      if (active) {
+        loadHeaderData();
+      }
+    }, 10000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [loadHeaderData]);
 
   // Close popovers on outside click
   useEffect(() => {
@@ -180,8 +187,8 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
   const navItems = [
     { id: "ingestion", label: "Ingestion", icon: FileSpreadsheet },
     { id: "inspector", label: "Inspector", icon: FileSearch },
-    { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "embedding", label: "Embedding", icon: Brain },
+    { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "chat", label: "RAG Chat", icon: MessageSquareText },
     { id: "diagnostics", label: "Diagnostics", icon: Activity },
   ];

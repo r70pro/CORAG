@@ -375,6 +375,44 @@ class TestSystemDiagnostics(unittest.TestCase):
                 self.assertEqual(res["vram_used"], 87847.0)
                 self.assertLessEqual(res["vram_potential_free"], res["vram_total"])
 
+    @patch("subprocess.run")
+    @patch("system_diagnostics.get_docker_containers")
+    def test_get_gpu_metrics_data_truncated_process_names(self, mock_docker, mock_run):
+        mock_docker.return_value = {}
+
+        mock_torch = MagicMock()
+        mock_torch.cuda.is_available.return_value = True
+        mock_torch.cuda.get_device_name.return_value = "NVIDIA GB10"
+        mock_torch.cuda.get_device_properties.return_value = MagicMock(total_memory=100000 * 1024 * 1024)
+        mock_torch.cuda.memory_allocated.return_value = 0
+
+        smi_query_out = "NVIDIA GB10, [N/A], [N/A]"
+        smi_proc_section = """
++-----------------------------------------------------------------------------+
+| Processes:                                                                  |
++-----------------------------------------------------------------------------+
+|  GPU   GI   CI        PID   Type   Process name                             |
+|=============================================================================|
+|    0   N/A  N/A       111      G   ...exec/xdg-desktop-portal-gnome     29MiB |
+|    0   N/A  N/A       222      G   ...tigravity-IDE/antigravity-ide    199MiB |
++-----------------------------------------------------------------------------+
+"""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=smi_query_out),
+            MagicMock(returncode=0, stdout=smi_proc_section),
+        ]
+
+        def mock_resolve(pid, name):
+            return name, False, ""
+
+        with patch.dict(sys.modules, {"torch": mock_torch}):
+            with patch("system_diagnostics.resolve_process_details", mock_resolve):
+                res = system_diagnostics.get_gpu_metrics_data()
+                self.assertEqual(res["processes"][0]["vram"], 29)
+                self.assertEqual(res["processes"][1]["vram"], 199)
+                self.assertEqual(res["vram_used"], 228.0)
+                self.assertLessEqual(res["vram_pct"], 100.0)
+
     @patch("system_diagnostics.check_backing_services_data")
     @patch("system_diagnostics.get_gpu_metrics_data")
     @patch("settings_manager.load_settings")

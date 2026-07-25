@@ -443,6 +443,8 @@ export const PdfInspector: React.FC = () => {
                   src={`${API_BASE_URL}/api/documents/runs/${selectedRun}/pdf#page=${currentPage}`}
                   className="w-full h-full rounded-lg border-0"
                   title="Source PDF Viewer"
+                  sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+                  referrerPolicy="no-referrer"
                 />
               ) : (
                 <div className="p-4 bg-slate-900 border border-slate-800 rounded-lg text-center space-y-2 my-auto">

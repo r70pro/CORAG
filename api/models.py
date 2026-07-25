@@ -71,6 +71,13 @@ class DockerLogsResponse(BaseModel):
     container_status: str = ""
 
 
+class DockerModelsResponse(BaseModel):
+    """List of available / cached model names."""
+
+    models: list[str] = Field(default_factory=list, description="Available model identifiers")
+
+
+
 # ── RAG ───────────────────────────────────────────────────────────────────────
 
 

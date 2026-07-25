@@ -144,11 +144,11 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
             inspector_btn = gr.Button(
                 "🔍 Layout Inspector", variant="secondary", elem_classes=["nav-btn"]
             )
-            rag_dashboard_btn = gr.Button(
-                "📊 Case Dashboard", variant="secondary", elem_classes=["nav-btn"]
-            )
             embedding_pipeline_btn = gr.Button(
                 "🧠 Embedding Pipeline", variant="secondary", elem_classes=["nav-btn"]
+            )
+            rag_dashboard_btn = gr.Button(
+                "📊 Case Dashboard", variant="secondary", elem_classes=["nav-btn"]
             )
             rag_chat_btn = gr.Button(
                 "💬 RAG Processing", variant="secondary", elem_classes=["nav-btn"]
@@ -436,16 +436,16 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                         )
 
             # ────────────────────────────────────────────────────────
-            # PANEL 3: Case Dashboard
-            # ────────────────────────────────────────────────────────
-            with gr.Column(visible=False) as rag_dashboard_panel:
-                dash_components = build_case_dashboard_ui()
-
-            # ────────────────────────────────────────────────────────
-            # PANEL 4: Embedding Pipeline
+            # PANEL 3: Embedding Pipeline
             # ────────────────────────────────────────────────────────
             with gr.Column(visible=False) as embedding_pipeline_panel:
                 embed_components = build_embedding_pipeline_ui()
+
+            # ────────────────────────────────────────────────────────
+            # PANEL 4: Case Dashboard
+            # ────────────────────────────────────────────────────────
+            with gr.Column(visible=False) as rag_dashboard_panel:
+                dash_components = build_case_dashboard_ui()
 
             # ────────────────────────────────────────────────────────
             # PANEL 5: RAG Processing
@@ -556,30 +556,30 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
         page_title,
         ingestion_btn,
         inspector_btn,
-        rag_dashboard_btn,
         embedding_pipeline_btn,
+        rag_dashboard_btn,
         rag_chat_btn,
         diagnostics_btn,
         ingestion_panel,
         inspector_panel,
-        rag_dashboard_panel,
         embedding_pipeline_panel,
+        rag_dashboard_panel,
         rag_chat_panel,
         diagnostics_panel,
     ]
 
     ingestion_btn.click(lambda: select_view(0), outputs=nav_outputs)
     inspector_btn.click(lambda: select_view(1), outputs=nav_outputs)
-    rag_dashboard_btn.click(lambda: select_view(2), outputs=nav_outputs).then(
+    embedding_pipeline_btn.click(lambda: select_view(2), outputs=nav_outputs).then(
+        embed_components["refresh_fn"], outputs=[embed_components["telemetry_comp"]]
+    )
+    rag_dashboard_btn.click(lambda: select_view(3), outputs=nav_outputs).then(
         dash_components["refresh_fn"],
         outputs=[
             dash_components["dashboard_html"],
             dash_components["dashboard_delete_selector"],
             dash_components["dashboard_status"],
         ],
-    )
-    embedding_pipeline_btn.click(lambda: select_view(3), outputs=nav_outputs).then(
-        embed_components["refresh_fn"], outputs=[embed_components["telemetry_comp"]]
     )
     rag_chat_btn.click(lambda: select_view(4), outputs=nav_outputs).then(
         chat_components["refresh_fn"], outputs=[chat_components["active_case_selector"]]

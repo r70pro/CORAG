@@ -1,18 +1,13 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Activity,
   RefreshCw,
   Zap,
   Trash2,
   Download,
-  Terminal,
   HardDrive,
-  Cpu,
-  Server,
-  CheckCircle2,
-  AlertCircle,
   Copy,
   Check,
 } from "lucide-react";
@@ -41,6 +36,33 @@ interface RawServiceItem {
   extra_info?: string;
   is_up: boolean;
   latency_ms?: number;
+}
+
+interface ServiceDetail {
+  is_up?: boolean;
+  latency_ms?: number;
+  latency?: number;
+  extra_info?: string;
+}
+
+type HealthServicesMap = Record<string, ServiceDetail | string | boolean>;
+
+interface GPUHealthData {
+  cuda_available?: boolean;
+  gpu_name?: string;
+  vram_pct?: number;
+  vram_used?: number;
+  vram_used_mb?: number;
+  vram_total?: number;
+  vram_total_mb?: number;
+  processes?: GPUProcessItem[];
+}
+
+interface RawHealthResponse {
+  status?: string;
+  services?: RawServiceItem[] | HealthServicesMap | { services?: RawServiceItem[] | HealthServicesMap };
+  gpu?: GPUHealthData;
+  gpu_metrics?: GPUHealthData;
 }
 
 interface GPUProcessItem {
@@ -111,24 +133,25 @@ export const SystemDiagnostics: React.FC = () => {
     }
   };
 
-  const parseHealthServices = (rawServices: any): ServiceStatus[] => {
+  const parseHealthServices = useCallback((rawServices: RawServiceItem[] | HealthServicesMap | { services?: RawServiceItem[] | HealthServicesMap } | undefined): ServiceStatus[] => {
     if (!rawServices) return [];
     let items: RawServiceItem[] = [];
 
     if (Array.isArray(rawServices)) {
       items = rawServices;
     } else if (typeof rawServices === "object") {
-      const target = rawServices.services || rawServices;
+      const target = ("services" in rawServices && rawServices.services) ? rawServices.services : rawServices;
       if (Array.isArray(target)) {
         items = target;
       } else if (target && typeof target === "object") {
-        items = Object.entries(target).map(([key, val]: [string, any]) => {
+        items = Object.entries(target).map(([key, val]) => {
           if (val && typeof val === "object") {
+            const detail = val as ServiceDetail;
             return {
               name: key,
-              is_up: !!val.is_up,
-              latency_ms: val.latency_ms ?? val.latency ?? 0,
-              extra_info: val.extra_info,
+              is_up: !!detail.is_up,
+              latency_ms: detail.latency_ms ?? detail.latency ?? 0,
+              extra_info: detail.extra_info,
             };
           }
           return {
@@ -152,9 +175,9 @@ export const SystemDiagnostics: React.FC = () => {
         badge: s.is_up ? "UP" : "DOWN",
       };
     });
-  };
+  }, []);
 
-  const processHealthData = (health: any) => {
+  const processHealthData = useCallback((health: RawHealthResponse | undefined) => {
     if (!health) return;
     if (health.services) {
       const parsed = parseHealthServices(health.services);
@@ -171,7 +194,7 @@ export const SystemDiagnostics: React.FC = () => {
         setGpuProcesses(gpuData.processes);
       }
     }
-  };
+  }, [parseHealthServices]);
 
   const loadHealth = async () => {
     setLoading(true);
@@ -218,7 +241,7 @@ export const SystemDiagnostics: React.FC = () => {
       isMounted = false;
       clearInterval(interval);
     };
-  }, [autoRefreshLogs]);
+  }, [autoRefreshLogs, processHealthData]);
 
   useEffect(() => {
     if (autoScrollLogs && logContainerRef.current) {
@@ -656,7 +679,7 @@ export const SystemDiagnostics: React.FC = () => {
                 containerLogs ? (
                   containerLogs
                 ) : (
-                  <span className="text-slate-500 italic">No logs available for container 'olmocr'.</span>
+                  <span className="text-slate-500 italic">No logs available for container &apos;olmocr&apos;.</span>
                 )
               ) : (
                 logMessages.map((msg, i) => (

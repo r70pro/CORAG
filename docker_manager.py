@@ -81,38 +81,129 @@ def get_docker_logs(tail: int = 200) -> str:
         return f"Failed to retrieve container logs: {e}"
 
 
+def get_cached_models() -> list[str]:
+    """Scan HuggingFace cache directories and standard presets for available models."""
+    presets = [
+        "allenai/olmOCR-2-7B-1025-FP8",
+        "nvidia/Phi-4-reasoning-plus-NVFP4",
+        "Qwen/Qwen2-VL-7B-Instruct",
+    ]
+    models = list(presets)
+
+    cache_dirs = []
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        cache_dirs.append(os.path.join(hf_home, "hub"))
+
+    home_dir = os.path.expanduser("~")
+    cache_dirs.append(os.path.join(home_dir, ".cache", "huggingface", "hub"))
+    cache_dirs.append("/home/owner/.cache/huggingface/hub")
+    cache_dirs.append("/home/owner/IQRAG/.hf_cache/hub")
+
+    visited = set()
+    for c_dir in cache_dirs:
+        if not c_dir or c_dir in visited:
+            continue
+        visited.add(c_dir)
+        if os.path.exists(c_dir) and os.path.isdir(c_dir):
+            try:
+                for item in os.listdir(c_dir):
+                    if item.startswith("models--"):
+                        parts = item[len("models--") :].split("--", 1)
+                        if len(parts) == 2:
+                            model_id = f"{parts[0]}/{parts[1]}"
+                            if model_id not in models:
+                                models.append(model_id)
+            except Exception as e:
+                logger.warning(f"Error scanning cache dir {c_dir}: {e}")
+
+    return models
+
+
+
 def start_docker_container():
+    msg_parts = []
+    success = True
+
+    # 1. Start RAG Infrastructure containers (postgres, redis, minio, qdrant)
+    try:
+        from rag_infra_manager import start_rag_infrastructure
+        rag_ok, rag_msg = start_rag_infrastructure()
+        if not rag_ok:
+            logger.warning(f"RAG Infrastructure start warning: {rag_msg}")
+        msg_parts.append(f"RAG Infra: {rag_msg}")
+    except Exception as e:
+        logger.error(f"Error starting RAG infrastructure: {e}")
+        msg_parts.append(f"RAG Infra error: {e}")
+
+    # 2. Start or provision vLLM container ('olmocr')
     status = get_docker_status()
     if status == "exited":
         try:
             subprocess.run(["docker", "start", "olmocr"], check=True, capture_output=True)
-            return True, "Container started successfully."
+            msg_parts.append("Container 'olmocr' started successfully.")
         except subprocess.CalledProcessError as e:
-            return False, f"Failed to start container: {e.stderr.decode().strip()}"
-    elif status == "running":
-        return True, "Container is already running."
+            success = False
+            msg_parts.append(f"Failed to start container 'olmocr': {e.stderr.decode().strip()}")
+    elif status in ("running", "restarting"):
+        msg_parts.append("Container 'olmocr' is already running.")
     elif status == "not_found":
-        return False, "Container 'olmocr' not found. Please recreate/provision it first."
-    return False, f"Container status is {status}, cannot start."
+        try:
+            from settings_manager import load_settings
+            settings = load_settings()
+            hf_token = settings.get("hf_token", os.environ.get("HF_TOKEN", ""))
+            port = settings.get("docker_port", 8000)
+            model = settings.get("model_name", "allenai/olmOCR-2-7B-1025-FP8")
+            gpu_mem = settings.get("docker_gpu_mem", 0.8)
+            max_len = settings.get("docker_max_model_len", 15360)
+            tp = settings.get("docker_tensor_parallel", 1)
+
+            create_ok, create_msg = create_docker_container(hf_token, port, model, gpu_mem, max_len, tp)
+            if not create_ok:
+                success = False
+            msg_parts.append(f"Provisioned 'olmocr': {create_msg}")
+        except Exception as e:
+            success = False
+            msg_parts.append(f"Failed to provision 'olmocr' container: {e}")
+    else:
+        success = False
+        msg_parts.append(f"Container status is '{status}', cannot start.")
+
+    return success, " ".join(msg_parts)
 
 
 def stop_docker_container():
     status = get_docker_status()
+    msg_parts = []
+    success = True
     if status in ["running", "restarting"]:
         try:
             subprocess.run(["docker", "stop", "olmocr"], check=True, capture_output=True)
-            return True, "Container stopped successfully."
+            msg_parts.append("Container 'olmocr' stopped successfully.")
         except subprocess.CalledProcessError as e:
-            return False, f"Failed to stop container: {e.stderr.decode().strip()}"
-    return True, "Container is not running."
+            success = False
+            msg_parts.append(f"Failed to stop container 'olmocr': {e.stderr.decode().strip()}")
+    else:
+        msg_parts.append("Container 'olmocr' is not running.")
+
+    try:
+        from rag_infra_manager import stop_rag_infrastructure
+        rag_ok, rag_msg = stop_rag_infrastructure()
+        if not rag_ok:
+            success = False
+        msg_parts.append(f"RAG Infra: {rag_msg}")
+    except Exception as e:
+        msg_parts.append(f"RAG Infra stop error: {e}")
+
+    return success, " ".join(msg_parts)
+
 
 
 def resolve_vllm_image() -> str:
     if os.environ.get("OLMOCR_VLLM_IMAGE"):
         return os.environ["OLMOCR_VLLM_IMAGE"]
     for img in [
-        "nvcr.io/nvidia/vllm:26.05.post1-py3",
-        "nvcr.io/nvidia/vllm:26.05-py3",
+        "nvcr.io/nvidia/vllm:26.04-py3",
         "vllm/vllm-openai:v0.20.0",
     ]:
         try:
@@ -121,7 +212,7 @@ def resolve_vllm_image() -> str:
                 return img
         except Exception:
             pass
-    return "nvcr.io/nvidia/vllm:26.05.post1-py3"
+    return "vllm/vllm-openai:v0.20.0"
 
 
 def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tensor_parallel_size=1):
@@ -223,14 +314,17 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tenso
             "--gpus",
             "all",
             "--ipc=host",
+            "-e",
+            "NVIDIA_DISABLE_REQUIRE=1",
             "-p",
             f"127.0.0.1:{port_int}:8000",
             "-v",
             f"{hf_cache_dir}:/root/.cache/huggingface",
             "--env-file",
             env_path,
-            target_image,
+            "--entrypoint",
             "vllm",
+            target_image,
             "serve",
             model,
             "--host",
@@ -269,15 +363,30 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tenso
 
 def shutdown_docker_container():
     status = get_docker_status()
+    msg_parts = []
+    success = True
     if status in ["running", "exited"]:
         try:
             if status == "running":
                 subprocess.run(["docker", "stop", "olmocr"], check=True, capture_output=True)
             subprocess.run(["docker", "rm", "olmocr"], check=True, capture_output=True)
-            return True, "Container shutdown successfully."
+            msg_parts.append("Container 'olmocr' shutdown successfully.")
         except subprocess.CalledProcessError as e:
-            return False, f"Failed to shutdown container: {e.stderr.decode().strip()}"
-    return True, "Container is not running."
+            success = False
+            msg_parts.append(f"Failed to shutdown container 'olmocr': {e.stderr.decode().strip()}")
+    else:
+        msg_parts.append("Container 'olmocr' is not running.")
+
+    try:
+        from rag_infra_manager import stop_rag_infrastructure
+        rag_ok, rag_msg = stop_rag_infrastructure()
+        if not rag_ok:
+            success = False
+        msg_parts.append(f"RAG Infra: {rag_msg}")
+    except Exception as e:
+        msg_parts.append(f"RAG Infra shutdown error: {e}")
+
+    return success, " ".join(msg_parts)
 
 
 def cleanup_docker():
@@ -288,10 +397,18 @@ def cleanup_docker():
     if os.environ.get("KEEP_CONTAINERS_ON_EXIT") == "true":
         return
     logger.info(
-        "Application shutting down. Stopping local OLMOCR Docker container to release VRAM..."
+        "Application shutting down. Stopping local OLMOCR Docker container & RAG infra to release resources..."
     )
     try:
         subprocess.run(["docker", "stop", "olmocr"], capture_output=True)
-        logger.info("Docker container stopped successfully.")
+        logger.info("Docker container 'olmocr' stopped successfully.")
     except Exception as e:
         logger.error(f"Error stopping container on shutdown: {e}")
+
+    try:
+        from rag_infra_manager import stop_rag_infrastructure
+        stop_rag_infrastructure()
+        logger.info("RAG infrastructure stopped successfully.")
+    except Exception as e:
+        logger.error(f"Error stopping RAG infrastructure on shutdown: {e}")
+

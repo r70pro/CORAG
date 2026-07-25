@@ -203,25 +203,55 @@ def api_health():
     tags=["Phase 1 Core Endpoints"],
 )
 def api_case_summary():
-    """Return aggregate corpus statistics and list of indexed cases."""
-    from rag.db import get_corpus_stats, get_indexed_runs
+    """Return aggregate corpus statistics and list of indexed cases with rich metadata."""
+    from rag.db import get_corpus_stats, get_runs_with_stats
     from rag.embedding import get_collection_info
+    from rag.metadata_helper import get_all_cases_metadata, get_case_timeline
 
     try:
         db_stats = get_corpus_stats()
-        indexed_runs = get_indexed_runs()
+        runs_with_stats = get_runs_with_stats()
+        run_ids = [r.get("run_id") for r in runs_with_stats if r.get("run_id")]
+        cases_metadata = get_all_cases_metadata(run_ids)
         qdrant_info = get_collection_info()
+
+        indexed_cases = []
+        for r in runs_with_stats:
+            rid = r.get("run_id", "")
+            meta = cases_metadata.get(rid, {})
+            names = meta.get("names", [])
+            client_name = ", ".join(names) if names else f"Case {rid[:8]}"
+            dob = meta.get("dob", "—")
+            injuries = meta.get("injuries", [])
+
+            earliest = r.get("earliest_date")
+            latest = r.get("latest_date")
+            date_range = "—"
+            if earliest and latest:
+                date_range = f"{earliest} → {latest}"
+            elif earliest:
+                date_range = f"{earliest} → ..."
+            elif latest:
+                date_range = f"... → {latest}"
+
+            indexed_cases.append({
+                "run_id": rid,
+                "display_name": client_name,
+                "client_name": client_name,
+                "dob": dob,
+                "injuries": injuries if injuries else ["No specific injury/diagnosis found"],
+                "documents_count": r.get("total_documents", 1),
+                "chunks_count": r.get("total_chunks", 0),
+                "authors_count": r.get("unique_authors", 0),
+                "date_range": date_range,
+                "created_at": str(r.get("created_at", "")),
+                "indexed_at": str(r.get("indexed_at", "")),
+                "timeline_events": get_case_timeline(rid),
+            })
 
         return {
             "stats": db_stats,
-            "indexed_cases": [
-                {
-                    "run_id": r.get("run_id"),
-                    "display_name": r.get("display_name", r.get("run_id")),
-                    "created_at": str(r.get("created_at", "")),
-                }
-                for r in indexed_runs
-            ],
+            "indexed_cases": indexed_cases,
             "vector_store": {
                 "points_count": qdrant_info.get("points_count", 0),
                 "status": qdrant_info.get("status", "unknown"),
@@ -230,6 +260,20 @@ def api_case_summary():
     except Exception as e:
         logger.error(f"Error in api_case_summary: {e}")
         return {"error": str(e)}
+
+
+@app.get("/api/cases/{run_id}/timeline", tags=["Phase 1 Core Endpoints"])
+def api_case_timeline(run_id: str):
+    """Return chronological medicolegal timeline events for a specific run ID."""
+    from rag.metadata_helper import get_case_timeline
+
+    try:
+        events = get_case_timeline(run_id)
+        return {"run_id": run_id, "events": events}
+    except Exception as e:
+        logger.error(f"Error in api_case_timeline: {e}")
+        return {"run_id": run_id, "events": [], "error": str(e)}
+
 
 
 @app.get("/", tags=["Root"])

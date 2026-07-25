@@ -1,6 +1,7 @@
 import React from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { CaseDashboard } from "../CaseDashboard";
+import { fetchCaseSummary, deleteCases } from "@/lib/api";
 
 jest.mock("@/lib/api", () => ({
   fetchCaseSummary: jest.fn().mockResolvedValue({
@@ -12,6 +13,9 @@ jest.mock("@/lib/api", () => ({
   }),
   deleteCases: jest.fn().mockResolvedValue({ success: true }),
 }));
+
+const mockFetchCaseSummary = fetchCaseSummary as jest.Mock;
+const mockDeleteCases = deleteCases as jest.Mock;
 
 describe("CaseDashboard Component", () => {
   test("renders dashboard header and case list", async () => {
@@ -36,7 +40,6 @@ describe("CaseDashboard Component", () => {
     expect(searchInput).toHaveValue("Dr. Eugene");
   });
   test("handles Delete All Cases and displays empty state", async () => {
-    const { fetchCaseSummary, deleteCases } = require("@/lib/api");
     window.confirm = jest.fn().mockReturnValue(true);
 
     render(<CaseDashboard />);
@@ -45,7 +48,7 @@ describe("CaseDashboard Component", () => {
       expect(screen.getByText("Souki, Issa")).toBeInTheDocument();
     });
 
-    fetchCaseSummary.mockResolvedValueOnce({
+    mockFetchCaseSummary.mockResolvedValueOnce({
       stats: { indexed_runs: 0, total_documents: 0, total_chunks: 0, unique_authors: 0 },
       indexed_cases: [],
       vector_store: { points_count: 0, status: "green" }
@@ -55,7 +58,7 @@ describe("CaseDashboard Component", () => {
     fireEvent.click(deleteAllBtn);
 
     await waitFor(() => {
-      expect(deleteCases).toHaveBeenCalledWith([], true);
+      expect(mockDeleteCases).toHaveBeenCalledWith([], true);
       expect(screen.getByText("No Indexed Cases Found")).toBeInTheDocument();
     });
   });

@@ -13,7 +13,7 @@ The suite features **built-in Docker lifecycle management** to dynamically run t
 ## 📁 Repository Directory Structure
 
 - OLMOCR/
-  - [app.py](file:///home/owner/KIRAG/app.py) — Main Gradio application entry point. Constructs the 6-panel layout (Ingestion, Layout Inspector, Case Dashboard, Embedding Pipeline, RAG Processing, System Diagnostics), wires all event handlers, validates backing-service credentials at startup, and launches the server
+  - [app.py](file:///home/owner/KIRAG/app.py) — Main Gradio application entry point. Constructs the 6-panel layout (Ingestion, Layout Inspector, Embedding Pipeline, Case Dashboard, RAG Processing, System Diagnostics), wires all event handlers, validates backing-service credentials at startup, and launches the server
   - [app_handlers.py](file:///home/owner/KIRAG/app_handlers.py) — UI callback functions for 6-view navigation toggling (`select_view`), settings persistence, Docker controls, and periodic diagnostics polling
   - [cleanup_manager.py](file:///home/owner/KIRAG/cleanup_manager.py) — Disk cache and run file cleanup manager (`perform_reset_cleanup()`)
   - [conftest.py](file:///home/owner/KIRAG/conftest.py) — Pytest configuration redirecting Hugging Face cache to `workspace/huggingface`
@@ -86,7 +86,7 @@ block-beta
 
     block:navsidebar:1
         columns 1
-        nav["🧭 Navigation Sidebar<br/>📥 Ingestion Pipeline<br/>🔍 Layout Inspector<br/>📊 Case Dashboard<br/>🧠 Embedding Pipeline<br/>💬 RAG Processing<br/>🖥️ System Diagnostics<br/>───────────<br/>🐳 Inference Server<br/>🎭 Active Role<br/>📐 Layout Density"]
+        nav["🧭 Navigation Sidebar<br/>📥 Ingestion Pipeline<br/>🔍 Layout Inspector<br/>🧠 Embedding Pipeline<br/>📊 Case Dashboard<br/>💬 RAG Processing<br/>🖥️ System Diagnostics<br/>───────────<br/>🐳 Inference Server<br/>🎭 Active Role<br/>📐 Layout Density"]
     end
 
     block:contentarea:4
@@ -225,7 +225,7 @@ The application uses a persistent **left navigation sidebar** with 6 navigation 
 | Section | Contents | Key Features |
 |:---|:---|:---|
 | **Logo & Branding** | "IQ-RAG Client" title, "Mission Control" subtitle | Styled `.sidebar-logo-container` |
-| **Panel Navigation** | 6 `gr.Button` components: 📥 Ingestion Pipeline, 🔍 Layout Inspector, 📊 Case Dashboard, 🧠 Embedding Pipeline, 💬 RAG Processing, 🖥️ System Diagnostics | Active button highlighted via `active-nav-btn` CSS class; `.click()` handlers call `select_view(idx)` |
+| **Panel Navigation** | 6 `gr.Button` components: 📥 Ingestion Pipeline, 🔍 Layout Inspector, 🧠 Embedding Pipeline, 📊 Case Dashboard, 💬 RAG Processing, 🖥️ System Diagnostics | Active button highlighted via `active-nav-btn` CSS class; `.click()` handlers call `select_view(idx)` |
 | **🐳 Inference Server (Docker)** | HF token (password field), Model selector dropdown, Docker port (number), GPU memory slider (0.1–1.0), Max Content Length slider (2048–model max, up to 1M), Start/Stop/Recreate buttons | Creates and manages the `olmocr` vLLM container (default image `vllm/vllm-openai:v0.8.5`, overridable via `OLMOCR_VLLM_IMAGE`). Model change auto-syncs between Pipeline and Docker dropdowns and adjusts max content length limits via `MODEL_MAX_CONTENT_LENGTHS` |
 | **Sidebar Footer** | Active Role dropdown (Admin, Clinical Reviewer, Legal Specialist), Comfortable/Compact layout toggle buttons, Version label (`IQ-RAG Workstation v2.0.3`) | Compact mode toggles `.layout-compact` CSS class via JS |
 

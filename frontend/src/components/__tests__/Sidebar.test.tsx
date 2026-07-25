@@ -4,6 +4,7 @@ import { Sidebar } from "../Sidebar";
 
 jest.mock("@/lib/api", () => ({
   fetchDockerStatus: jest.fn().mockResolvedValue({ status: "running", is_ready: true }),
+  fetchDockerModels: jest.fn().mockResolvedValue({ models: ["allenai/olmOCR-2-7B-1025-FP8", "nvidia/Phi-4-reasoning-plus-NVFP4"] }),
   fetchSettings: jest.fn().mockResolvedValue({ hf_token: "test_token" }),
   startDockerContainer: jest.fn().mockResolvedValue({ success: true }),
   stopDockerContainer: jest.fn().mockResolvedValue({ success: true }),
@@ -11,6 +12,7 @@ jest.mock("@/lib/api", () => ({
   shutdownDockerContainer: jest.fn().mockResolvedValue({ success: true }),
   updateSettings: jest.fn().mockResolvedValue({ success: true }),
 }));
+
 
 describe("Sidebar Component", () => {
   const mockOnSelectView = jest.fn();

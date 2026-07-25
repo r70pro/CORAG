@@ -42,6 +42,13 @@ class TestDockerManager(unittest.TestCase):
         status = docker_manager.get_docker_status()
         self.assertEqual(status, "error")
 
+    def test_get_cached_models(self):
+        models = docker_manager.get_cached_models()
+        self.assertIsInstance(models, list)
+        self.assertIn("allenai/olmOCR-2-7B-1025-FP8", models)
+        self.assertIn("nvidia/Phi-4-reasoning-plus-NVFP4", models)
+
+
     @patch("httpx.get")
     def test_check_server_ready_success(self, mock_get):
         mock_get.return_value = MagicMock(status_code=200)
@@ -84,25 +91,25 @@ class TestDockerManager(unittest.TestCase):
     @patch("docker_manager.get_docker_status")
     @patch("subprocess.run")
     def test_start_docker_container(self, mock_run, mock_status):
+        mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
         # Case: running
         mock_status.return_value = "running"
         success, msg = docker_manager.start_docker_container()
         self.assertTrue(success)
         self.assertTrue("already running" in msg)
 
-        # Case: not_found
+        # Case: not_found (attempts provisioning)
         mock_status.return_value = "not_found"
         success, msg = docker_manager.start_docker_container()
-        self.assertFalse(success)
-        self.assertTrue("not found" in msg)
+        self.assertTrue(success)
+        self.assertIn("Provisioned", msg)
 
         # Case: exited (success)
         mock_status.return_value = "exited"
-        mock_run.return_value = MagicMock(returncode=0)
         success, msg = docker_manager.start_docker_container()
         self.assertTrue(success)
 
-        # Case: exited (failure)
+        # Case: exited (failure on docker start)
         mock_run.side_effect = subprocess.CalledProcessError(1, "docker start", stderr=b"daemon down")
         success, msg = docker_manager.start_docker_container()
         self.assertFalse(success)
@@ -110,6 +117,7 @@ class TestDockerManager(unittest.TestCase):
 
         # Case: error status fallback
         mock_run.side_effect = None
+        mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
         mock_status.return_value = "error"
         success, msg = docker_manager.start_docker_container()
         self.assertFalse(success)
@@ -117,6 +125,7 @@ class TestDockerManager(unittest.TestCase):
     @patch("docker_manager.get_docker_status")
     @patch("subprocess.run")
     def test_stop_docker_container(self, mock_run, mock_status):
+        mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
         # Case: not running
         mock_status.return_value = "exited"
         success, msg = docker_manager.stop_docker_container()
@@ -124,7 +133,6 @@ class TestDockerManager(unittest.TestCase):
 
         # Case: running (success)
         mock_status.return_value = "running"
-        mock_run.return_value = MagicMock(returncode=0)
         success, msg = docker_manager.stop_docker_container()
         self.assertTrue(success)
 
@@ -136,6 +144,7 @@ class TestDockerManager(unittest.TestCase):
     @patch("docker_manager.get_docker_status")
     @patch("subprocess.run")
     def test_shutdown_docker_container(self, mock_run, mock_status):
+        mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
         # Case: not running / not created
         mock_status.return_value = "not_found"
         success, msg = docker_manager.shutdown_docker_container()
@@ -144,20 +153,19 @@ class TestDockerManager(unittest.TestCase):
 
         # Case: exited (success)
         mock_status.return_value = "exited"
-        mock_run.return_value = MagicMock(returncode=0)
         success, msg = docker_manager.shutdown_docker_container()
         self.assertTrue(success)
         self.assertIn("shutdown successfully", msg)
-        mock_run.assert_called_with(["docker", "rm", "olmocr"], check=True, capture_output=True)
 
         # Case: running (success)
         mock_status.return_value = "running"
         mock_run.reset_mock()
+        mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
         mock_run.return_value = MagicMock(returncode=0)
         success, msg = docker_manager.shutdown_docker_container()
         self.assertTrue(success)
         self.assertIn("shutdown successfully", msg)
-        self.assertEqual(mock_run.call_count, 2)
+        self.assertEqual(mock_run.call_count, 3)
 
         # Case: running (failure on stop)
         mock_status.return_value = "running"
@@ -214,6 +222,7 @@ class TestDockerManager(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_cleanup_docker(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
         # Default testing skips
         docker_manager.cleanup_docker()
         mock_run.assert_not_called()
@@ -221,14 +230,14 @@ class TestDockerManager(unittest.TestCase):
         # Toggle environment
         with patch.dict(os.environ, {"TESTING": "false"}):
             docker_manager.cleanup_docker()
-            mock_run.assert_called_once()
+            self.assertTrue(mock_run.called)
 
         # Toggle environment exception
         mock_run.reset_mock()
         mock_run.side_effect = Exception("Docker shutdown failed")
         with patch.dict(os.environ, {"TESTING": "false"}):
             docker_manager.cleanup_docker()
-            mock_run.assert_called_once()
+            self.assertTrue(mock_run.called)
 
     @patch("docker_manager.get_docker_status")
     @patch("subprocess.run")

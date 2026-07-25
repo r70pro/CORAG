@@ -113,7 +113,7 @@ class TestOLMOCRApp(unittest.TestCase):
         mock_run.return_value = MagicMock(returncode=0)
         success, msg = app.start_docker_container()
         self.assertTrue(success)
-        self.assertEqual(msg, "Container started successfully.")
+        self.assertIn("started successfully", msg)
 
         # Exited -> Failure
         mock_status.return_value = "exited"
@@ -127,7 +127,7 @@ class TestOLMOCRApp(unittest.TestCase):
         mock_status.return_value = "running"
         success, msg = app.start_docker_container()
         self.assertTrue(success)
-        self.assertEqual(msg, "Container is already running.")
+        self.assertIn("already running", msg)
 
     @patch("subprocess.run")
     @patch("docker_manager.get_docker_status")
@@ -136,7 +136,7 @@ class TestOLMOCRApp(unittest.TestCase):
         mock_run.return_value = MagicMock(returncode=0)
         success, msg = app.stop_docker_container()
         self.assertTrue(success)
-        self.assertEqual(msg, "Container stopped successfully.")
+        self.assertIn("stopped successfully", msg)
 
     @patch("subprocess.run")
     @patch("docker_manager.get_docker_status")

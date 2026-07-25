@@ -22,6 +22,17 @@ import {
 import { fetchCaseSummary, deleteCases } from "@/lib/api";
 import { ResizableSplit } from "@/components/ResizableSplit";
 
+interface TimelineEvent {
+  date: string;
+  title: string;
+  physician: string;
+  clinic: string;
+  docType: string;
+  pageRange: string;
+  refNo: string;
+  summary: string;
+}
+
 interface CaseItem {
   run_id: string;
   client_name: string;
@@ -32,6 +43,7 @@ interface CaseItem {
   authors_count: number;
   date_range: string;
   indexed_at: string;
+  timeline_events?: TimelineEvent[];
 }
 
 const SAMPLE_CASES: CaseItem[] = [
@@ -39,90 +51,80 @@ const SAMPLE_CASES: CaseItem[] = [
     run_id: "run_issa6_20260722_192705",
     client_name: "Souki, Issa",
     dob: "14-Feb-1978",
-    injuries: ["Lumbar Spine L4-L5 Disc Herniation", "Bilateral Sciatica", "Right Knee Meniscal Tear"],
+    injuries: ["Lumbar Spine L4-L5 Disc Herniation", "Bilateral Sciatica"],
     documents_count: 1,
     chunks_count: 54,
     authors_count: 4,
     date_range: "19-Apr-2024 → 02-May-2024",
     indexed_at: "2026-07-22 19:30",
-  },
-  {
-    run_id: "run_20260721_143000",
-    client_name: "Smith, John",
-    dob: "22-Nov-1985",
-    injuries: ["Cervical Whiplash Strain", "Post-Traumatic Headache"],
-    documents_count: 3,
-    chunks_count: 88,
-    authors_count: 2,
-    date_range: "10-Jan-2024 → 15-Mar-2024",
-    indexed_at: "2026-07-21 14:45",
-  },
-];
-
-const TIMELINE_EVENTS = [
-  {
-    date: "19-Apr-2024",
-    title: "Initial Specialist Consultation",
-    physician: "Dr. Gavin Weekes (Consultant Orthopaedic Surgeon)",
-    clinic: "Capital Radiology",
-    docType: "Specialist Correspondence",
-    pageRange: "Pages 1-3",
-    refNo: "Ref No: 2024AL0008570-1",
-    summary: "Patient presented with severe lower back pain radiating down right leg following workplace incident. MRI recommended.",
-  },
-  {
-    date: "24-Apr-2024",
-    title: "Lumbar Spine MRI Scan",
-    physician: "Dr. Sarah Jenkins (Radiologist)",
-    clinic: "Capital Radiology",
-    docType: "Imaging Report",
-    pageRange: "Pages 4-6",
-    refNo: "Accession Number: 77.50382801",
-    summary: "3.0T MRI demonstrates L4-L5 posterior disc protrusion compressing the right L5 nerve root.",
-  },
-  {
-    date: "02-May-2024",
-    title: "Surgical Planning & Review",
-    physician: "Dr. Gavin Weekes (Consultant Orthopaedic Surgeon)",
-    clinic: "St Vincent's Private Hospital",
-    docType: "Operation Record",
-    pageRange: "Pages 7-12",
-    refNo: "Ref No: 2024AL0009102-3",
-    summary: "Discussed microdiscectomy options. Conservative treatment trial for 4 weeks prior to operative intervention.",
+    timeline_events: [
+      {
+        date: "19-Apr-2024",
+        title: "Initial Specialist Consultation",
+        physician: "Dr. Gavin Weekes (Consultant Orthopaedic Surgeon)",
+        clinic: "Capital Radiology",
+        docType: "Specialist Correspondence",
+        pageRange: "Pages 1-3",
+        refNo: "Ref No: 2024AL0008570-1",
+        summary: "Patient presented with severe lower back pain radiating down right leg following workplace incident. MRI recommended.",
+      },
+      {
+        date: "24-Apr-2024",
+        title: "Lumbar Spine MRI Scan",
+        physician: "Dr. Sarah Jenkins (Radiologist)",
+        clinic: "Capital Radiology",
+        docType: "Imaging Report",
+        pageRange: "Pages 4-6",
+        refNo: "Accession Number: 77.50382801",
+        summary: "3.0T MRI demonstrates L4-L5 posterior disc protrusion compressing the right L5 nerve root.",
+      },
+    ],
   },
 ];
 
 interface RawIndexedCase {
   run_id: string;
   display_name?: string;
+  client_name?: string;
+  dob?: string;
+  injuries?: string[];
+  documents_count?: number;
+  chunks_count?: number;
+  authors_count?: number;
+  date_range?: string;
   created_at?: string;
+  indexed_at?: string;
+  timeline_events?: TimelineEvent[];
 }
 
 export const CaseDashboard: React.FC = () => {
-  const [cases, setCases] = useState<CaseItem[]>(SAMPLE_CASES);
-  const [selectedCaseId, setSelectedCaseId] = useState<string>(SAMPLE_CASES[0].run_id);
+  const [cases, setCases] = useState<CaseItem[]>([]);
+  const [selectedCaseId, setSelectedCaseId] = useState<string>("");
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
   const [searchTerm, setSearchTerm] = useState<string>("");
   const [docTypeFilter, setDocTypeFilter] = useState<string>("all");
   const [loading, setLoading] = useState<boolean>(false);
   const [statusMsg, setStatusMsg] = useState<string>("");
 
+  const mapRawCase = (c: RawIndexedCase): CaseItem => ({
+    run_id: c.run_id,
+    client_name: c.client_name || c.display_name || (c.run_id ? `Case ${c.run_id.slice(0, 8)}` : "Unknown Client"),
+    dob: c.dob || "—",
+    injuries: c.injuries && c.injuries.length > 0 ? c.injuries : ["No specific injury/diagnosis extracted"],
+    documents_count: c.documents_count || 1,
+    chunks_count: c.chunks_count || 0,
+    authors_count: c.authors_count || 0,
+    date_range: c.date_range || "—",
+    indexed_at: c.indexed_at || c.created_at || "—",
+    timeline_events: c.timeline_events || [],
+  });
+
   const loadData = async () => {
     setLoading(true);
     const data = await fetchCaseSummary();
     if (data && Array.isArray(data.indexed_cases)) {
       if (data.indexed_cases.length > 0) {
-        const fetchedCases: CaseItem[] = data.indexed_cases.map((c: RawIndexedCase) => ({
-          run_id: c.run_id,
-          client_name: c.display_name || c.run_id,
-          dob: "14-Feb-1978",
-          injuries: ["Lumbar Spine L4-L5 Disc Herniation", "Bilateral Sciatica"],
-          documents_count: 1,
-          chunks_count: data.stats?.total_chunks || 54,
-          authors_count: data.stats?.unique_authors || 4,
-          date_range: "19-Apr-2024 → 02-May-2024",
-          indexed_at: c.created_at || "2026-07-22",
-        }));
+        const fetchedCases: CaseItem[] = data.indexed_cases.map(mapRawCase);
         setCases(fetchedCases);
         if (!selectedCaseId || !fetchedCases.some((fc) => fc.run_id === selectedCaseId)) {
           setSelectedCaseId(fetchedCases[0].run_id);
@@ -131,6 +133,9 @@ export const CaseDashboard: React.FC = () => {
         setCases([]);
         setSelectedCaseId("");
       }
+    } else {
+      setCases(SAMPLE_CASES);
+      setSelectedCaseId(SAMPLE_CASES[0].run_id);
     }
     setLoading(false);
   };
@@ -142,23 +147,16 @@ export const CaseDashboard: React.FC = () => {
       if (!isMounted) return;
       if (data && Array.isArray(data.indexed_cases)) {
         if (data.indexed_cases.length > 0) {
-          const fetchedCases: CaseItem[] = data.indexed_cases.map((c: RawIndexedCase) => ({
-            run_id: c.run_id,
-            client_name: c.display_name || c.run_id,
-            dob: "14-Feb-1978",
-            injuries: ["Lumbar Spine L4-L5 Disc Herniation", "Bilateral Sciatica"],
-            documents_count: 1,
-            chunks_count: data.stats?.total_chunks || 54,
-            authors_count: data.stats?.unique_authors || 4,
-            date_range: "19-Apr-2024 → 02-May-2024",
-            indexed_at: c.created_at || "2026-07-22",
-          }));
+          const fetchedCases: CaseItem[] = data.indexed_cases.map(mapRawCase);
           setCases(fetchedCases);
           setSelectedCaseId(fetchedCases[0].run_id);
         } else {
           setCases([]);
           setSelectedCaseId("");
         }
+      } else {
+        setCases(SAMPLE_CASES);
+        setSelectedCaseId(SAMPLE_CASES[0].run_id);
       }
     };
     init();
@@ -203,8 +201,9 @@ export const CaseDashboard: React.FC = () => {
   };
 
   const activeCase = cases.find((c) => c.run_id === selectedCaseId) || cases[0];
+  const activeEvents = activeCase?.timeline_events || [];
 
-  const filteredEvents = TIMELINE_EVENTS.filter((e) => {
+  const filteredEvents = activeEvents.filter((e) => {
     const matchesSearch =
       e.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
       e.physician.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -250,15 +249,16 @@ export const CaseDashboard: React.FC = () => {
 
           <div className="flex items-center space-x-1.5 bg-slate-950/80 border border-slate-800 rounded-xl px-2.5 py-1 text-xs font-mono text-slate-300">
             <span className="text-slate-500">Chunks:</span>
-            <span className="text-emerald-300 font-bold">{activeCase?.chunks_count || 54} indexed</span>
+            <span className="text-emerald-300 font-bold">{activeCase?.chunks_count || 0} indexed</span>
           </div>
 
           <div className="flex items-center space-x-1.5 bg-slate-950/80 border border-slate-800 rounded-xl px-2.5 py-1 text-xs font-mono text-slate-300">
             <span className="text-slate-500">Events:</span>
-            <span className="text-amber-300 font-bold">{TIMELINE_EVENTS.length} timeline</span>
+            <span className="text-amber-300 font-bold">{activeEvents.length} timeline</span>
           </div>
         </div>
       </div>
+
 
       <div className="flex-1 min-h-0 w-full">
         <ResizableSplit direction="vertical" storageKey="case_dashboard_main" initialSizes={[45, 55]} minSizes={[0, 0]}>

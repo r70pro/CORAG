@@ -9,6 +9,7 @@ from fastapi import APIRouter
 from api.models import (
     DockerCreateRequest,
     DockerLogsResponse,
+    DockerModelsResponse,
     DockerStatusResponse,
     MessageResponse,
 )
@@ -16,7 +17,17 @@ from api.models import (
 router = APIRouter()
 
 
+@router.get("/models", response_model=DockerModelsResponse, summary="Get available/cached models")
+def get_models():
+    """Return list of cached and default preset model names."""
+    from docker_manager import get_cached_models
+
+    models = get_cached_models()
+    return DockerModelsResponse(models=models)
+
+
 @router.get("/status", response_model=DockerStatusResponse, summary="Get container status")
+
 def get_status():
     """Return the current vLLM inference container status."""
     from docker_manager import get_docker_status_str
@@ -70,6 +81,7 @@ def stop_container():
 def create_container(req: DockerCreateRequest):
     """Create or recreate the vLLM inference container with the given parameters."""
     import os
+
     from docker_manager import create_docker_container
     from settings_manager import load_settings, save_settings
 

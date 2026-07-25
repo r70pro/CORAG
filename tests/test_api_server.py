@@ -28,11 +28,13 @@ class TestAPIServer(unittest.TestCase):
         self.assertTrue(postgres_service["is_up"])
 
     @patch("rag.db.get_corpus_stats")
+    @patch("rag.db.get_runs_with_stats")
     @patch("rag.db.get_indexed_runs")
     @patch("rag.embedding.get_collection_info")
-    def test_case_summary_endpoint(self, mock_qdrant, mock_runs, mock_stats):
+    def test_case_summary_endpoint(self, mock_qdrant, mock_runs, mock_runs_with_stats, mock_stats):
         mock_stats.return_value = {"indexed_runs": 2, "total_chunks": 150}
         mock_runs.return_value = [{"run_id": "run_01", "display_name": "Run 01", "created_at": "2026-07-22"}]
+        mock_runs_with_stats.return_value = [{"run_id": "run_01", "display_name": "Run 01", "created_at": "2026-07-22"}]
         mock_qdrant.return_value = {"points_count": 150, "status": "green"}
 
         response = self.client.get("/api/case-summary")
