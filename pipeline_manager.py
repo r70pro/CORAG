@@ -236,7 +236,10 @@ def process_pdfs(
                         not loaded_models
                         or model_name == "model"
                         or model_name in loaded_models
-                        or any(model_name.lower() in lm.lower() or lm.lower() in model_name.lower() for lm in loaded_models)
+                        or any(
+                            model_name.lower() in lm.lower() or lm.lower() in model_name.lower()
+                            for lm in loaded_models
+                        )
                     )
                     if not is_matched:
                         yield _make_empty_yield(

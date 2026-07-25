@@ -9,7 +9,6 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
-
 def get_docker_status():
     try:
         res = subprocess.run(
@@ -73,10 +72,7 @@ def get_docker_logs(tail: int = 200) -> str:
             if res.stderr:
                 output = (output + "\n" + res.stderr) if output else res.stderr
             return output.strip() or "No log output available from container."
-        elif (
-            "no such object" in res.stderr.lower()
-            or "no such container" in res.stderr.lower()
-        ):
+        elif "no such object" in res.stderr.lower() or "no such container" in res.stderr.lower():
             return "Container 'olmocr' not found."
         else:
             return f"Error reading logs: {res.stderr.strip()}"
@@ -133,7 +129,6 @@ def get_cached_models() -> list[str]:
     return models
 
 
-
 def get_cached_models_info() -> tuple[list[str], dict[str, int]]:
     """Return available model names and their context window length mapping."""
     from settings_manager import MODEL_MAX_CONTENT_LENGTHS
@@ -146,8 +141,6 @@ def get_cached_models_info() -> tuple[list[str], dict[str, int]]:
     return models, max_lengths
 
 
-
-
 def start_docker_container():
     msg_parts = []
     success = True
@@ -155,6 +148,7 @@ def start_docker_container():
     # 1. Start RAG Infrastructure containers (postgres, redis, minio, qdrant)
     try:
         from rag_infra_manager import start_rag_infrastructure
+
         rag_ok, rag_msg = start_rag_infrastructure()
         if not rag_ok:
             logger.warning(f"RAG Infrastructure start warning: {rag_msg}")
@@ -177,6 +171,7 @@ def start_docker_container():
     elif status == "not_found":
         try:
             from settings_manager import load_settings
+
             settings = load_settings()
             hf_token = settings.get("hf_token", os.environ.get("HF_TOKEN", ""))
             port = settings.get("docker_port", 8000)
@@ -185,7 +180,9 @@ def start_docker_container():
             max_len = settings.get("docker_max_model_len", 15360)
             tp = settings.get("docker_tensor_parallel", 1)
 
-            create_ok, create_msg = create_docker_container(hf_token, port, model, gpu_mem, max_len, tp)
+            create_ok, create_msg = create_docker_container(
+                hf_token, port, model, gpu_mem, max_len, tp
+            )
             if not create_ok:
                 success = False
             msg_parts.append(f"Provisioned 'olmocr': {create_msg}")
@@ -215,6 +212,7 @@ def stop_docker_container():
 
     try:
         from rag_infra_manager import stop_rag_infrastructure
+
         rag_ok, rag_msg = stop_rag_infrastructure()
         if not rag_ok:
             success = False
@@ -223,7 +221,6 @@ def stop_docker_container():
         msg_parts.append(f"RAG Infra stop error: {e}")
 
     return success, " ".join(msg_parts)
-
 
 
 def resolve_vllm_image() -> str:
@@ -271,12 +268,14 @@ def free_host_port(port: int):
                     parts = line.split("\t")
                     cid = parts[0].strip()
                     if cid:
-                        logger.info(f"Removing container {cid} ({parts[1] if len(parts)>1 else ''}) bound to port {port}")
-                        subprocess.run(["docker", "rm", "-f", cid], check=False, capture_output=True)
+                        logger.info(
+                            f"Removing container {cid} ({parts[1] if len(parts)>1 else ''}) bound to port {port}"
+                        )
+                        subprocess.run(
+                            ["docker", "rm", "-f", cid], check=False, capture_output=True
+                        )
     except Exception as e:
         logger.warning(f"Error checking/clearing containers on port {port}: {e}")
-
-
 
 
 def wait_for_port_free(port: int, timeout: float = 5.0) -> bool:
@@ -295,8 +294,6 @@ def wait_for_port_free(port: int, timeout: float = 5.0) -> bool:
             return True
         time.sleep(0.3)
     return False
-
-
 
 
 def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tensor_parallel_size=1):
@@ -350,12 +347,6 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tenso
     free_host_port(port_int)
     wait_for_port_free(port_int, timeout=2.0)
     time.sleep(1.0)
-
-
-
-
-
-
 
     hf_cache_dir = os.path.expanduser("~/.cache/huggingface")
     os.makedirs(hf_cache_dir, exist_ok=True)
@@ -440,8 +431,13 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tenso
             return True, "Container created and started successfully."
         except subprocess.CalledProcessError as e:
             err_msg = str(e.stderr or "").strip()
-            if "port is already allocated" in err_msg.lower() or "address already in use" in err_msg.lower():
-                logger.info("Port conflict detected. Waiting 1.5s for Docker proxy socket release and retrying...")
+            if (
+                "port is already allocated" in err_msg.lower()
+                or "address already in use" in err_msg.lower()
+            ):
+                logger.info(
+                    "Port conflict detected. Waiting 1.5s for Docker proxy socket release and retrying..."
+                )
                 time.sleep(1.5)
                 subprocess.run(["docker", "rm", "-f", "olmocr"], check=False, capture_output=True)
                 try:
@@ -451,7 +447,6 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tenso
                     err_msg = str(retry_e.stderr or "").strip()
             return False, f"Failed to create container: {err_msg}"
         finally:
-
             # Always remove the temp env-file (best-effort; ignore cleanup errors).
             try:
                 os.remove(env_path)
@@ -484,6 +479,7 @@ def shutdown_docker_container():
 
     try:
         from rag_infra_manager import stop_rag_infrastructure
+
         rag_ok, rag_msg = stop_rag_infrastructure()
         if not rag_ok:
             success = False
@@ -512,8 +508,8 @@ def cleanup_docker():
 
     try:
         from rag_infra_manager import stop_rag_infrastructure
+
         stop_rag_infrastructure()
         logger.info("RAG infrastructure stopped successfully.")
     except Exception as e:
         logger.error(f"Error stopping RAG infrastructure on shutdown: {e}")
-

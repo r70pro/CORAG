@@ -196,7 +196,10 @@ def get_run_doc_info(run_name: str, filename: str = ""):
 
         if not valid_ranges:
             import re
-            splits = re.split(r'\n\s*(?:---|<!--\s*page\s*\d+\s*-->)\s*\n', full_markdown, flags=re.IGNORECASE)
+
+            splits = re.split(
+                r"\n\s*(?:---|<!--\s*page\s*\d+\s*-->)\s*\n", full_markdown, flags=re.IGNORECASE
+            )
             if len(splits) > 1:
                 for idx, text in enumerate(splits, start=1):
                     pages_markdown[str(idx)] = text.strip()
@@ -211,4 +214,3 @@ def get_run_doc_info(run_name: str, filename: str = ""):
         "page_ranges": page_ranges,
         "pages_markdown": pages_markdown,
     }
-

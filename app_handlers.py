@@ -158,6 +158,7 @@ def ui_recreate_container(hf_token, port, model, gpu_mem, max_model_len, tensor_
     # Invalidate stale model resolution cache after container recreation
     try:
         from rag.analyzer import invalidate_model_cache
+
         invalidate_model_cache()
     except Exception:
         pass
@@ -250,14 +251,16 @@ def handle_get_installed_models_ui():
     deletable_choices = []
     for m in data.get("models", []):
         status_text = "ACTIVE" if m.get("is_active") else "Available"
-        rows.append([
-            m["id"],
-            m["model_type"],
-            f"{m['context_length']:,} tokens",
-            m["human_size"],
-            status_text,
-            m["modified_at"],
-        ])
+        rows.append(
+            [
+                m["id"],
+                m["model_type"],
+                f"{m['context_length']:,} tokens",
+                m["human_size"],
+                status_text,
+                m["modified_at"],
+            ]
+        )
         if not m.get("is_active"):
             deletable_choices.append(m["id"])
     return rows, gr.update(choices=deletable_choices, value=None)
@@ -274,4 +277,3 @@ def handle_delete_installed_model_ui(selected_model_id):
     rows, dropdown_update = handle_get_installed_models_ui()
     status_msg = f"✓ {msg}" if success else f"❌ {msg}"
     return status_msg, rows, dropdown_update
-

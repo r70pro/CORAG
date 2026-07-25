@@ -1,4 +1,4 @@
-name: Python CI
+name: Full Stack CI/CD
 
 on:
   push:
@@ -10,7 +10,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  build-and-test:
+  backend-build-and-test:
     runs-on: ubuntu-latest
 
     steps:
@@ -40,7 +40,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install -r requirements-dev.lock
-        pip install ruff
+        pip install ruff coverage pytest
 
     - name: Run Lint / Formatter Check
       run: |
@@ -51,3 +51,37 @@ jobs:
       run: |
         coverage run -m pytest
         coverage report
+
+  frontend-build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js 20
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install Frontend Dependencies
+      working-directory: frontend
+      run: npm ci
+
+    - name: Run ESLint
+      working-directory: frontend
+      run: npm run lint
+
+    - name: Run TypeScript Type Check
+      working-directory: frontend
+      run: npm run typecheck
+
+    - name: Run Jest Unit Tests
+      working-directory: frontend
+      run: npm test
+
+    - name: Run Next.js Production Build
+      working-directory: frontend
+      run: npm run build

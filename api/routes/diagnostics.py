@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-
 @router.get("/health", response_model=HealthResponse, summary="Full health check")
 def health_check():
     """Return a full system health snapshot (services + GPU)."""
@@ -139,7 +138,9 @@ def execute_cleanup(req: CleanupRequest):
     )
 
 
-@router.get("/models", response_model=InstalledModelsResponse, summary="Get all installed/cached models")
+@router.get(
+    "/models", response_model=InstalledModelsResponse, summary="Get all installed/cached models"
+)
 def get_installed_models():
     """Return detailed metadata and disk space usage for all installed/cached models."""
     try:
@@ -163,7 +164,9 @@ def get_installed_models():
         )
 
 
-@router.delete("/models", response_model=DeleteModelsResponse, summary="Delete selected installed models")
+@router.delete(
+    "/models", response_model=DeleteModelsResponse, summary="Delete selected installed models"
+)
 def delete_models(req: DeleteModelsRequest):
     """Delete selected cached model directories from disk to reclaim storage space."""
     try:
@@ -186,4 +189,3 @@ def delete_models(req: DeleteModelsRequest):
             reclaimed_bytes=0,
             reclaimed_str="0 B",
         )
-

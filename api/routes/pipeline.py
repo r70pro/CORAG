@@ -113,11 +113,13 @@ def start_pipeline(req: PipelineStartRequest):
         if isinstance(val, dict):
             raw_val = str(val.get("value", ""))
             import re
+
             match = re.search(r"stat-value'>(\d+)<", raw_val) or re.search(r"(\d+)", raw_val)
             if match:
                 return int(match.group(1))
         if isinstance(val, str):
             import re
+
             match = re.search(r"(\d+)", val)
             if match:
                 return int(match.group(1))

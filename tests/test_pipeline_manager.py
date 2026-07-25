@@ -722,20 +722,43 @@ class TestPipelineManager(unittest.TestCase):
         )
         res = list(gen)
         self.assertTrue(len(res) > 0)
-    def test_make_progress_bar_html_cap(self):
-        from html_utils import make_progress_bar_html
-        html = make_progress_bar_html(150, 100)
-        self.assertIn("100%", html)
-        self.assertNotIn("150%", html)
+    def test_cleanup_active_runs_keep_containers(self):
+        with patch.dict(os.environ, {"TESTING": "false", "KEEP_CONTAINERS_ON_EXIT": "true"}):
+            with patch("process_state.active_runs_lock"):
+                pipeline_manager.cleanup_active_runs()
 
-    def test_extract_int_stat_in_api(self):
-        from api.routes.pipeline import start_pipeline
-        # Verify function logic
-        card_val = {"value": "<div class='stat-card'><div class='stat-value'>42</div><div class='stat-label'>Completed Pages</div></div>"}
-        match = pipeline_manager.re.search(r"stat-value'>(\d+)<", card_val["value"])
-        self.assertIsNotNone(match)
-        self.assertEqual(int(match.group(1)), 42)
+    @patch("subprocess.Popen")
+    @patch("shutil.copy")
+    @patch("httpx.get")
+    def test_process_pdfs_candidate_path_and_failed_exit(self, mock_get, mock_copy, mock_popen):
+        mock_response = MagicMock(status_code=200)
+        mock_response.json.return_value = [{"id": "model"}]
+        mock_get.return_value = mock_response
+
+        # Mock Popen with failed exit code (1) to hit line 618
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.stdout.readline.side_effect = ["Processing page 1/2...\n", ""]
+        mock_popen.return_value = mock_proc
+
+        # Dict style file input without direct isfile match
+        file_dict = {"path": "/nonexistent/test_file.pdf"}
+        with patch("os.path.isfile", side_effect=lambda p: p.endswith("souki_enclosures.pdf")):
+            gen = pipeline_manager.process_pdfs(
+                files=[file_dict],
+                server_url="http://localhost:8000/v1",
+                model_name="model",
+                workers=2,
+                max_concurrent=10,
+                max_retries=3,
+                target_dim=1288,
+                guided_decoding=True
+            )
+            res = list(gen)
+            self.assertTrue(len(res) > 0)
+            self.assertIn("Failed", res[-1][1])
 
 
 if __name__ == "__main__":
     unittest.main()
+

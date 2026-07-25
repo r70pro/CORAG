@@ -671,11 +671,13 @@ def get_installed_models_data() -> dict[str, Any]:
         cache_dirs.append(os.path.join(hf_home, "hub"))
 
     home_dir = os.path.expanduser("~")
-    cache_dirs.extend([
-        os.path.join(home_dir, ".cache", "huggingface", "hub"),
-        "/home/owner/KIRAG/workspace/huggingface/hub",
-        "/home/owner/IQRAG/.hf_cache/hub",
-    ])
+    cache_dirs.extend(
+        [
+            os.path.join(home_dir, ".cache", "huggingface", "hub"),
+            "/home/owner/KIRAG/workspace/huggingface/hub",
+            "/home/owner/IQRAG/.hf_cache/hub",
+        ]
+    )
 
     models_list = []
     visited_paths = set()
@@ -705,11 +707,11 @@ def get_installed_models_data() -> dict[str, Any]:
                     if not os.path.isdir(model_path):
                         continue
 
-                    parts = item[len("models--"):].split("--", 1)
+                    parts = item[len("models--") :].split("--", 1)
                     if len(parts) == 2:
                         model_id = f"{parts[0]}/{parts[1]}"
                     else:
-                        model_id = item[len("models--"):]
+                        model_id = item[len("models--") :]
 
                     # Calculate model folder size on disk (avoid double counting symlinks)
                     size_bytes = 0
@@ -787,20 +789,22 @@ def get_installed_models_data() -> dict[str, Any]:
                     if is_stub:
                         formatted_size = f"{formatted_size} (Stub/Empty)"
 
-                    models_list.append({
-                        "id": model_id,
-                        "name": parts[1] if len(parts) == 2 else model_id,
-                        "folder": item,
-                        "path": model_path,
-                        "cache_source": cache_source,
-                        "size_bytes": size_bytes,
-                        "human_size": formatted_size,
-                        "context_length": int(context_len),
-                        "model_type": model_type,
-                        "is_active": False,  # Evaluated post-sort below for primary non-stub model
-                        "is_stub": is_stub,
-                        "modified_at": mod_time_str,
-                    })
+                    models_list.append(
+                        {
+                            "id": model_id,
+                            "name": parts[1] if len(parts) == 2 else model_id,
+                            "folder": item,
+                            "path": model_path,
+                            "cache_source": cache_source,
+                            "size_bytes": size_bytes,
+                            "human_size": formatted_size,
+                            "context_length": int(context_len),
+                            "model_type": model_type,
+                            "is_active": False,  # Evaluated post-sort below for primary non-stub model
+                            "is_stub": is_stub,
+                            "modified_at": mod_time_str,
+                        }
+                    )
         except Exception as e:
             logger.error(f"Error scanning models in cache directory {c_dir}: {e}")
 
@@ -870,12 +874,20 @@ def delete_installed_models(model_ids: list[str]) -> tuple[bool, str, list[str],
     reclaimed_str = format_bytes_human(reclaimed_bytes)
     msg_parts = []
     if deleted_models:
-        msg_parts.append(f"Successfully deleted {len(deleted_models)} model(s) ({reclaimed_str} reclaimed).")
+        msg_parts.append(
+            f"Successfully deleted {len(deleted_models)} model(s) ({reclaimed_str} reclaimed)."
+        )
     if skipped_active:
-        msg_parts.append(f"Skipped {len(skipped_active)} active model(s) ({', '.join(skipped_active)}).")
+        msg_parts.append(
+            f"Skipped {len(skipped_active)} active model(s) ({', '.join(skipped_active)})."
+        )
 
     if not deleted_models and skipped_active:
         return False, " ".join(msg_parts), [], 0
 
-    return True, " ".join(msg_parts) if msg_parts else "No models were deleted.", deleted_models, reclaimed_bytes
-
+    return (
+        True,
+        " ".join(msg_parts) if msg_parts else "No models were deleted.",
+        deleted_models,
+        reclaimed_bytes,
+    )

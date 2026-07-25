@@ -481,6 +481,22 @@ class TestRAGEmbeddingAll(unittest.TestCase):
         self.assertEqual(len(res), 2)
         mock_delete.assert_called_once_with("r1", model_name="sentence-transformers/all-MiniLM-L6-v2")
 
+    @patch("sentence_transformers.SentenceTransformer")
+    def test_load_embedding_model_gpu_fallback(self, mock_st):
+        # Trigger exception on cuda device to hit fallback to cpu (lines 143-156)
+        def mock_st_init(model_name, device=None):
+            if device == "cuda":
+                raise Exception("CUDA Out of Memory")
+            mock_inst = MagicMock()
+            mock_inst.get_embedding_dimension.return_value = 384
+            return mock_inst
+
+        mock_st.side_effect = mock_st_init
+        rag_emb._embedding_model = None
+        model = rag_emb.load_embedding_model("sentence-transformers/all-MiniLM-L6-v2", device="cuda")
+        self.assertIsNotNone(model)
+
 
 if __name__ == "__main__":
     unittest.main()
+

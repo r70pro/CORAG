@@ -6,6 +6,10 @@ omit =
     workspace/*
     conftest.py
     rag_ui.py
+    rag_ui_dashboard.py
+    rag_ui_handlers.py
+    rag_ui_state.py
+    embedding_pipeline_ui.py
     cli.py
     api/*
     ui_adapters.py

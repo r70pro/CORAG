@@ -148,6 +148,7 @@ def load_embedding_model(model_name=None, device=None):
                 )
                 if "torch" in sys.modules:
                     import torch
+
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
                 _embedding_model = SentenceTransformer(model_name, device="cpu")

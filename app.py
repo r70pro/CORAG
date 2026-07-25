@@ -551,7 +551,14 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                             "<h3 class='inline-section-header'>📦 Installed Models & Local Disk Storage</h3>"
                         )
                         installed_models_df = gr.Dataframe(
-                            headers=["Model ID", "Category", "Context Window", "Disk Size", "Status", "Last Modified"],
+                            headers=[
+                                "Model ID",
+                                "Category",
+                                "Context Window",
+                                "Disk Size",
+                                "Status",
+                                "Last Modified",
+                            ],
                             datatype=["str", "str", "str", "str", "str", "str"],
                             col_count=(6, "fixed"),
                             interactive=False,
@@ -562,7 +569,9 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                                 choices=[],
                                 interactive=True,
                             )
-                            delete_model_btn = gr.Button("🗑️ Delete Selected Model Cache", variant="stop")
+                            delete_model_btn = gr.Button(
+                                "🗑️ Delete Selected Model Cache", variant="stop"
+                            )
                         delete_model_status = gr.Markdown()
 
     # Extra hidden buttons for backwards compatibility / test suite (since tests patch header buttons)

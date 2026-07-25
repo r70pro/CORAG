@@ -28,9 +28,7 @@ def get_models():
     return DockerModelsResponse(models=models, max_lengths=max_lengths)
 
 
-
 @router.get("/status", response_model=DockerStatusResponse, summary="Get container status")
-
 def get_status():
     """Return the current vLLM inference container status."""
     from docker_manager import get_docker_status_str
@@ -95,23 +93,33 @@ async def create_container(req: DockerCreateRequest):
         if not model or model == "model":
             model = "allenai/olmOCR-2-7B-1025-FP8"
 
-    hf_token = req.hf_token if req.hf_token and req.hf_token != "********" else settings.get("hf_token", "")
+    hf_token = (
+        req.hf_token
+        if req.hf_token and req.hf_token != "********"
+        else settings.get("hf_token", "")
+    )
     if hf_token == "********":
         hf_token = os.environ.get("HF_TOKEN", "")
 
     port = req.port if req.port else settings.get("docker_port", 8000)
     gpu_mem = req.gpu_mem if req.gpu_mem else settings.get("docker_gpu_mem", 0.8)
-    max_model_len = req.max_model_len if req.max_model_len else settings.get("docker_max_model_len", 15360)
-    tensor_parallel_size = req.tensor_parallel_size if req.tensor_parallel_size else settings.get("docker_tensor_parallel", 1)
+    max_model_len = (
+        req.max_model_len if req.max_model_len else settings.get("docker_max_model_len", 15360)
+    )
+    tensor_parallel_size = (
+        req.tensor_parallel_size
+        if req.tensor_parallel_size
+        else settings.get("docker_tensor_parallel", 1)
+    )
 
     success, msg = await asyncio.to_thread(
-        create_docker_container,
-        hf_token, port, model, gpu_mem, max_model_len, tensor_parallel_size
+        create_docker_container, hf_token, port, model, gpu_mem, max_model_len, tensor_parallel_size
     )
 
     # Invalidate stale model resolution cache after container recreation
     try:
         from rag.analyzer import invalidate_model_cache
+
         invalidate_model_cache()
     except Exception:
         pass
@@ -144,5 +152,3 @@ async def shutdown_container():
 
     success, msg = await asyncio.to_thread(shutdown_docker_container)
     return MessageResponse(success=success, message=msg)
-
-

@@ -82,15 +82,27 @@ def _build_metadata(names_rows: list[tuple], text_rows: list[tuple]) -> dict[str
         # Text fallback for patient name if not present in column
         if not names:
             name_matches = [
-                re.search(r"Re:\s*(?:Mr|Mrs|Ms|Dr|Prof)?\.?\s*([A-Z][a-zA-Z\-'`]+(?:\s+[A-Z][a-zA-Z\-'`]+){1,3})", text),
+                re.search(
+                    r"Re:\s*(?:Mr|Mrs|Ms|Dr|Prof)?\.?\s*([A-Z][a-zA-Z\-'`]+(?:\s+[A-Z][a-zA-Z\-'`]+){1,3})",
+                    text,
+                ),
                 re.search(r"Client\s+([A-Z][a-zA-Z\-'`]+(?:\s+[A-Z][a-zA-Z\-'`]+){1,3})", text),
-                re.search(r"Patient\s*:?\s*([A-Z][a-zA-Z\-'`]+(?:\s+[A-Z][a-zA-Z\-'`]+){1,3})", text),
-                re.search(r"([A-Z][a-zA-Z\-'`]+(?:\s+[A-Z][a-zA-Z\-'`]+){1,2})\s+(?:DOB|Date of Birth)", text),
+                re.search(
+                    r"Patient\s*:?\s*([A-Z][a-zA-Z\-'`]+(?:\s+[A-Z][a-zA-Z\-'`]+){1,3})", text
+                ),
+                re.search(
+                    r"([A-Z][a-zA-Z\-'`]+(?:\s+[A-Z][a-zA-Z\-'`]+){1,2})\s+(?:DOB|Date of Birth)",
+                    text,
+                ),
             ]
             for nm in name_matches:
                 if nm:
                     cand = nm.group(1).strip()
-                    if cand and len(cand) > 3 and not any(k in cand.lower() for k in ignore_keywords):
+                    if (
+                        cand
+                        and len(cand) > 3
+                        and not any(k in cand.lower() for k in ignore_keywords)
+                    ):
                         names.append(cand.title())
                         break
 
@@ -119,7 +131,6 @@ def _build_metadata(names_rows: list[tuple], text_rows: list[tuple]) -> dict[str
                 for existing in injuries
             ):
                 injuries.append(clean_mi)
-
 
     dob_list = sorted(dobs, key=len, reverse=True)  # Prefer 4-digit year format
     dob_str = dob_list[0] if dob_list else "—"
@@ -260,11 +271,17 @@ def get_case_timeline(run_id: str) -> list[dict[str, Any]]:
             # Extract date strings from chunk or text
             date_str = str(date_ext) if date_ext else (date_raw or "")
             if not date_str:
-                date_match = re.search(r"(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})", text, re.I)
+                date_match = re.search(
+                    r"(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})",
+                    text,
+                    re.I,
+                )
                 if date_match:
                     date_str = date_match.group(1)
 
-            if not date_str or len(date_str) < 4 or date_str.startswith("1971"): # Skip DOB matching
+            if (
+                not date_str or len(date_str) < 4 or date_str.startswith("1971")
+            ):  # Skip DOB matching
                 continue
 
             # Normalize document type
@@ -298,7 +315,9 @@ def get_case_timeline(run_id: str) -> list[dict[str, Any]]:
                 clinic = "Medical Clinic / Health Service"
 
             # Extract reference number
-            ref_match = re.search(r"(?:Ref|Claim|Accession)\s*(?:No|Number)?\s*:?\s*([A-Z0-9.\-]+)", text, re.I)
+            ref_match = re.search(
+                r"(?:Ref|Claim|Accession)\s*(?:No|Number)?\s*:?\s*([A-Z0-9.\-]+)", text, re.I
+            )
             ref_no = f"Ref No: {ref_match.group(1)}" if ref_match else "Ref: MedRec-Internal"
 
             # Generate summary line
@@ -310,14 +329,16 @@ def get_case_timeline(run_id: str) -> list[dict[str, Any]]:
             if date_str not in date_groups:
                 date_groups[date_str] = []
 
-            date_groups[date_str].append({
-                "page": page_num or 1,
-                "docType": doc_type_disp,
-                "physician": physician,
-                "clinic": clinic,
-                "refNo": ref_no,
-                "summary": clean_summary,
-            })
+            date_groups[date_str].append(
+                {
+                    "page": page_num or 1,
+                    "docType": doc_type_disp,
+                    "physician": physician,
+                    "clinic": clinic,
+                    "refNo": ref_no,
+                    "summary": clean_summary,
+                }
+            )
 
         for date_key, items in date_groups.items():
             pages = sorted(list(set(item["page"] for item in items)))
@@ -330,25 +351,35 @@ def get_case_timeline(run_id: str) -> list[dict[str, Any]]:
                 title = "Motorbike Incident & Right Shoulder Dislocation"
             elif "abdomen" in summary_lower or "strain" in summary_lower:
                 title = "Abdominal Strain & Work Capacity Assessment"
-            elif "slap" in summary_lower or "bankart" in summary_lower or "supraspinatus" in summary_lower:
+            elif (
+                "slap" in summary_lower
+                or "bankart" in summary_lower
+                or "supraspinatus" in summary_lower
+            ):
                 title = "Orthopaedic Specialist Evaluation — SLAP & Supraspinatus Tear"
             elif "biceps" in summary_lower or "tenodesis" in summary_lower:
                 title = "Specialist Surgical Recommendation — Biceps Tenodesis"
-            elif "physiotherapy" in summary_lower or "gym" in summary_lower or "flexion" in summary_lower:
+            elif (
+                "physiotherapy" in summary_lower
+                or "gym" in summary_lower
+                or "flexion" in summary_lower
+            ):
                 title = "Physiotherapy Progress Review & Rehabilitation"
             else:
                 title = f"{first_item['docType']} Assessment"
 
-            events.append({
-                "date": date_key,
-                "title": title,
-                "physician": first_item["physician"],
-                "clinic": first_item["clinic"],
-                "docType": first_item["docType"],
-                "pageRange": page_range,
-                "refNo": first_item["refNo"],
-                "summary": first_item["summary"],
-            })
+            events.append(
+                {
+                    "date": date_key,
+                    "title": title,
+                    "physician": first_item["physician"],
+                    "clinic": first_item["clinic"],
+                    "docType": first_item["docType"],
+                    "pageRange": page_range,
+                    "refNo": first_item["refNo"],
+                    "summary": first_item["summary"],
+                }
+            )
 
         # Sort chronologically by date if possible
         events.sort(key=lambda x: str(x["date"]), reverse=False)
@@ -357,4 +388,3 @@ def get_case_timeline(run_id: str) -> list[dict[str, Any]]:
         pass
 
     return events
-

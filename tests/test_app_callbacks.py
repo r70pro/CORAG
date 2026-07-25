@@ -467,9 +467,16 @@ class TestAppCallbacks(unittest.TestCase):
         with patch("app_handlers.get_app_fn", side_effect=mock_get_app_fn), \
              patch("app_handlers.load_settings", return_value={}), \
              patch("app_handlers.save_settings"):
-            msg, badge, new_url = app_handlers.ui_recreate_container("tok", "invalid_port", "model", 0.8, 15000)
+            msg, badge, new_url = app_handlers.ui_recreate_container("tok", "invalid_port", "custom/model-id", "invalid_gpu", "invalid_max_len", "invalid_tp")
             self.assertTrue("created" in msg.lower())
             self.assertTrue(isinstance(badge, str))
+
+        with patch("app_handlers.get_app_fn", side_effect=mock_get_app_fn), \
+             patch("app_handlers.load_settings", return_value={}), \
+             patch("app_handlers.save_settings"), \
+             patch("rag.analyzer.invalidate_model_cache", side_effect=Exception("Cache error")):
+            msg2, badge2, new_url2 = app_handlers.ui_recreate_container("tok", 8000, "custom/model-id", 0.5, 10000, 2)
+            self.assertTrue("created" in msg2.lower())
 
         with patch("system_diagnostics.generate_diagnostic_report_file", return_value="/tmp/diag.txt"):
             res1 = app_handlers.trigger_download_report(None)
@@ -477,9 +484,54 @@ class TestAppCallbacks(unittest.TestCase):
             res2 = app_handlers.trigger_download_report(8000)
             self.assertEqual(res2.get("value"), "/tmp/diag.txt")
 
+    @patch("system_diagnostics.get_installed_models_data")
+    @patch("system_diagnostics.delete_installed_models")
+    def test_app_handlers_installed_models_ui(self, mock_delete, mock_get_models):
+        import app_handlers
+
+        mock_get_models.return_value = {
+            "models": [
+                {
+                    "id": "model_active",
+                    "model_type": "vLLM",
+                    "context_length": 16000,
+                    "human_size": "7.0 GB",
+                    "is_active": True,
+                    "modified_at": "2026-07-26",
+                },
+                {
+                    "id": "model_old",
+                    "model_type": "Ollama",
+                    "context_length": 4096,
+                    "human_size": "4.0 GB",
+                    "is_active": False,
+                    "modified_at": "2026-07-25",
+                },
+            ]
+        }
+
+        rows, drop_update = app_handlers.handle_get_installed_models_ui()
+        self.assertEqual(len(rows), 2)
+        self.assertIn("model_old", drop_update.get("choices", []))
+
+        # Test delete empty selection
+        msg1, rows1, drop1 = app_handlers.handle_delete_installed_model_ui(None)
+        self.assertIn("No model selected", msg1)
+
+        # Test delete success
+        mock_delete.return_value = (True, "Deleted successfully", ["model_old"], 4.0)
+        msg2, rows2, drop2 = app_handlers.handle_delete_installed_model_ui("model_old")
+        self.assertIn("✓", msg2)
+
+        # Test delete failure
+        mock_delete.return_value = (False, "Deletion failed", [], 0.0)
+        msg3, rows3, drop3 = app_handlers.handle_delete_installed_model_ui("model_old")
+        self.assertIn("❌", msg3)
+
 
 if __name__ == "__main__":
     from unittest.mock import MagicMock
     unittest.main()
+
 
 

@@ -487,7 +487,100 @@ class TestSystemDiagnostics(unittest.TestCase):
         self.assertTrue(success)
         self.assertEqual(deleted, [])
 
+        # 4. Deleting an existing model directory (lines 861-872)
+        mock_data = {
+            "models": [
+                {
+                    "id": "old/model-to-delete",
+                    "folder": "model-to-delete",
+                    "name": "old/model-to-delete",
+                    "path": "/tmp/dummy_model_dir",
+                    "size_bytes": 1024,
+                    "is_active": False,
+                }
+            ]
+        }
+        with patch("system_diagnostics.get_installed_models_data", return_value=mock_data):
+            with patch("os.path.exists", return_value=True):
+                with patch("os.path.isdir", return_value=True):
+                    with patch("os.path.islink", return_value=False):
+                        with patch("os.path.isfile", return_value=False):
+                            succ4, msg4, del4, rec4 = system_diagnostics.delete_installed_models(["old/model-to-delete"])
+                            self.assertTrue(succ4)
+                            self.assertEqual(del4, ["old/model-to-delete"])
+
+        # 5. Deleting an existing model file/symlink
+        with patch("system_diagnostics.get_installed_models_data", return_value=mock_data):
+            with patch("os.path.exists", return_value=True):
+                with patch("os.path.isdir", return_value=False):
+                    with patch("os.path.islink", return_value=True):
+                        with patch("os.unlink") as mock_unlink:
+                            succ5, msg5, del5, rec5 = system_diagnostics.delete_installed_models(["old/model-to-delete"])
+                            self.assertTrue(succ5)
+                            mock_unlink.assert_called_once()
+
+    @patch("psycopg2.connect")
+    @patch("redis.Redis")
+    @patch("requests.get")
+    def test_get_service_latency_exceptions(self, mock_get, mock_redis, mock_pg):
+        # Postgres exception
+        mock_pg.side_effect = Exception("DB error")
+        ok, lat, err = system_diagnostics.get_service_latency("postgres")
+        self.assertFalse(ok)
+
+        # Redis exception
+        mock_redis.side_effect = Exception("Redis error")
+        ok, lat, err = system_diagnostics.get_service_latency("redis")
+        self.assertFalse(ok)
+
+        # Requests exception
+        mock_get.side_effect = Exception("HTTP error")
+        ok, lat, err = system_diagnostics.get_service_latency("qdrant")
+        self.assertFalse(ok)
+
+    def test_gpu_info_vram_fallback_and_snapshot_config(self):
+        # Test vram fallback via psutil virtual_memory (lines 439-444)
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = Exception("No nvidia-smi")
+            with patch("torch.cuda.is_available", return_value=True):
+                with patch("torch.cuda.device_count", return_value=1):
+                    with patch("torch.cuda.get_device_name", return_value="NVIDIA RTX 4090"):
+                        gpu_data = system_diagnostics.get_gpu_metrics_data()
+                        self.assertTrue(gpu_data["cuda_available"])
+
+        # Test snapshot config.json context length resolution (lines 750-765)
+        with patch("os.path.exists", return_value=True):
+            with patch("os.listdir", return_value=["snapshot_1"]):
+                with patch("builtins.open", unittest.mock.mock_open(read_data='{"max_position_embeddings": 32768}')):
+                    models_data = system_diagnostics.get_installed_models_data()
+                    self.assertIsInstance(models_data, dict)
+
+    def test_delete_installed_models_unlink_exception(self):
+        # Hit lines 871-872 (exception on unlink)
+        mock_data = {
+            "models": [
+                {
+                    "id": "model/unlink_err",
+                    "folder": "unlink_err",
+                    "name": "model/unlink_err",
+                    "path": "/tmp/unlink_err_file",
+                    "size_bytes": 500,
+                    "is_active": False,
+                }
+            ]
+        }
+        with patch("system_diagnostics.get_installed_models_data", return_value=mock_data):
+            with patch("os.path.exists", return_value=True):
+                with patch("os.path.islink", return_value=True):
+                    with patch("os.unlink", side_effect=Exception("Permission denied")):
+                        ok, msg, deleted, reclaimed = system_diagnostics.delete_installed_models(["model/unlink_err"])
+                        self.assertTrue(ok)
+                        self.assertEqual(deleted, [])
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
 

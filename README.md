@@ -27,7 +27,7 @@ The suite features **built-in Docker lifecycle management** to dynamically run t
   - [pipeline_manager.py](file:///home/owner/KIRAG/pipeline_manager.py) — Batch OCR pipeline engine: pre-flight checks, subprocess management, live log parsing, and `PipelineResult` named tuple
   - [process_state.py](file:///home/owner/KIRAG/process_state.py) — Thread-safe global `active_runs` dict and lock for tracking in-flight pipeline processes
   - [pytest.ini](file:///home/owner/KIRAG/pytest.ini) — Pytest configuration to ignore `workspace/`, `venv/`, and Docker-mounted database directories
-  - [rag_export.py](file:///home/owner/KIRAG/rag_export.py) — Chat session export: Markdown (`.md`), plain text (`.txt`), and CSV timeline (`.csv`) with timestamped filenames
+  - [rag_export.py](file:///home/owner/KIRAG/rag_export.py) — Chat session export: Markdown (`.md`), plain text (`.txt`), CSV timeline (`.csv`), and branded DOCX reports/timelines (`.docx`) with firm letterhead
   - [rag_infra_manager.py](file:///home/owner/KIRAG/rag_infra_manager.py) — RAG services (PostgreSQL, Redis, MinIO, Qdrant) lifecycle orchestrator via Docker Compose with sequential initialisation
   - [rag_ui.py](file:///home/owner/KIRAG/rag_ui.py) — Gradio layout builder for Case Dashboard and RAG Chat panels; forwarding wrappers, progress card rendering, and `RagUiModule` dynamic module class
   - [rag_ui_dashboard.py](file:///home/owner/KIRAG/rag_ui_dashboard.py) — Case Dashboard UI: card grid builder, select/deselect-all JS handlers, single/multi/all case deletion from PostgreSQL + Qdrant + MinIO
@@ -43,8 +43,10 @@ The suite features **built-in Docker lifecycle management** to dynamically run t
   - [api/](file:///home/owner/KIRAG/api) — FastAPI REST API layer:
     - [main.py](file:///home/owner/KIRAG/api/main.py) — Main app definition, middleware config, lifespan hooks
     - [models.py](file:///home/owner/KIRAG/api/models.py) — Pydantic models mapping REST request/response contracts
-    - [deps.py](file:///home/owner/KIRAG/api/deps.py) — Shared API dependencies
+    - [server.py](file:///home/owner/KIRAG/api/server.py) — Uvicorn server entry point
     - [routes/](file:///home/owner/KIRAG/api/routes) — API routers per domain (pipeline, docker, rag, diagnostics, settings, documents)
+  - [secrets_config.py](file:///home/owner/KIRAG/secrets_config.py) — Credential resolver: reads PostgreSQL, Redis, MinIO passwords from environment variables (`.env`) with documented fallback defaults and startup security warnings
+  - [pyproject.toml](file:///home/owner/KIRAG/pyproject.toml) — Project metadata and Ruff linter/formatter configuration
   - [.env.example](file:///home/owner/KIRAG/.env.example) — Template environment file for PostgreSQL, Redis, MinIO, embedding, and the vLLM container image configuration. **`.env` is git-ignored** — only `secrets_config.py` and `docker-compose.rag.yml` consume these variables.
   - assets/
     - [accessibility.js](file:///home/owner/KIRAG/assets/accessibility.js) — Runtime WCAG accessibility enhancements (ARIA labels, focus indicators, keyboard shortcuts, dark mode enforcement, scroll synchronisation)
@@ -59,15 +61,40 @@ The suite features **built-in Docker lifecycle management** to dynamically run t
     - [metadata_helper.py](file:///home/owner/KIRAG/rag/metadata_helper.py) — Automated case metadata extraction: client names, DOB, and injury/diagnosis from PostgreSQL chunks using heuristic regex patterns
     - [retriever.py](file:///home/owner/KIRAG/rag/retriever.py) — Dense vector retriever with cosine similarity search, metadata filtering (run_id, doc_type, author, date range), Cross-Encoder reranking, Jaccard-based MMR diversity re-ranking, and PostgreSQL metadata enrichment
     - [storage.py](file:///home/owner/KIRAG/rag/storage.py) — MinIO blob storage for PDFs and Markdown files with bucket auto-creation, upload/download/delete operations, and run-level cleanup
-  - tests/ — Comprehensive unit and integration test suite (28 files, 443 tests):
-    - [test_app.py](file:///home/owner/KIRAG/tests/test_app.py), [test_app_callbacks.py](file:///home/owner/KIRAG/tests/test_app_callbacks.py), [test_cleanup_manager.py](file:///home/owner/KIRAG/tests/test_cleanup_manager.py), [test_docker_manager.py](file:///home/owner/KIRAG/tests/test_docker_manager.py)
-    - [test_download_models.py](file:///home/owner/KIRAG/tests/test_download_models.py), [test_e2e_app.py](file:///home/owner/KIRAG/tests/test_e2e_app.py), [test_external_md_upload.py](file:///home/owner/KIRAG/tests/test_external_md_upload.py), [test_html_utils_all.py](file:///home/owner/KIRAG/tests/test_html_utils_all.py)
+  - frontend/ — Next.js React Dashboard (alternative web frontend):
+    - [next.config.ts](file:///home/owner/KIRAG/frontend/next.config.ts) — Next.js configuration with API proxy rewrite rules (`/api/*` → `http://127.0.0.1:8001/api/*`), 500MB upload body size limit, and allowed dev origins
+    - [package.json](file:///home/owner/KIRAG/frontend/package.json) — Dependencies: Next.js 16, React 19, Tailwind CSS 4, Lucide icons, clsx/tailwind-merge utilities
+    - src/app/
+      - [layout.tsx](file:///home/owner/KIRAG/frontend/src/app/layout.tsx) — Root layout with dark-mode HTML shell, SEO metadata, and `Inter` font
+      - [page.tsx](file:///home/owner/KIRAG/frontend/src/app/page.tsx) — Main page: mounts `Sidebar`, `UnifiedHeader`, and conditionally renders 6 view components (`IngestionPipeline`, `PdfInspector`, `EmbeddingPipeline`, `CaseDashboard`, `RagChat`, `SystemDiagnostics`) wrapped in `ErrorBoundary`
+      - [globals.css](file:///home/owner/KIRAG/frontend/src/app/globals.css) — Tailwind CSS imports, CSS custom properties, glassmorphism utilities, custom scrollbar styling, and pulse-glow animation
+    - src/components/ — React UI components (11 modules):
+      - [Sidebar.tsx](file:///home/owner/KIRAG/frontend/src/components/Sidebar.tsx) — Navigation sidebar with 6-view tabs, Docker inference server controls (start/stop/recreate/shutdown), HF token, model selector, GPU memory slider, role selector, and layout density toggle
+      - [UnifiedHeader.tsx](file:///home/owner/KIRAG/frontend/src/components/UnifiedHeader.tsx) — Top navigation bar with breadcrumb-style view tabs, case selector, active role, and real-time service health polling badges
+      - [IngestionPipeline.tsx](file:///home/owner/KIRAG/frontend/src/components/IngestionPipeline.tsx) — PDF upload, batch OCR processing with SSE progress streaming, upload manifest, per-file status, and live system log
+      - [PdfInspector.tsx](file:///home/owner/KIRAG/frontend/src/components/PdfInspector.tsx) — Three-panel layout inspector: original PDF, raw Markdown, and rendered preview with page navigation
+      - [EmbeddingPipeline.tsx](file:///home/owner/KIRAG/frontend/src/components/EmbeddingPipeline.tsx) — Embedding configuration, batch indexing operations, external Markdown upload, and Qdrant/Redis telemetry
+      - [CaseDashboard.tsx](file:///home/owner/KIRAG/frontend/src/components/CaseDashboard.tsx) — Case card grid with metadata display, select/deselect-all, and multi-case deletion
+      - [RagChat.tsx](file:///home/owner/KIRAG/frontend/src/components/RagChat.tsx) — RAG chat interface with SSE streaming responses, analysis mode selector, metadata filters, infrastructure controls, and multi-format export
+      - [SystemDiagnostics.tsx](file:///home/owner/KIRAG/frontend/src/components/SystemDiagnostics.tsx) — Service health cards with latency probes, GPU/VRAM metrics, container log viewer, cache statistics, and cleanup tools
+      - [ResizableBlock.tsx](file:///home/owner/KIRAG/frontend/src/components/ResizableBlock.tsx) — Draggable resizable panel primitive with min/max constraints
+      - [ResizableSplit.tsx](file:///home/owner/KIRAG/frontend/src/components/ResizableSplit.tsx) — Two-pane resizable splitter (horizontal/vertical) with proportional sizing
+      - [ErrorBoundary.tsx](file:///home/owner/KIRAG/frontend/src/components/ErrorBoundary.tsx) — React error boundary with fallback UI and retry mechanism
+    - src/lib/
+      - [api.ts](file:///home/owner/KIRAG/frontend/src/lib/api.ts) — Typed API client: system health, case summaries, timelines, pipeline runs/start/stop, Docker lifecycle, RAG queries (SSE streaming), corpus stats, infrastructure control, settings, diagnostics, cache management, and file uploads
+    - src/components/__tests__/ — Jest + React Testing Library test suite (10 test files):
+      - [Sidebar.test.tsx](file:///home/owner/KIRAG/frontend/src/components/__tests__/Sidebar.test.tsx), [UnifiedHeader.test.tsx](file:///home/owner/KIRAG/frontend/src/components/__tests__/UnifiedHeader.test.tsx), [IngestionPipeline.test.tsx](file:///home/owner/KIRAG/frontend/src/components/__tests__/IngestionPipeline.test.tsx), [PdfInspector.test.tsx](file:///home/owner/KIRAG/frontend/src/components/__tests__/PdfInspector.test.tsx)
+      - [EmbeddingPipeline.test.tsx](file:///home/owner/KIRAG/frontend/src/components/__tests__/EmbeddingPipeline.test.tsx), [CaseDashboard.test.tsx](file:///home/owner/KIRAG/frontend/src/components/__tests__/CaseDashboard.test.tsx), [RagChat.test.tsx](file:///home/owner/KIRAG/frontend/src/components/__tests__/RagChat.test.tsx), [SystemDiagnostics.test.tsx](file:///home/owner/KIRAG/frontend/src/components/__tests__/SystemDiagnostics.test.tsx)
+      - [ResizableBlock.test.tsx](file:///home/owner/KIRAG/frontend/src/components/__tests__/ResizableBlock.test.tsx), [ResizableSplit.test.tsx](file:///home/owner/KIRAG/frontend/src/components/__tests__/ResizableSplit.test.tsx)
+  - tests/ — Comprehensive Python unit and integration test suite (33 files, 511 tests):
+    - [test_api.py](file:///home/owner/KIRAG/tests/test_api.py), [test_api_server.py](file:///home/owner/KIRAG/tests/test_api_server.py), [test_app.py](file:///home/owner/KIRAG/tests/test_app.py), [test_app_callbacks.py](file:///home/owner/KIRAG/tests/test_app_callbacks.py), [test_cleanup_manager.py](file:///home/owner/KIRAG/tests/test_cleanup_manager.py), [test_docker_manager.py](file:///home/owner/KIRAG/tests/test_docker_manager.py)
+    - [test_download_models.py](file:///home/owner/KIRAG/tests/test_download_models.py), [test_e2e_app.py](file:///home/owner/KIRAG/tests/test_e2e_app.py), [test_e2e_rag_flow.py](file:///home/owner/KIRAG/tests/test_e2e_rag_flow.py), [test_embedding_pipeline_ui.py](file:///home/owner/KIRAG/tests/test_embedding_pipeline_ui.py), [test_external_md_upload.py](file:///home/owner/KIRAG/tests/test_external_md_upload.py), [test_html_utils_all.py](file:///home/owner/KIRAG/tests/test_html_utils_all.py)
     - [test_indexing_service.py](file:///home/owner/KIRAG/tests/test_indexing_service.py), [test_integration_rag.py](file:///home/owner/KIRAG/tests/test_integration_rag.py), [test_metadata_helper.py](file:///home/owner/KIRAG/tests/test_metadata_helper.py)
     - [test_pdf_manager.py](file:///home/owner/KIRAG/tests/test_pdf_manager.py), [test_pdf_manager_all.py](file:///home/owner/KIRAG/tests/test_pdf_manager_all.py), [test_pipeline_manager.py](file:///home/owner/KIRAG/tests/test_pipeline_manager.py)
     - [test_rag.py](file:///home/owner/KIRAG/tests/test_rag.py), [test_rag_analyzer_all.py](file:///home/owner/KIRAG/tests/test_rag_analyzer_all.py), [test_rag_cache_all.py](file:///home/owner/KIRAG/tests/test_rag_cache_all.py), [test_rag_db_errors.py](file:///home/owner/KIRAG/tests/test_rag_db_errors.py)
     - [test_rag_embedding_all.py](file:///home/owner/KIRAG/tests/test_rag_embedding_all.py), [test_rag_export.py](file:///home/owner/KIRAG/tests/test_rag_export.py), [test_rag_extended.py](file:///home/owner/KIRAG/tests/test_rag_extended.py), [test_rag_infra_manager_all.py](file:///home/owner/KIRAG/tests/test_rag_infra_manager_all.py)
     - [test_rag_retriever_all.py](file:///home/owner/KIRAG/tests/test_rag_retriever_all.py), [test_rag_storage_all.py](file:///home/owner/KIRAG/tests/test_rag_storage_all.py), [test_rag_ui_handlers.py](file:///home/owner/KIRAG/tests/test_rag_ui_handlers.py)
-    - [test_settings_manager.py](file:///home/owner/KIRAG/tests/test_settings_manager.py), [test_system_diagnostics.py](file:///home/owner/KIRAG/tests/test_system_diagnostics.py), [test_ui_callbacks.py](file:///home/owner/KIRAG/tests/test_ui_callbacks.py)
+    - [test_secrets_config.py](file:///home/owner/KIRAG/tests/test_secrets_config.py), [test_settings_manager.py](file:///home/owner/KIRAG/tests/test_settings_manager.py), [test_system_diagnostics.py](file:///home/owner/KIRAG/tests/test_system_diagnostics.py), [test_ui_callbacks.py](file:///home/owner/KIRAG/tests/test_ui_callbacks.py)
 
 
 ---
@@ -124,7 +151,7 @@ block-beta
 
     block:panel3:4
         columns 4
-        p3["Panel 3: Case Dashboard<br/>Card Grid · Per-Case Metrics · Select/Delete Cases"]
+        p3["Panel 3: Embedding Pipeline<br/>Hardware Acceleration · Chunking · External MD Upload · Qdrant Telemetry"]
     end
 
     block:spacer4:1
@@ -134,7 +161,7 @@ block-beta
 
     block:panel4:4
         columns 4
-        p4["Panel 4: Embedding Pipeline<br/>Hardware Acceleration · Chunking · External MD Upload · Qdrant Telemetry"]
+        p4["Panel 4: Case Dashboard<br/>Card Grid · Per-Case Metrics · Select/Delete Cases"]
     end
 
     block:spacer5:1
@@ -145,7 +172,7 @@ block-beta
     block:panel5:4
         columns 4
         p5sidebar["RAG Sidebar<br/>🔧 Infrastructure<br/>⚙️ Settings<br/>🔍 Filters"]
-        p5chat["💬 Chat Interface (1000px)<br/>Active Case Banner<br/>Analysis Mode Selector<br/>⬅️ Hide Controls Toggle<br/>🚀 Ask / ⏹️ Stop / 🗑️ Clear<br/>📝.md 📄.txt 📊.csv Export<br/>📜 RAG System Log"]
+        p5chat["💬 Chat Interface (1000px)<br/>Active Case Banner<br/>Analysis Mode Selector<br/>⬅️ Hide Controls Toggle<br/>🚀 Ask / ⏹️ Stop / 🗑️ Clear<br/>📝.md 📄.txt 📊.csv 📄.docx 📊.docx Export<br/>📜 RAG System Log"]
     end
 
     block:spacer6:1
@@ -218,9 +245,9 @@ Custom WebKit scrollbars for premium feel:
 
 ### 🏗️ Interface Architecture — 6-Panel Navigation
 
-The application uses a persistent **left navigation sidebar** with 6 navigation buttons. Only one content panel is visible at a time. The sidebar also hosts global controls (Inference Server, Active Role, Layout Density). Navigation toggling is handled by [select_view()](file:///home/owner/KIRAG/app_handlers.py#L45-L65) which updates the page title, button active states, and panel visibility in a single return.
+The application uses a persistent **left navigation sidebar** with 6 navigation buttons. Only one content panel is visible at a time. The sidebar also hosts global controls (Inference Server, Active Role, Layout Density). Navigation toggling is handled by [select_view()](file:///home/owner/KIRAG/app_handlers.py#L48-L70) which updates the page title, button active states, and panel visibility in a single return.
 
-#### Global Navigation Sidebar ([app.py:L115-L179](file:///home/owner/KIRAG/app.py#L115-L179))
+#### Global Navigation Sidebar ([app.py:L130-L222](file:///home/owner/KIRAG/app.py#L130-L222))
 
 | Section | Contents | Key Features |
 |:---|:---|:---|
@@ -229,18 +256,18 @@ The application uses a persistent **left navigation sidebar** with 6 navigation 
 | **🐳 Inference Server (Docker)** | HF token (password field), Model selector dropdown, Docker port (number), GPU memory slider (0.1–1.0), Max Content Length slider (2048–model max, up to 1M), Start/Stop/Recreate buttons | Creates and manages the `olmocr` vLLM container (default image `vllm/vllm-openai:v0.8.5`, overridable via `OLMOCR_VLLM_IMAGE`). Model change auto-syncs between Pipeline and Docker dropdowns and adjusts max content length limits via `MODEL_MAX_CONTENT_LENGTHS` |
 | **Sidebar Footer** | Active Role dropdown (Admin, Clinical Reviewer, Legal Specialist), Comfortable/Compact layout toggle buttons, Version label (`IQ-RAG Workstation v2.0.3`) | Compact mode toggles `.layout-compact` CSS class via JS |
 
-#### Panel 1: PDF Ingestion ([app.py:L199-L298](file:///home/owner/KIRAG/app.py#L199-L298))
+#### Panel 1: PDF Ingestion ([app.py:L247-L369](file:///home/owner/KIRAG/app.py#L247-L369))
 
 | Component | Layout | Purpose |
 |:---|:---|:---|
-| **⚙️ Pipeline Settings** | Collapsible accordion (left column, `scale=1`): Server URL, Model Name, Workers (1–64), Max Concurrent (1–2000), Target Image Dim (512–2048px), Max Retries (1–20), Guided Decoding checkbox, 💾 Save Config | All settings persisted to `settings.json` via [trigger_save_settings()](file:///home/owner/KIRAG/app_handlers.py#L68-L84) |
-| **📥 Source Documents** | File upload widget (multi-file `.pdf`), 🚀 Start / 🛑 Stop buttons (centre column, `scale=3`) | Drag-and-drop PDF ingestion. Stop button toggles `interactive` state. Start triggers [process_pdfs()](file:///home/owner/KIRAG/pipeline_manager.py#L128-L137) via `process_pdfs_ui_wrapper()` |
+| **⚙️ Pipeline Settings** | Collapsible accordion (left column, `scale=1`): Server URL, Model Name, Workers (1–64), Max Concurrent (1–2000), Target Image Dim (512–2048px), Max Retries (1–20), Guided Decoding checkbox, 💾 Save Config | All settings persisted to `settings.json` via [trigger_save_settings()](file:///home/owner/KIRAG/app_handlers.py#L72-L93) |
+| **📥 Source Documents** | File upload widget (multi-file `.pdf`), 🚀 Start / 🛑 Stop buttons (centre column, `scale=3`) | Drag-and-drop PDF ingestion. Stop button toggles `interactive` state. Start triggers [process_pdfs()](file:///home/owner/KIRAG/pipeline_manager.py#L158-L170) via `process_pdfs_ui_wrapper()` |
 | **📊 Monitoring** | Status badge, animated progress bar (HTML), Completed/Failed counter stat-cards | Real-time batch tracking with ETA calculation |
 | **📋 Upload Manifest** | HTML table (scrollable) | Lists uploaded files with sizes and page counts |
 | **📁 Per-File Status** | HTML table (scrollable) | Per-document processing results (pending/done/failed) |
 | **📜 System Output Log** | `gr.Code` (shell syntax, 30 lines, `.log-console`) | Live subprocess stdout/stderr from `pipeline_manager.py` |
 
-#### Panel 2: Layout Inspector ([app.py:L303-L373](file:///home/owner/KIRAG/app.py#L303-L373))
+#### Panel 2: Layout Inspector ([app.py:L370-L442](file:///home/owner/KIRAG/app.py#L370-L442))
 
 **Control Bar:**
 
@@ -248,7 +275,7 @@ The application uses a persistent **left navigation sidebar** with 6 navigation 
 |:---|:---|:---|
 | **📄 Select Processed Document** | `gr.Dropdown` | Lists all markdown outputs from the active run |
 | **👁️ View Mode** | `gr.Radio` | Toggle between `Page-by-Page` and `Full Document` |
-| **Page Navigation** | ⬅️ Prev / `gr.Slider` / Next ➡️ | Page-by-page navigation (1-indexed). Handlers: [go_prev_page()](file:///home/owner/KIRAG/app_handlers.py#L87-L88), [go_next_page()](file:///home/owner/KIRAG/app_handlers.py#L91-L92) |
+| **Page Navigation** | ⬅️ Prev / `gr.Slider` / Next ➡️ | Page-by-page navigation (1-indexed). Handlers: [go_prev_page()](file:///home/owner/KIRAG/app_handlers.py#L95-L97), [go_next_page()](file:///home/owner/KIRAG/app_handlers.py#L99-L101) |
 | **Sync Scroll** | `gr.Checkbox` (`#sync-scroll-checkbox`) | Enables proportional scroll synchronisation across all three panels |
 | **Downloads** | `gr.File` (×2) | Individual Markdown file download + ZIP archive of all outputs |
 
@@ -266,28 +293,44 @@ The application uses a persistent **left navigation sidebar** with 6 navigation 
 - Propagates proportional scroll position to sibling panels
 - Uses a 100ms debounce with `activeScrollSource` locking to prevent feedback loops
 
-#### Panel 3: Case Dashboard ([rag_ui_dashboard.py → build_case_dashboard_ui()](file:///home/owner/KIRAG/rag_ui_dashboard.py#L71-L340))
+#### Panel 3: Embedding Pipeline ([embedding_pipeline_ui.py](file:///home/owner/KIRAG/embedding_pipeline_ui.py))
+
+See **Phase 3** in the [Medicolegal RAG Guide](file:///home/owner/KIRAG/medicolegal_rag_guide.md) for the full practitioner workflow.
 
 | Component | Description |
 |:---|:---|
-| **Dashboard HTML** | Rich card grid ([_build_dashboard_html()](file:///home/owner/KIRAG/rag_ui_dashboard.py#L10-L23)) showing all indexed cases with client names, DOB, extracted injury/diagnosis bullet points, and sub-stats (document count, chunk count, unique authors, date range, indexed timestamp). Built from data via [html_utils.make_case_dashboard_html()](file:///home/owner/KIRAG/html_utils.py) |
-| **🔄 Refresh Dashboard** | Reloads case data from PostgreSQL via [_refresh_dashboard()](file:///home/owner/KIRAG/rag_ui_dashboard.py#L147-L154), resets checkbox selection state via JS |
+| **Compute Engine Device** | Dropdown: `⚡ Auto CUDA GPU`, `🚀 CUDA GPU Dedicated`, `💻 CPU Mode` — auto-detects CUDA hardware for GPU acceleration |
+| **Embedding Batch Size** | Slider (16–512, default 64) for tuning GPU memory utilization and throughput |
+| **Embedding Model Name** | Dropdown/textbox for selecting the sentence-transformer model (default: `BAAI/bge-large-en-v1.5`) |
+| **Max Chunk Size / Chunk Overlap** | Sliders (200–2000 chars / 0–500 chars) for chunking hyperparameters |
+| **💾 Save Configuration** | Persists embedding and chunking settings to `settings.json` |
+| **📥 Direct External Markdown Upload & Indexing** | File uploader (.md), Target Case dropdown (🆕 Create New Case / existing cases), New Case Name textbox, 📥 Upload & Index button |
+| **⚙️ Batch Indexing Operations** | Run selector dropdown, 📥 Index Selected Run, 📥 Index All Runs, live status card |
+| **Qdrant Telemetry** | Real-time point count and Redis vector cache statistics |
+| **Execution Log** | Live timestamped log of embedding, chunking, and indexing operations |
+
+#### Panel 4: Case Dashboard ([rag_ui_dashboard.py → build_case_dashboard_ui()](file:///home/owner/KIRAG/rag_ui_dashboard.py#L95-L392))
+
+| Component | Description |
+|:---|:---|
+| **Dashboard HTML** | Rich card grid ([_build_dashboard_html()](file:///home/owner/KIRAG/rag_ui_dashboard.py#L18-L44)) showing all indexed cases with client names, DOB, extracted injury/diagnosis bullet points, and sub-stats (document count, chunk count, unique authors, date range, indexed timestamp). Built from data via [html_utils.make_case_dashboard_html()](file:///home/owner/KIRAG/html_utils.py) |
+| **🔄 Refresh Dashboard** | Reloads case data from PostgreSQL via [_refresh_dashboard()](file:///home/owner/KIRAG/rag_ui_dashboard.py#L169-L180), resets checkbox selection state via JS |
 | **☑️ Select All / ⬜ Clear Selection** | JavaScript handlers that toggle all `.case-select-checkbox` elements and update a hidden `selected_cases_input` textbox |
-| **🗑️ Delete Selected** | Dynamic label showing selected count (via [_update_delete_button_label()](file:///home/owner/KIRAG/rag_ui_dashboard.py#L62-L68)). Triggers [_delete_selected_cases()](file:///home/owner/KIRAG/rag_ui_dashboard.py#L222-L265) — removes case records from PostgreSQL, vectors from Qdrant, and blobs from MinIO |
-| **🚨 Delete All Cases** | [_delete_all_cases()](file:///home/owner/KIRAG/rag_ui_dashboard.py#L273-L321) — purges all indexed cases from all three stores |
+| **🗑️ Delete Selected** | Dynamic label showing selected count (via [_update_delete_button_label()](file:///home/owner/KIRAG/rag_ui_dashboard.py#L86-L93)). Triggers [_delete_selected_cases()](file:///home/owner/KIRAG/rag_ui_dashboard.py#L257-L322) — removes case records from PostgreSQL, vectors from Qdrant, and blobs from MinIO |
+| **🚨 Delete All Cases** | [_delete_all_cases()](file:///home/owner/KIRAG/rag_ui_dashboard.py#L325-L392) — purges all indexed cases from all three stores |
 | **Status** | Markdown output for operation feedback |
 
-#### Panel 4: RAG Processing ([rag_ui.py → build_rag_chat_ui()](file:///home/owner/KIRAG/rag_ui.py#L538-L1058))
+#### Panel 5: RAG Processing ([rag_ui.py → build_rag_chat_ui()](file:///home/owner/KIRAG/rag_ui.py#L619-L1100))
 
 **RAG Sidebar** (`scale=1`, `.sidebar-panel`, collapsible via ⬅️ Hide Controls toggle):
 
 | Accordion | Contents | Key Interactions |
 |:---|:---|:---|
-| **🔧 RAG Infrastructure** | Status badges for PostgreSQL, Redis, MinIO, Qdrant. ▶️ Start / ⏹️ Stop buttons | Starts/stops all 4 services via `docker compose`. Initialises schemas, buckets, and collections on start via [start_and_init_rag()](file:///home/owner/KIRAG/rag_infra_manager.py#L261-L293) |
+| **🔧 RAG Infrastructure** | Status badges for PostgreSQL, Redis, MinIO, Qdrant. ▶️ Start / ⏹️ Stop buttons | Starts/stops all 4 services via `docker compose`. Initialises schemas, buckets, and collections on start via [start_and_init_rag()](file:///home/owner/KIRAG/rag_infra_manager.py#L259-L295) |
 | **📦 Document Indexing** | Corpus statistics table, 🔄 Refresh Stats, Run selector dropdown, 📥 Index Selected Run, 📥 Index All Runs | Triggers the 5-stage indexing pipeline with a live progress card showing: 📁 Creating case → ☁️ Uploading → 🧩 Chunking → 🧠 Embedding → ⚡ Indexing |
-| **📥 Upload External Markdown** | File uploader (.md), Target Case dropdown (🆕 Create New Case / existing cases), New Case Name textbox (conditionally visible), 📥 Upload & Index button | Bypass OCR pipeline: upload pre-existing Markdown directly into a case via [CorpusIndexingService.add_markdown_to_case()](file:///home/owner/KIRAG/indexing_service.py#L182-L397) |
-| **⚙️ Analysis Settings** | Analysis LLM Server URL, Analysis Model Name dropdown (8 models), Retrieval Top-K slider (3–500), Embedding Model dropdown, Cross-Encoder Reranker toggle + model selector + device selector (cuda/cpu), 💾 Save | All settings persisted to [settings.json](file:///home/owner/KIRAG/settings.json) via [save_analysis_settings()](file:///home/owner/KIRAG/rag_ui_handlers.py#L270-L293) |
-| **🔍 Search Filters** | **Active Case** dropdown (case isolation), **Document Type** dropdown (7 types), **Author** dropdown (dynamically populated), **Date From / Date To** text fields (auto-populated from case metadata) | Filters apply to the next query; case selection triggers [on_case_selected()](file:///home/owner/KIRAG/rag_ui.py#L904-L943) which populates author and date fields |
+| **📥 Upload External Markdown** | File uploader (.md), Target Case dropdown (🆕 Create New Case / existing cases), New Case Name textbox (conditionally visible), 📥 Upload & Index button | Bypass OCR pipeline: upload pre-existing Markdown directly into a case via [CorpusIndexingService.add_markdown_to_case()](file:///home/owner/KIRAG/indexing_service.py#L214-L420) |
+| **⚙️ Analysis Settings** | Analysis LLM Server URL, Analysis Model Name dropdown (8 models), Retrieval Top-K slider (3–500), Embedding Model dropdown, Cross-Encoder Reranker toggle + model selector + device selector (cuda/cpu), 💾 Save | All settings persisted to [settings.json](file:///home/owner/KIRAG/settings.json) via [save_analysis_settings()](file:///home/owner/KIRAG/rag_ui_handlers.py#L303-L330) |
+| **🔍 Search Filters** | **Active Case** dropdown (case isolation), **Document Type** dropdown (7 types), **Author** dropdown (dynamically populated), **Date From / Date To** text fields (auto-populated from case metadata) | Filters apply to the next query; case selection triggers [on_case_selected()](file:///home/owner/KIRAG/rag_ui.py#L927-L970) which populates author and date fields |
 
 **RAG Chat Interface** (`scale=5`, `.glass-panel`):
 
@@ -295,13 +338,13 @@ The application uses a persistent **left navigation sidebar** with 6 navigation 
 |:---|:---|:---|
 | **Active Case Banner** | `gr.HTML`, dynamic | Displays the currently active case name for visual confirmation of query scope |
 | **Analysis Mode** | `gr.Dropdown` (5 modes) | Free Q&A, Timeline Generator, Injury Summary, Inconsistency Finder, Medication Tracker |
-| **⬅️ Hide Controls** | `gr.Button`, toggle | Collapses/expands the RAG sidebar via [toggle_sidebar()](file:///home/owner/KIRAG/rag_ui.py#L1012-L1015). Label changes to "➡️ Show Controls" when collapsed |
-| **Chat Window** | `gr.Chatbot`, height `1000px`, copy buttons, `.analysis-chatbot` | Streaming responses via [bot_respond()](file:///home/owner/KIRAG/rag_ui_handlers.py#L164-L267) with Gradio progress tracking |
+| **⬅️ Hide Controls** | `gr.Button`, toggle | Collapses/expands the RAG sidebar via [toggle_sidebar()](file:///home/owner/KIRAG/rag_ui.py#L1051-L1055). Label changes to "➡️ Show Controls" when collapsed |
+| **Chat Window** | `gr.Chatbot`, height `1000px`, copy buttons, `.analysis-chatbot` | Streaming responses via [bot_respond()](file:///home/owner/KIRAG/rag_ui_handlers.py#L182-L300) with Gradio progress tracking |
 | **Chat Input** | `gr.Textbox`, 2 lines, `scale=4` | Placeholder: *"e.g., What injuries did the patient sustain and when?"*. Submits on Enter key or 🚀 Ask button |
 | **🚀 Ask Button** | `gr.Button`, primary, `scale=1` | Triggers `user_message_submit()` → `bot_respond()` with streaming |
 | **⏹️ Stop Button** | `gr.Button`, stop variant, `scale=1` | Cancels in-flight chat/inference via Gradio's `cancels=` mechanism on both submit events |
 | **🗑️ Clear Chat** | `gr.Button`, secondary, `size=sm` | Resets chat history |
-| **📝 Export .md / 📄 Export .txt / 📊 Export .csv** | `gr.Button` (×3), secondary, `size=sm` | One-click export via [rag_export.py](file:///home/owner/KIRAG/rag_export.py) to `workspace/exports/` |
+| **📝 Export .md / 📄 Export .txt / 📊 Export .csv / 📄 Export .docx / 📊 Timeline .docx** | `gr.Button` (×5), secondary, `size=sm` | One-click export via [rag_export.py](file:///home/owner/KIRAG/rag_export.py) to `workspace/exports/` (Markdown, plain text, CSV, branded DOCX report with firm letterhead, branded DOCX timeline) |
 | **Keyboard Shortcut Hints** | `gr.HTML` | `Ctrl+Enter` Send, `Ctrl+Shift+N` Clear, `Ctrl+Shift+C` Copy |
 | **📥 Download Export** | `gr.File`, hidden until triggered | Becomes visible with download link after export |
 | **📜 RAG System Log** | `gr.Code`, shell syntax, 30 lines, `.log-console` | Timestamped backend log from [rag_ui_state.py](file:///home/owner/KIRAG/rag_ui_state.py) |
@@ -316,7 +359,7 @@ The application uses a persistent **left navigation sidebar** with 6 navigation 
 | 🔍 **Inconsistency Finder** | Cross-reference accounts of the same events; rate severity (Minor/Moderate/Major) | Table: `Issue \| Source A Says \| Source B Says \| Severity \| Citations & Verifying Details` |
 | 💊 **Medication Tracker** | Track prescriptions, dose changes, cessations, allergies | Table: `Medication \| Dose/Freq \| Date Started \| Date Stopped \| Prescriber \| Source (PDF Page Range & Verifying Details)` |
 
-#### Panel 5: System Diagnostics ([app.py:L390-L414](file:///home/owner/KIRAG/app.py#L390-L414))
+#### Panel 6: System Diagnostics ([app.py:L461-L580](file:///home/owner/KIRAG/app.py#L461-L580))
 
 | Component | Description |
 |:---|:---|
@@ -364,7 +407,7 @@ mindmap
       Markdown Export (.md) ✅
       Plain Text Export (.txt) ✅
       CSV Timeline Export (.csv) ✅
-      Direct DOCX Export with Firm Letterhead
+      Direct DOCX Export with Firm Letterhead ✅
       PDF Report with Embedded Citations
     Productivity
       Keyboard Shortcuts ✅
@@ -387,14 +430,14 @@ mindmap
 | 1 | **Active Case Selector** | ✅ Done | Dropdown in 🔍 Search Filters accordion. Applies `run_id_filter` to isolate queries per case |
 | 2 | **Interactive Metadata Filters** | ✅ Done | Document Type, Author, Date From/To fields in Search Filters accordion |
 | 3 | **Cross-Encoder Reranker** | ✅ Done | Toggle, model selector, and device selector in ⚙️ Analysis Settings. Uses `BAAI/bge-reranker-large` by default with sigmoid score normalisation |
-| 4 | **Chat Session Export** | ✅ Done | Three export buttons (.md, .txt, .csv) via [rag_export.py](file:///home/owner/KIRAG/rag_export.py) |
+| 4 | **Chat Session Export** | ✅ Done | Five export buttons (.md, .txt, .csv, .docx, timeline .docx) via [rag_export.py](file:///home/owner/KIRAG/rag_export.py) |
 | 5 | **Case Dashboard** | ✅ Done | Dedicated panel with card grid, per-case metrics, checkbox selection, and multi-case deletion |
 | 6 | **Stop Chat/Inference** | ✅ Done | ⏹️ Stop button in chat row cancels both submit events via Gradio `cancels=` parameter |
 | 7 | **Collapsible RAG Sidebar** | ✅ Done | ⬅️ Hide Controls / ➡️ Show Controls toggle button above the chat |
 | 8 | **Keyboard Shortcuts** | ✅ Done | `Ctrl+Enter`, `Ctrl+Shift+N`, `Ctrl+Shift+C` |
 | 9 | Interactive Clinical Timeline | 🔲 Planned | Visual timeline with clickable events and conflict markers |
 | 10 | Annotation Workspace | 🔲 Planned | Text highlighting with labels (Disputed, Critical, Key Evidence) |
-| 11 | Advanced Structured Export (DOCX/PDF) | 🟡 Partial | **DOCX export with firm letterhead** now available (chat report + timeline tables); PDF report with embedded citations still planned |
+| 11 | Advanced Structured Export (DOCX/PDF) | ✅ Done | **DOCX export with firm letterhead** fully implemented (chat report + timeline tables); PDF report compilation planned |
 
 ---
 
@@ -438,10 +481,74 @@ The application relies on the following key dependencies ([requirements.txt](fil
 - **`pypdf`** (≥4.0.0) / **`pypdfium2`** (≥4.0.0): PDF validation and high-performance page rendering.
 - **`httpx`** (≥0.27.0): HTTP client for communicating with the vLLM server (streaming SSE support).
 - **`numpy`** (≥1.24.0): Multidimensional array operations (used in embeddings/retrievals).
-- **`coverage`** (≥7.15.0) / **`pytest`** (≥9.1.0): Testing framework and coverage statistics.
+- **`coverage`** (≥7.15.0) / **`pytest`** (≥8.0.0): Testing framework and coverage statistics.
 - **`fastapi`** (≥0.111.0): REST API framework with automatic OpenAPI schema generation.
 - **`uvicorn`** (≥0.30.0): ASGI web server implementation.
 - **`python-multipart`** (≥0.0.9): Multipart parsing support for file uploads.
+- **`python-docx`** (≥1.1.0): DOCX document generation for court-ready analysis reports with firm letterhead.
+- **`requests`** (≥2.31.0): HTTP library used for synchronous API calls.
+- **`olmocr`** (≥0.4.27): OLMOCR pipeline library for PDF-to-Markdown extraction.
+
+---
+
+## 🌐 Next.js React Frontend
+
+In addition to the Gradio web UI, the repository includes a standalone **Next.js 16** React dashboard ([frontend/](file:///home/owner/KIRAG/frontend)) that provides an alternative browser interface. It consumes the same FastAPI REST API backend (port `8001`) and mirrors the 6-panel architecture with a modern React component model.
+
+### Technology Stack
+
+| Layer | Technology | Version |
+|:---|:---|:---|
+| **Framework** | [Next.js](https://nextjs.org) (App Router) | 16.2.11 |
+| **UI Library** | React | 19.2.4 |
+| **Styling** | Tailwind CSS 4 + custom CSS properties | 4.x |
+| **Icons** | [Lucide React](https://lucide.dev) | 1.25+ |
+| **CSS Utilities** | clsx + tailwind-merge | Latest |
+| **Testing** | Jest 30 + React Testing Library 16 | 30.4.2 |
+| **Language** | TypeScript 5 | 5.x |
+
+### Architecture
+
+The frontend is a single-page application with client-side view routing. API calls are proxied through Next.js rewrites (`/api/*` → `http://127.0.0.1:8001/api/*`) to ensure same-origin requests and avoid CORS/third-party cookie issues.
+
+| Component | File | Purpose |
+|:---|:---|:---|
+| **Root Layout** | [layout.tsx](file:///home/owner/KIRAG/frontend/src/app/layout.tsx) | Dark-mode HTML shell (`bg-[#0b0f19]`), SEO metadata, Inter font |
+| **Main Page** | [page.tsx](file:///home/owner/KIRAG/frontend/src/app/page.tsx) | State management for active view, case, role, and density; conditional panel rendering within `ErrorBoundary` |
+| **Sidebar** | [Sidebar.tsx](file:///home/owner/KIRAG/frontend/src/components/Sidebar.tsx) | 6-view navigation, Docker inference controls (start/stop/recreate/shutdown), HF token, model selector, GPU memory slider, role and density toggles |
+| **Unified Header** | [UnifiedHeader.tsx](file:///home/owner/KIRAG/frontend/src/components/UnifiedHeader.tsx) | Top navigation bar with breadcrumb view tabs, case selector, active role, and real-time service health badges |
+| **Ingestion Pipeline** | [IngestionPipeline.tsx](file:///home/owner/KIRAG/frontend/src/components/IngestionPipeline.tsx) | PDF drag-and-drop upload, batch OCR with SSE progress streaming, upload manifest, per-file status, and live system log |
+| **PDF Inspector** | [PdfInspector.tsx](file:///home/owner/KIRAG/frontend/src/components/PdfInspector.tsx) | Three-panel layout: original PDF, raw Markdown, rendered preview with page navigation |
+| **Embedding Pipeline** | [EmbeddingPipeline.tsx](file:///home/owner/KIRAG/frontend/src/components/EmbeddingPipeline.tsx) | Embedding config, batch indexing, external Markdown upload, Qdrant/Redis telemetry |
+| **Case Dashboard** | [CaseDashboard.tsx](file:///home/owner/KIRAG/frontend/src/components/CaseDashboard.tsx) | Case card grid with metadata, select/deselect-all, bulk deletion |
+| **RAG Chat** | [RagChat.tsx](file:///home/owner/KIRAG/frontend/src/components/RagChat.tsx) | Full RAG chat with SSE streaming, 5 analysis modes, metadata filters, infrastructure controls, and multi-format export (.md, .txt, .csv, .docx) |
+| **System Diagnostics** | [SystemDiagnostics.tsx](file:///home/owner/KIRAG/frontend/src/components/SystemDiagnostics.tsx) | Service health cards, GPU/VRAM metrics, container log viewer, Redis cache stats, and cleanup tools |
+| **Resizable Panels** | [ResizableBlock.tsx](file:///home/owner/KIRAG/frontend/src/components/ResizableBlock.tsx), [ResizableSplit.tsx](file:///home/owner/KIRAG/frontend/src/components/ResizableSplit.tsx) | Draggable resizable panel primitives for flexible layout |
+| **Error Boundary** | [ErrorBoundary.tsx](file:///home/owner/KIRAG/frontend/src/components/ErrorBoundary.tsx) | React error boundary with fallback UI and retry |
+| **API Client** | [api.ts](file:///home/owner/KIRAG/frontend/src/lib/api.ts) | Typed fetch wrappers for all REST endpoints with SSE streaming support |
+
+### Running the Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The development server starts on `http://localhost:3000`. Ensure the FastAPI backend is running on port `8001`:
+```bash
+uvicorn api.main:app --host 0.0.0.0 --port 8001
+```
+
+### Frontend Test Suite
+
+The frontend includes **10 Jest test files** using React Testing Library:
+```bash
+cd frontend
+npm test
+```
+
+Tested components: Sidebar, UnifiedHeader, IngestionPipeline, PdfInspector, EmbeddingPipeline, CaseDashboard, RagChat, SystemDiagnostics, ResizableBlock, ResizableSplit.
 
 ---
 
@@ -464,10 +571,13 @@ Once started, interactive OpenAPI/Swagger documentation is available at:
 | Domain | Method | Path | Description |
 |:---|:---:|:---|:---|
 | **Pipeline** | `POST` | `/api/pipeline/start` | Start batch OCR processing (returns SSE stream) |
+| | `POST` | `/api/pipeline/upload` | Upload source PDF documents for ingestion |
 | | `GET` | `/api/pipeline/runs` | List available completed OCR runs |
 | | `GET` | `/api/pipeline/status/{id}` | Check status of an in-flight OCR process |
 | | `POST` | `/api/pipeline/stop/{id}` | Stop a running OCR pipeline process |
 | **Docker** | `GET` | `/api/docker/status` | Get vLLM inference container status |
+| | `GET` | `/api/docker/models` | Retrieve available and cached models |
+| | `GET` | `/api/docker/logs` | Retrieve container stdout/stderr log stream |
 | | `POST` | `/api/docker/start` | Start the existing vLLM container |
 | | `POST` | `/api/docker/stop` | Stop the running vLLM container |
 | | `POST` | `/api/docker/create` | Recreate the vLLM container with new parameters |
@@ -476,6 +586,8 @@ Once started, interactive OpenAPI/Swagger documentation is available at:
 | | `POST` | `/api/rag/index` | Index a specific run directory into PostgreSQL + Qdrant |
 | | `POST` | `/api/rag/index-all` | Scan and index all completed OCR runs in the workspace |
 | | `POST` | `/api/rag/upload-markdown` | Upload and index external markdown files into corpus |
+| | `POST` | `/api/rag/cases/delete` | Delete selected indexed cases from PostgreSQL, Qdrant, and MinIO |
+| | `POST` | `/api/rag/export` | Programmatically export chat analysis sessions (.md, .txt, .csv, .docx) |
 | | `GET` | `/api/rag/corpus/stats` | Retrieve aggregate corpus stats |
 | | `GET` | `/api/rag/corpus/cases` | Retrieve list of all indexed cases |
 | | `POST` | `/api/rag/infra/start` | Start PostgreSQL, Redis, MinIO, Qdrant stack & init schemas |
@@ -485,9 +597,14 @@ Once started, interactive OpenAPI/Swagger documentation is available at:
 | | `GET` | `/api/diagnostics/gpu` | Retrieve GPU hardware metrics only |
 | | `GET` | `/api/diagnostics/services` | Retrieve latency and health of backing services |
 | | `GET` | `/api/diagnostics/report` | Download the full system markdown diagnostic report |
+| | `POST` | `/api/diagnostics/cleanup` | Execute disk cache and temp file cleanup operations |
+| | `GET` | `/api/diagnostics/cache` | Retrieve Redis cache statistics |
+| | `DELETE` | `/api/diagnostics/cache` | Flush or purge Redis query and vector cache entries |
 | **Documents** | `GET` | `/api/documents/runs` | Browse completed OCR runs and list extracted files |
 | | `GET` | `/api/documents/runs/{run}/files` | List markdown files in a specific run |
-| | `GET` | `/api/documents/runs/{run}/markdown/{file}`| Retrieve the raw text content of an extracted markdown file |
+| | `GET` | `/api/documents/runs/{run}/markdown/{file}`| Retrieve raw text content of an extracted markdown file |
+| | `GET` | `/api/documents/runs/{run}/pdf` | Download or view source PDF file for a run |
+| | `GET` | `/api/documents/runs/{run}/info` | Get detailed page mapping and JSONL attributes |
 | **Settings** | `GET` | `/api/settings/` | Retrieve current application settings (with masked HF token) |
 | | `PUT` | `/api/settings/` | Merge provided fields into application settings and save |
 
@@ -662,13 +779,13 @@ This workstation processes **medicolegal PII** (patient names, DOBs, injuries, c
    - Select the case from the **Active Case** dropdown in **🔍 Search Filters**.
    - Type your questions in the Chat input or select a template analysis mode.
    - Click **⏹️ Stop** to cancel in-flight chat inference at any time.
-   - Export results using the **📝 .md**, **📄 .txt**, or **📊 .csv** export buttons.
+   - Export results using the **📝 .md**, **📄 .txt**, **📊 .csv**, **📄 .docx**, or **📊 Timeline .docx** export buttons.
 
 ---
 
 ## 🧪 Verification & Testing
 
-The repository includes a comprehensive testing suite comprising **443 unit and integration tests** across **28 test files**, validating components, lifecycle states, callbacks, and processing operations.
+The repository includes a comprehensive testing suite comprising **511 unit and integration tests** across **33 test files**, validating components, lifecycle states, callbacks, and processing operations.
 
 To run the test suite, ensure the virtual environment is active, then execute:
 

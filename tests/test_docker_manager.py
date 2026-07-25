@@ -282,6 +282,144 @@ class TestDockerManager(unittest.TestCase):
         logs = docker_manager.get_docker_logs(50)
         self.assertIn("failed", logs.lower())
 
+    @patch("subprocess.run")
+    def test_resolve_vllm_image(self, mock_run):
+        # 1. Custom image in env when TESTING is true
+        with patch.dict(os.environ, {"OLMOCR_VLLM_IMAGE": "custom/image:tag", "TESTING": "true"}):
+            self.assertEqual(docker_manager.resolve_vllm_image(), "custom/image:tag")
+
+        # 2. Custom image in env when TESTING is false (inspect success)
+        mock_run.return_value = MagicMock(returncode=0)
+        with patch.dict(os.environ, {"OLMOCR_VLLM_IMAGE": "custom/image:tag", "TESTING": "false"}):
+            self.assertEqual(docker_manager.resolve_vllm_image(), "custom/image:tag")
+
+        # 3. Fallback when inspect fails
+        mock_run.return_value = MagicMock(returncode=1)
+        with patch.dict(os.environ, {}, clear=True):
+            img = docker_manager.resolve_vllm_image()
+            self.assertIn("vllm", img)
+
+    @patch("subprocess.run")
+    def test_free_host_port(self, mock_run):
+        # When TESTING is true -> skips
+        with patch.dict(os.environ, {"TESTING": "true"}):
+            docker_manager.free_host_port(8000)
+            mock_run.assert_not_called()
+
+        # When TESTING is false -> inspects and removes bound containers
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="c123\tolmocr\t0.0.0.0:8000->8000/tcp\n"),
+            MagicMock(returncode=0)
+        ]
+        with patch.dict(os.environ, {"TESTING": "false"}):
+            docker_manager.free_host_port(8000)
+            self.assertEqual(mock_run.call_count, 2)
+
+    @patch("socket.socket")
+    def test_wait_for_port_free(self, mock_sock):
+        # When TESTING is true -> return True
+        with patch.dict(os.environ, {"TESTING": "true"}):
+            self.assertTrue(docker_manager.wait_for_port_free(8000))
+
+        # When TESTING is false -> checks socket
+        mock_s_inst = MagicMock()
+        mock_sock.return_value.__enter__.return_value = mock_s_inst
+        mock_s_inst.connect_ex.return_value = 1  # 1 means port is free
+        with patch.dict(os.environ, {"TESTING": "false"}):
+            self.assertTrue(docker_manager.wait_for_port_free(8000))
+
+    @patch("subprocess.run")
+    def test_create_docker_container_dotenv_token_and_port_conflict(self, mock_run):
+        # 1. Test dotenv token fallback (lines 359-371)
+        with patch("docker_manager.get_docker_status", return_value="not_found"):
+            with patch("os.path.exists", return_value=True):
+                with patch("builtins.open", unittest.mock.mock_open(read_data="HF_TOKEN=dotenv_token_123\n")):
+                    with patch.dict(os.environ, {}, clear=True):
+                        mock_run.return_value = MagicMock(returncode=0)
+                        ok, _ = docker_manager.create_docker_container("********", 8000, "model", 0.8, 16000)
+                        self.assertTrue(ok)
+                        self.assertEqual(os.environ.get("HF_TOKEN"), "dotenv_token_123")
+
+        # 2. Test port conflict retry branch (lines 438-447)
+        with patch("docker_manager.get_docker_status", return_value="not_found"):
+            mock_run.side_effect = [
+                subprocess.CalledProcessError(1, "docker run", stderr=b"port is already allocated"),
+                MagicMock(returncode=0), # rm -f
+                MagicMock(returncode=0), # retry run
+            ]
+            ok2, msg2 = docker_manager.create_docker_container("token", 8000, "model", 0.8, 16000)
+            self.assertTrue(ok2)
+            self.assertIn("retry", msg2)
+
+    @patch("rag_infra_manager.stop_rag_infrastructure")
+    def test_shutdown_and_cleanup_rag_infra_exception(self, mock_stop_infra):
+        mock_stop_infra.side_effect = Exception("Infra stop error")
+
+        with patch("docker_manager.get_docker_status", return_value="not_found"):
+            ok, msg = docker_manager.shutdown_docker_container()
+            self.assertIn("RAG Infra shutdown error", msg)
+
+        with patch.dict(os.environ, {"TESTING": "false"}):
+            with patch("subprocess.run"):
+                docker_manager.cleanup_docker()
+
+    def test_create_docker_container_invalid_param_coercions(self):
+        # Test non-numeric / negative parameters to hit lines 316-317, 323-325, 331-333
+        with patch("docker_manager.get_docker_status", return_value="not_found"):
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0)
+                ok, msg = docker_manager.create_docker_container(
+                    hf_token="token",
+                    port="invalid",
+                    model="model",
+                    gpu_mem="invalid_gpu",
+                    max_model_len="-500",
+                    tensor_parallel_size="invalid_tp"
+                )
+                self.assertTrue(ok)
+
+    @patch("subprocess.run")
+    def test_resolve_vllm_image_exception_fallback(self, mock_run):
+        # Hit lines 239-240 and 249-250 (exception during docker inspect)
+        mock_run.side_effect = Exception("Docker inspect exception")
+        with patch.dict(os.environ, {"OLMOCR_VLLM_IMAGE": "custom_img", "TESTING": "false"}):
+            img = docker_manager.resolve_vllm_image()
+            self.assertEqual(img, "vllm/vllm-openai:v0.20.0")
+
+    def test_get_cached_models_info(self):
+        # Hits lines 134-141
+        models, max_lens = docker_manager.get_cached_models_info()
+        self.assertIsInstance(models, list)
+        self.assertIsInstance(max_lens, dict)
+
+    @patch("rag_infra_manager.start_rag_infrastructure")
+    def test_start_docker_container_infra_exception(self, mock_start_infra):
+        # Hits lines 156-158
+        mock_start_infra.side_effect = Exception("Infra start failed")
+        with patch("docker_manager.get_docker_status", return_value="running"):
+            ok, msg = docker_manager.start_docker_container()
+            self.assertTrue(ok)
+            self.assertIn("RAG Infra error", msg)
+
+    @patch("docker_manager.get_docker_status")
+    def test_get_docker_status_str_unknown(self, mock_status):
+        # Hits line 78
+        mock_status.return_value = "unknown_status"
+        res = docker_manager.get_docker_status_str(8000)
+        self.assertEqual(res[0], "error")
+
+    @patch("subprocess.run")
+    def test_free_host_port_exception(self, mock_run):
+        # Hits lines 277-278
+        mock_run.side_effect = Exception("Port check failed")
+        with patch.dict(os.environ, {"TESTING": "false"}):
+            # Should handle exception silently
+            docker_manager.free_host_port(8000)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+

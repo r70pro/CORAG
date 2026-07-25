@@ -328,7 +328,9 @@ def index_all_runs_ui_wrapper(progress=gr.Progress()):
     if progress is not None:
         progress(0.0, desc="Starting bulk indexing...")
 
-    for update in rag_ui.index_all_runs(get_available_runs_fn=rag_ui.get_available_runs, force=True):
+    for update in rag_ui.index_all_runs(
+        get_available_runs_fn=rag_ui.get_available_runs, force=True
+    ):
         if not update.startswith("[PROGRESS:"):
             rag_ui.log_to_rag(update)
         accumulated_status += update

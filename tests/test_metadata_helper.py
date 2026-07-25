@@ -115,6 +115,65 @@ class TestMetadataHelper(unittest.TestCase):
             self.assertEqual(res["run1"]["dob"], "—")
             self.assertEqual(res["run1"]["injuries"], [])
 
+    @patch("rag.metadata_helper.get_connection")
+    def test_get_case_timeline(self, mock_get_conn):
+        from rag.metadata_helper import get_case_timeline
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_get_conn.return_value.__enter__.return_value = mock_conn
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+
+        # Mock rows: page_number, document_type, author, date_extracted, date_raw, text
+        mock_cur.fetchall.return_value = [
+            (1, "physio_notes", "Dr. Edwards", "2024-01-10", None, "Edwards treated patient reported right shoulder dislocation during accident. Ref No: 12345"),
+            (2, "specialist_letter", None, None, "15/02/2024", "Ek Borbas reviewed Abdomen strain evaluation. Claim No: ABC-99"),
+            (3, "imaging_scan", None, None, None, "10 Mar 2024 Camberwell SLAP tear and bankart lesion observed. Accession: ACC-777\n\nFull summary text goes here."),
+            (4, "operation_surg", None, None, None, "12/04/2024 De Villiers performed biceps tenodesis surgery."),
+            (5, "physio", "Camberwell", None, None, "15/05/2024 physiotherapy gym flexion exercises."),
+            (6, "other_doc", "Dr. Smith", None, None, "20/06/2024 General report summary."),
+            (7, "skip_doc", None, None, "1971-11-28", "Skip DOB matching text"),
+            (8, "empty_doc", None, None, None, "")
+        ]
+
+        events = get_case_timeline("run123")
+        self.assertGreater(len(events), 0)
+        dates = [e["date"] for e in events]
+        self.assertIn("2024-01-10", dates)
+        self.assertIn("15/02/2024", dates)
+
+        # Test empty return
+        mock_cur.fetchall.return_value = []
+        events_empty = get_case_timeline("run123")
+        self.assertEqual(events_empty, [])
+
+        # Test exception fallback
+        mock_get_conn.side_effect = Exception("DB error")
+        events_err = get_case_timeline("run123")
+        self.assertEqual(events_err, [])
+
+    @patch("rag.metadata_helper.get_connection")
+    def test_text_fallback_name_matching(self, mock_get_conn):
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_get_conn.return_value.__enter__.return_value = mock_conn
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+
+        mock_cur.fetchall.side_effect = [
+            [],  # No patient names in column
+            [
+                ("Re: Mr. Arthur Pendelton (Patient)\nDOB: 01.01.1980\n",),
+                ("Client Sarah Connor\nDOB: 02/02/1985\n",),
+                ("Patient: Michael Scott\nDOB: 03-03-1990\n",),
+                ("Bruce Wayne\nDate of Birth 04/04/1975\n",),
+            ]
+        ]
+
+        meta = get_case_metadata("run_text_names")
+        self.assertIn("Arthur Pendelton", meta["names"])
+
+
 
 if __name__ == "__main__":
     unittest.main()
+

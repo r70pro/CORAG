@@ -94,6 +94,33 @@ class TestRAGRetrieverAll(unittest.TestCase):
         self.assertEqual(res[0]["text"], "The patient has shoulder pain")
 
     @patch("rag.retriever.encode_query")
+    @patch("rag.retriever.get_qdrant_client")
+    @patch("rag.db.get_chunks_by_qdrant_ids")
+    @patch("rag.db.get_indexed_runs")
+    def test_search_similar_run_id_path_resolution(self, mock_runs, mock_db_chunks, mock_qdrant_client, mock_encode):
+        mock_encode.return_value = [0.1, 0.2]
+        mock_runs.return_value = [
+            {"run_id": "run_resolved_123", "run_dir": "/workspace/runs/run_resolved_123"}
+        ]
+        mock_client = mock_qdrant_client.return_value
+        mock_result = MagicMock()
+        mock_result.id = "point1"
+        mock_result.score = 0.9
+        mock_result.payload = None
+        mock_client.search.return_value = [mock_result]
+        mock_db_chunks.return_value = [
+            {"qdrant_point_id": "point1", "text": "path resolved chunk"}
+        ]
+
+        res = rag_ret.search_similar(
+            query="query",
+            run_id_filter="/workspace/runs/run_resolved_123 (3 files)"
+        )
+        self.assertEqual(len(res), 1)
+        self.assertEqual(res[0]["text"], "path resolved chunk")
+
+
+    @patch("rag.retriever.encode_query")
     def test_search_similar_exception(self, mock_encode):
         mock_encode.side_effect = Exception("Embed generation failed")
         

@@ -7,7 +7,7 @@ import json
 import shutil
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 # Prevent system operations during import
 os.environ["TESTING"] = "true"
@@ -248,7 +248,70 @@ class TestSettingsManager(unittest.TestCase):
                 settings = settings_manager.load_settings()
                 self.assertEqual(settings.get("hf_token"), "env_token_val")
 
+    def test_save_settings_analysis_model_copy(self):
+        with patch("settings_manager.SETTINGS_FILE", self.settings_file):
+            res = settings_manager.save_settings({"model_name": "custom/model-fp8"})
+            self.assertIn("saved successfully", res)
+            loaded = settings_manager.load_settings()
+            self.assertEqual(loaded.get("analysis_model_name"), "custom/model-fp8")
+
+    def test_load_settings_missing_analysis_model_fallback(self):
+        with patch("settings_manager.SETTINGS_FILE", self.settings_file):
+            with open(self.settings_file, "w") as f:
+                json.dump({"server_url": "http://localhost:8000/v1", "analysis_model_name": ""}, f)
+            s = settings_manager.load_settings()
+            self.assertEqual(s.get("analysis_model_name"), "allenai/olmOCR-2-7B-1025-FP8")
+
+    def test_delete_run_directory(self):
+        # Empty arg
+        self.assertFalse(settings_manager.delete_run_directory(""))
+
+        # Direct path
+        test_run_dir = os.path.join(self.tmp_dir, "test_run_direct")
+        os.makedirs(test_run_dir, exist_ok=True)
+        self.assertTrue(settings_manager.delete_run_directory(test_run_dir))
+        self.assertFalse(os.path.exists(test_run_dir))
+
+        # DB run_dir lookup
+        test_run_db = os.path.join(self.tmp_dir, "test_run_db")
+        os.makedirs(test_run_db, exist_ok=True)
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        mock_cur.fetchone.return_value = (test_run_db,)
+
+        with patch("rag.db.get_connection", return_value=MagicMock(__enter__=MagicMock(return_value=mock_conn))):
+            self.assertTrue(settings_manager.delete_run_directory("run_db_id"))
+            self.assertFalse(os.path.exists(test_run_db))
+
+        # Candidate workspace search
+        test_ws = os.path.join(self.tmp_dir, "ws_cand")
+        test_sub = os.path.join(test_ws, "run_cand_123")
+        os.makedirs(test_sub, exist_ok=True)
+        with patch.object(settings_manager, "WORKSPACE_DIR", test_ws):
+            self.assertTrue(settings_manager.delete_run_directory("run_cand_123"))
+
+    def test_get_available_runs_with_indexed_status(self):
+        ws_dir = os.path.join(self.tmp_dir, "workspace_test")
+        run_dir = os.path.join(ws_dir, "run_20240101_100000")
+        md_dir = os.path.join(run_dir, "markdown", "inputs")
+        os.makedirs(md_dir, exist_ok=True)
+        with open(os.path.join(md_dir, "doc.md"), "w") as f:
+            f.write("# Sample MD")
+
+        with patch("rag.db.is_run_indexed", return_value=True):
+            runs = settings_manager.get_available_runs(ws_dir)
+            self.assertEqual(len(runs), 1)
+            self.assertIn("✅", runs[0][0])
+            self.assertIn("[INDEXED]", runs[0][0])
+
+        with patch("rag.db.is_run_indexed", return_value=False):
+            runs2 = settings_manager.get_available_runs(ws_dir)
+            self.assertEqual(len(runs2), 1)
+            self.assertIn("📄", runs2[0][0])
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

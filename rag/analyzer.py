@@ -96,7 +96,9 @@ def _resolve_loaded_model(server_url: str, model_name: str):
     fallback = loaded_models[0]
     logger.warning(
         "Model '%s' not loaded in vLLM at %s. Falling back to '%s'.",
-        model_name, server_url, fallback,
+        model_name,
+        server_url,
+        fallback,
     )
     return fallback, True
 

@@ -116,7 +116,9 @@ def search_similar(
                         break
             except Exception:
                 pass
-        must_conditions.append(FieldCondition(key="run_id", match=MatchValue(value=resolved_run_id)))
+        must_conditions.append(
+            FieldCondition(key="run_id", match=MatchValue(value=resolved_run_id))
+        )
     if doc_id_filter:
         must_conditions.append(FieldCondition(key="doc_id", match=MatchValue(value=doc_id_filter)))
     date_from_norm = _normalize_iso_date(date_from) if date_from else None

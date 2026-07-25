@@ -109,6 +109,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={"detail": f"Internal Server Error: {str(exc)}"},
     )
 
+
 # ── Mount route modules ──────────────────────────────────────────────────────
 
 from api.routes import diagnostics, docker, documents, pipeline, rag, settings  # noqa: E402
@@ -167,19 +168,25 @@ def api_health():
             if isinstance(raw_services, dict):
                 for name, info in raw_services.items():
                     if isinstance(info, dict):
-                        services.append({
-                            "name": str(name),
-                            "is_up": bool(info.get("is_up", False)),
-                            "latency_ms": float(info.get("latency") or info.get("latency_ms") or 0.0),
-                            "extra_info": info.get("extra_info"),
-                        })
+                        services.append(
+                            {
+                                "name": str(name),
+                                "is_up": bool(info.get("is_up", False)),
+                                "latency_ms": float(
+                                    info.get("latency") or info.get("latency_ms") or 0.0
+                                ),
+                                "extra_info": info.get("extra_info"),
+                            }
+                        )
                     else:
-                        services.append({
-                            "name": str(name),
-                            "is_up": info == "healthy" or bool(info),
-                            "latency_ms": 0.0,
-                            "extra_info": str(info) if info is not None else None,
-                        })
+                        services.append(
+                            {
+                                "name": str(name),
+                                "is_up": info == "healthy" or bool(info),
+                                "latency_ms": 0.0,
+                                "extra_info": str(info) if info is not None else None,
+                            }
+                        )
             elif isinstance(raw_services, list):
                 services = raw_services
         elif isinstance(backing, list):
@@ -190,7 +197,11 @@ def api_health():
         vllm_progress = backing.get("vllm_progress") if isinstance(backing, dict) else None
         failed_services = backing.get("failed_services", []) if isinstance(backing, dict) else []
 
-        status_str = "healthy" if all_healthy else ("loading" if failed_services == ["vllm"] and vllm_progress else "degraded")
+        status_str = (
+            "healthy"
+            if all_healthy
+            else ("loading" if failed_services == ["vllm"] and vllm_progress else "degraded")
+        )
 
         return {
             "status": status_str,
@@ -244,20 +255,22 @@ def api_case_summary():
             elif latest:
                 date_range = f"... → {latest}"
 
-            indexed_cases.append({
-                "run_id": rid,
-                "display_name": client_name,
-                "client_name": client_name,
-                "dob": dob,
-                "injuries": injuries if injuries else ["No specific injury/diagnosis found"],
-                "documents_count": r.get("total_documents", 1),
-                "chunks_count": r.get("total_chunks", 0),
-                "authors_count": r.get("unique_authors", 0),
-                "date_range": date_range,
-                "created_at": str(r.get("created_at", "")),
-                "indexed_at": str(r.get("indexed_at", "")),
-                "timeline_events": get_case_timeline(rid),
-            })
+            indexed_cases.append(
+                {
+                    "run_id": rid,
+                    "display_name": client_name,
+                    "client_name": client_name,
+                    "dob": dob,
+                    "injuries": injuries if injuries else ["No specific injury/diagnosis found"],
+                    "documents_count": r.get("total_documents", 1),
+                    "chunks_count": r.get("total_chunks", 0),
+                    "authors_count": r.get("unique_authors", 0),
+                    "date_range": date_range,
+                    "created_at": str(r.get("created_at", "")),
+                    "indexed_at": str(r.get("indexed_at", "")),
+                    "timeline_events": get_case_timeline(rid),
+                }
+            )
 
         return {
             "stats": db_stats,
@@ -283,7 +296,6 @@ def api_case_timeline(run_id: str):
     except Exception as e:
         logger.error(f"Error in api_case_timeline: {e}")
         return {"run_id": run_id, "events": [], "error": str(e)}
-
 
 
 @app.get("/", tags=["Root"])

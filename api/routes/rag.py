@@ -48,8 +48,13 @@ def delete_cases(req: DeleteCasesRequest):
             from settings_manager import WORKSPACE_DIR, delete_run_directory
 
             delete_run_directory(run_id)
-            bundled_ws = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "workspace")
-            fallback_ws = os.path.join(os.path.expanduser("~"), ".local", "share", "kirag", "workspace")
+            bundled_ws = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                "workspace",
+            )
+            fallback_ws = os.path.join(
+                os.path.expanduser("~"), ".local", "share", "kirag", "workspace"
+            )
             for ws in [WORKSPACE_DIR, bundled_ws, fallback_ws]:
                 if ws and os.path.exists(ws):
                     try:
@@ -57,7 +62,11 @@ def delete_cases(req: DeleteCasesRequest):
                             target = os.path.join(ws, name)
                             if os.path.isdir(target):
                                 hashed_id = hashlib.sha256(target.encode()).hexdigest()[:16]
-                                if name == run_id or hashed_id == run_id or (name.startswith("run_") and run_id in name):
+                                if (
+                                    name == run_id
+                                    or hashed_id == run_id
+                                    or (name.startswith("run_") and run_id in name)
+                                ):
                                     shutil.rmtree(target, ignore_errors=True)
                     except Exception:
                         pass
@@ -67,8 +76,13 @@ def delete_cases(req: DeleteCasesRequest):
 
             from settings_manager import WORKSPACE_DIR
 
-            bundled_ws = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "workspace")
-            fallback_ws = os.path.join(os.path.expanduser("~"), ".local", "share", "kirag", "workspace")
+            bundled_ws = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                "workspace",
+            )
+            fallback_ws = os.path.join(
+                os.path.expanduser("~"), ".local", "share", "kirag", "workspace"
+            )
             for ws in [WORKSPACE_DIR, bundled_ws, fallback_ws]:
                 if ws and os.path.exists(ws):
                     try:
@@ -123,7 +137,9 @@ def delete_cases(req: DeleteCasesRequest):
             except Exception as e:
                 logger.warning(f"Collection wipe warning: {e}")
 
-            return MessageResponse(success=True, message=f"Deleted all {count} case(s) successfully.")
+            return MessageResponse(
+                success=True, message=f"Deleted all {count} case(s) successfully."
+            )
         elif req.run_ids:
             count = 0
             for rid in req.run_ids:
@@ -156,7 +172,6 @@ def delete_cases(req: DeleteCasesRequest):
             return MessageResponse(success=False, message="No run_ids provided to delete.")
     except Exception as e:
         return MessageResponse(success=False, message=f"Error deleting cases: {e}")
-
 
 
 # ── Embedding & Vector Store ──────────────────────────────────────────────────
