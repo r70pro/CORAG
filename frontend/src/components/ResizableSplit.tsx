@@ -33,26 +33,23 @@ export const ResizableSplit: React.FC<ResizableSplitProps> = ({
     return new Array(count).fill(0); // Allow full 0% collapse by default for max flexibility
   }, [count, minSizes]);
 
-  const [sizes, setSizes] = useState<number[]>(fallbackSizes);
-  const [isDragging, setIsDragging] = useState<number | null>(null);
-
-  useEffect(() => {
+  const [sizes, setSizes] = useState<number[]>(() => {
     if (storageKey && typeof window !== "undefined") {
       try {
         const saved = localStorage.getItem(`kirag_split_${storageKey}`);
         if (saved) {
           const parsed = JSON.parse(saved);
           if (Array.isArray(parsed) && parsed.length === count) {
-            setSizes(parsed);
-            return;
+            return parsed;
           }
         }
       } catch (e) {
         console.error("Error reading stored split sizes:", e);
       }
     }
-    setSizes(fallbackSizes);
-  }, [storageKey, count, fallbackSizes]);
+    return fallbackSizes;
+  });
+  const [isDragging, setIsDragging] = useState<number | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{
@@ -99,7 +96,7 @@ export const ResizableSplit: React.FC<ResizableSplitProps> = ({
     setIsDragging(index);
   };
 
-  const handleDoubleClick = (_index?: number) => {
+  const handleDoubleClick = () => {
     // Reset to default fallback sizes on double click
     const nextSizes = [...fallbackSizes];
     setSizes(nextSizes);
@@ -221,7 +218,7 @@ export const ResizableSplit: React.FC<ResizableSplitProps> = ({
                 title="Drag to resize. Double-click to reset panel sizes."
                 onMouseDown={(e) => handleMouseDown(i, e)}
                 onTouchStart={(e) => handleTouchStart(i, e)}
-                onDoubleClick={() => handleDoubleClick(i)}
+                onDoubleClick={handleDoubleClick}
                 className={`group relative z-20 flex items-center justify-center shrink-0 transition-colors select-none ${
                   isHoriz
                     ? "w-2.5 -mx-1 cursor-col-resize hover:w-3"

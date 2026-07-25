@@ -450,6 +450,44 @@ class TestSystemDiagnostics(unittest.TestCase):
         path = system_diagnostics.generate_diagnostic_report_file(8000)
         self.assertTrue(path.endswith("diagnostic_report.md"))
 
+    def test_format_bytes_human(self):
+        self.assertEqual(system_diagnostics.format_bytes_human(0), "0 B")
+        self.assertEqual(system_diagnostics.format_bytes_human(500), "500 B")
+        self.assertEqual(system_diagnostics.format_bytes_human(1024), "1.00 KB")
+        self.assertEqual(system_diagnostics.format_bytes_human(1048576), "1.00 MB")
+        self.assertEqual(system_diagnostics.format_bytes_human(1073741824), "1.00 GB")
+
+    @patch("settings_manager.load_settings")
+    def test_get_installed_models_data(self, mock_settings):
+        mock_settings.return_value = {"model_name": "allenai/olmOCR-2-7B-1025-FP8"}
+        res = system_diagnostics.get_installed_models_data()
+        self.assertIn("models", res)
+        self.assertIn("total_count", res)
+        self.assertIn("total_size_bytes", res)
+        self.assertIn("total_human_size", res)
+        self.assertIsInstance(res["models"], list)
+
+    @patch("shutil.rmtree")
+    @patch("settings_manager.load_settings")
+    def test_delete_installed_models(self, mock_settings, mock_rmtree):
+        mock_settings.return_value = {"model_name": "allenai/olmOCR-2-7B-1025-FP8"}
+        # 1. Empty model_ids
+        success, msg, deleted, reclaimed = system_diagnostics.delete_installed_models([])
+        self.assertFalse(success)
+        self.assertEqual(deleted, [])
+
+        # 2. Deleting active model (should skip)
+        success, msg, deleted, reclaimed = system_diagnostics.delete_installed_models(["allenai/olmOCR-2-7B-1025-FP8"])
+        self.assertFalse(success)
+        self.assertIn("Skipped", msg)
+        self.assertEqual(deleted, [])
+
+        # 3. Deleting non-existent model ID
+        success, msg, deleted, reclaimed = system_diagnostics.delete_installed_models(["nonexistent/model-12345"])
+        self.assertTrue(success)
+        self.assertEqual(deleted, [])
+
 
 if __name__ == "__main__":
     unittest.main()
+

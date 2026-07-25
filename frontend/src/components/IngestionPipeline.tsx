@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { triggerIngestSSE, stopPipelineRun, updateSettings } from "@/lib/api";
 import { ResizableSplit } from "@/components/ResizableSplit";
+import { ResizableBlock } from "@/components/ResizableBlock";
 
 export const IngestionPipeline: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
@@ -489,10 +490,16 @@ export const IngestionPipeline: React.FC = () => {
               </div>
 
               {/* Resizable System Output Log Viewer */}
-              <div className="glass-panel p-4 rounded-2xl border border-slate-800 flex flex-col h-full min-h-0 space-y-2">
-                <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5 shrink-0">
-                  <Cpu className="w-3.5 h-3.5 text-cyan-400" /> System Output Log
-                </h4>
+              <ResizableBlock
+                id="ingest_output_log"
+                defaultHeight={250}
+                className="glass-panel p-4 rounded-2xl border border-slate-800 flex flex-col h-full min-h-0 space-y-2"
+                title={
+                  <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5 shrink-0">
+                    <Cpu className="w-3.5 h-3.5 text-cyan-400" /> System Output Log
+                  </h4>
+                }
+              >
                 <div className="flex-1 min-h-0 bg-slate-950 p-3 rounded-xl border border-slate-800 text-[11px] font-mono text-slate-300 space-y-1 overflow-y-auto">
                   {logMessages.map((msg, i) => (
                     <div key={i} className="flex items-start gap-1.5">
@@ -501,7 +508,7 @@ export const IngestionPipeline: React.FC = () => {
                     </div>
                   ))}
                 </div>
-              </div>
+              </ResizableBlock>
             </ResizableSplit>
           </div>
         </ResizableSplit>

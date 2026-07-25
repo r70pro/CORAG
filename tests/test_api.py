@@ -121,6 +121,44 @@ class TestAPI(unittest.TestCase):
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
+    @patch("system_diagnostics.get_installed_models_data")
+    def test_diagnostics_models(self, mock_models):
+        mock_models.return_value = {
+            "models": [
+                {
+                    "id": "allenai/olmOCR-2-7B-1025-FP8",
+                    "name": "olmOCR-2-7B-1025-FP8",
+                    "folder": "models--allenai--olmOCR-2-7B-1025-FP8",
+                    "path": "/cache/models--allenai--olmOCR-2-7B-1025-FP8",
+                    "size_bytes": 1000000,
+                    "human_size": "1.00 MB",
+                    "context_length": 15360,
+                    "model_type": "Vision LLM",
+                    "is_active": True,
+                    "modified_at": "2026-07-25 12:00",
+                }
+            ],
+            "total_count": 1,
+            "total_size_bytes": 1000000,
+            "total_human_size": "1.00 MB",
+        }
+        response = self.client.get("/api/diagnostics/models")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["total_count"], 1)
+        self.assertEqual(data["models"][0]["id"], "allenai/olmOCR-2-7B-1025-FP8")
+
+    @patch("system_diagnostics.delete_installed_models")
+    def test_delete_diagnostics_models(self, mock_delete):
+        mock_delete.return_value = (True, "Successfully deleted 1 model(s).", ["old/model"], 5000)
+        response = self.client.request("DELETE", "/api/diagnostics/models", json={"model_ids": ["old/model"]})
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["deleted_models"], ["old/model"])
+
+
+
     # ── Docker ────────────────────────────────────────────────────────────────
 
     @patch("docker_manager.get_docker_status_str")

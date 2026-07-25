@@ -47,6 +47,18 @@ interface SidebarProps {
   onDensityChange?: (density: "comfortable" | "compact") => void;
 }
 
+const DEFAULT_MODEL_MAX_LENGTHS: Record<string, number> = {
+  "allenai/olmOCR-2-7B-1025-FP8": 131072,
+  "Qwen/Qwen3.6-35B-A3B": 262144,
+  "nvidia/Qwen3.6-35B-A3B-NVFP4": 262144,
+  "nvidia/Phi-4-reasoning-plus-NVFP4": 32768,
+  "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4": 1048576,
+  "nvidia/Llama-3.3-70B-Instruct-NVFP4": 131072,
+  "openai/gpt-oss-120b": 131072,
+  "google/gemma-4-31B-it": 262144,
+  "Qwen/Qwen2-VL-7B-Instruct": 32768,
+};
+
 export const Sidebar: React.FC<SidebarProps> = ({
   currentView,
   activeView,
@@ -71,12 +83,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
     "nvidia/Phi-4-reasoning-plus-NVFP4",
     "Qwen/Qwen2-VL-7B-Instruct",
   ]);
+  const [modelMaxLengths, setModelMaxLengths] = useState<Record<string, number>>(DEFAULT_MODEL_MAX_LENGTHS);
   const [dockerPort, setDockerPort] = useState<number>(8000);
   const [gpuMem, setGpuMem] = useState<number>(0.8);
   const [maxLen, setMaxLen] = useState<number>(15360);
   const [dockerStatus, setDockerStatus] = useState<string>("Checking...");
   const [dockerMsg, setDockerMsg] = useState<string>("");
   const [saveStatus, setSaveStatus] = useState<string>("");
+
+  const currentMaxBoundary = modelMaxLengths[dockerModel] || 131072;
+
+  const handleModelChange = (newModel: string) => {
+    setDockerModel(newModel);
+    const boundary = modelMaxLengths[newModel] || 131072;
+    if (maxLen > boundary) {
+      setMaxLen(boundary);
+    }
+  };
 
   const navItems = [
     { id: "ingestion", label: "📥 Ingestion Pipeline", icon: FileSpreadsheet },
@@ -94,8 +117,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
       setDockerMsg(statusRes.message || "");
     }
     const modelsRes = await fetchDockerModels();
-    if (modelsRes && modelsRes.models && modelsRes.models.length > 0) {
-      setAvailableModels((prev) => Array.from(new Set([...modelsRes.models, ...prev])));
+    if (modelsRes) {
+      if (modelsRes.models && modelsRes.models.length > 0) {
+        setAvailableModels((prev) => Array.from(new Set([...modelsRes.models, ...prev])));
+      }
+      if (modelsRes.max_lengths) {
+        setModelMaxLengths((prev) => ({ ...prev, ...modelsRes.max_lengths }));
+      }
     }
     const settings = await fetchSettings();
     if (settings) {
@@ -117,8 +145,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
         setDockerMsg(statusRes.message || "");
       }
       const modelsRes = await fetchDockerModels();
-      if (modelsRes && modelsRes.models && modelsRes.models.length > 0 && isMounted) {
-        setAvailableModels((prev) => Array.from(new Set([...modelsRes.models, ...prev])));
+      if (modelsRes && isMounted) {
+        if (modelsRes.models && modelsRes.models.length > 0) {
+          setAvailableModels((prev) => Array.from(new Set([...modelsRes.models, ...prev])));
+        }
+        if (modelsRes.max_lengths) {
+          setModelMaxLengths((prev) => ({ ...prev, ...modelsRes.max_lengths }));
+        }
       }
       const settings = await fetchSettings();
       if (!isMounted) return;
@@ -136,11 +169,33 @@ export const Sidebar: React.FC<SidebarProps> = ({
     };
   }, []);
 
+
+  const pollStatusUntilDone = (maxAttempts = 15) => {
+    let attempts = 0;
+    const interval = setInterval(async () => {
+      attempts++;
+      const statusRes = await fetchDockerStatus();
+      if (statusRes) {
+        setDockerStatus(statusRes.status || "Unknown");
+        setDockerMsg(statusRes.message || "");
+        if (
+          statusRes.status === "ready" ||
+          statusRes.status === "stopped" ||
+          statusRes.status === "error" ||
+          attempts >= maxAttempts
+        ) {
+          clearInterval(interval);
+        }
+      }
+    }, 2000);
+  };
+
   const handleStartDocker = async () => {
     setDockerMsg("Starting container...");
+    setDockerStatus("starting");
     const res = await startDockerContainer({});
     setDockerMsg(res.message || "Started");
-    await loadDockerState();
+    pollStatusUntilDone(15);
   };
 
   const handleStopDocker = async () => {
@@ -151,17 +206,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const handleRecreateDocker = async () => {
-    setDockerMsg("Recreating container...");
+    setDockerMsg("Recreating container & loading model...");
+    setDockerStatus("starting");
     const res = await createDockerContainer({
-      hf_token: (hfToken && hfToken !== "********") ? hfToken : undefined,
+      hf_token: hfToken && hfToken !== "********" ? hfToken : undefined,
       port: dockerPort,
       model: dockerModel,
       gpu_mem: gpuMem,
       max_model_len: maxLen,
     });
     setDockerMsg(res.message || "Recreated");
-    await loadDockerState();
+    if (res.success) {
+      pollStatusUntilDone(20);
+    } else {
+      await loadDockerState();
+    }
   };
+
 
   const handleShutdownDocker = async () => {
     setDockerMsg("Shutting down container...");
@@ -248,7 +309,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <label className="block text-slate-400 mb-0.5">Model Name</label>
                 <select
                   value={dockerModel}
-                  onChange={(e) => setDockerModel(e.target.value)}
+                  onChange={(e) => handleModelChange(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-[11px]"
                 >
                   {availableModels.map((m) => (
@@ -257,7 +318,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     </option>
                   ))}
                 </select>
-
               </div>
 
               <div>
@@ -289,18 +349,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div>
                 <div className="flex justify-between text-slate-400 mb-0.5">
                   <span>Max Content Length</span>
-                  <span className="font-mono text-indigo-300">{maxLen}</span>
+                  <span className="font-mono text-indigo-300">
+                    {Math.min(maxLen, currentMaxBoundary)}{" "}
+                    <span className="text-[9px] text-slate-500">(max {currentMaxBoundary.toLocaleString()})</span>
+                  </span>
                 </div>
                 <input
                   type="range"
                   min={2048}
-                  max={131072}
+                  max={currentMaxBoundary}
                   step={1024}
-                  value={maxLen}
+                  value={Math.min(maxLen, currentMaxBoundary)}
                   onChange={(e) => setMaxLen(Number(e.target.value))}
                   className="w-full accent-indigo-500 cursor-pointer"
                 />
               </div>
+
 
               <div className="grid grid-cols-2 gap-1.5 pt-1">
                 <button

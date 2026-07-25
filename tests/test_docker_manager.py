@@ -213,7 +213,7 @@ class TestDockerManager(unittest.TestCase):
         self.assertTrue(success)
         self.assertEqual(mock_run.call_count, 1)
         executed_cmd = mock_run.call_args[0][0]
-        self.assertIn("nvcr.io/nvidia/vllm:26.05-py3", executed_cmd)
+        self.assertIn(docker_manager.resolve_vllm_image(), executed_cmd)
         self.assertIn("--gpu-memory-utilization", executed_cmd)
         self.assertIn("--max-model-len", executed_cmd)
         self.assertIn("--tensor-parallel-size", executed_cmd)

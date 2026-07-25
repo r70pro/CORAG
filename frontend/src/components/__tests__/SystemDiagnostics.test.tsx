@@ -16,6 +16,8 @@ jest.mock("@/lib/api", () => ({
   stopDockerContainer: jest.fn().mockResolvedValue({ success: true }),
   createDockerContainer: jest.fn().mockResolvedValue({ success: true }),
   executeCleanup: jest.fn().mockResolvedValue({ success: true }),
+  fetchInstalledModels: jest.fn().mockResolvedValue({ models: [], total_count: 0, total_size_bytes: 0, total_human_size: "0 B" }),
+  deleteInstalledModels: jest.fn().mockResolvedValue({ success: true, message: "Deleted" }),
   API_BASE_URL: "http://127.0.0.1:8001",
 }));
 

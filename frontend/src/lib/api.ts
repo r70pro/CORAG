@@ -543,3 +543,64 @@ export async function updateSettings(payload: Record<string, unknown>) {
   }
 }
 
+export interface InstalledModelItem {
+  id: string;
+  name: string;
+  folder: string;
+  path: string;
+  cache_source?: string;
+  copyCount?: number;
+  size_bytes: number;
+  human_size: string;
+  context_length: number;
+  model_type: string;
+  is_active: boolean;
+  is_stub?: boolean;
+  modified_at: string;
+}
+
+export interface InstalledModelsResponse {
+  models: InstalledModelItem[];
+  total_count: number;
+  total_size_bytes: number;
+  total_human_size: string;
+}
+
+export async function fetchInstalledModels(): Promise<InstalledModelsResponse> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/diagnostics/models`);
+    if (!res.ok) {
+      return { models: [], total_count: 0, total_size_bytes: 0, total_human_size: "0 B" };
+    }
+    return await res.json();
+  } catch (err) {
+    console.error("Failed to fetch installed models:", err);
+    return { models: [], total_count: 0, total_size_bytes: 0, total_human_size: "0 B" };
+  }
+}
+
+export async function deleteInstalledModels(modelIds: string[]) {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/diagnostics/models`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model_ids: modelIds }),
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null);
+      const msg = errData?.detail || errData?.message || `HTTP ${res.status}: ${res.statusText}`;
+      return { success: false, message: msg, deleted_models: [], reclaimed_bytes: 0, reclaimed_str: "0 B" };
+    }
+    return await res.json();
+  } catch (err) {
+    return {
+      success: false,
+      message: `Network error connecting to API server at ${API_BASE_URL}: ${String(err)}`,
+      deleted_models: [],
+      reclaimed_bytes: 0,
+      reclaimed_str: "0 B",
+    };
+  }
+}
+
+

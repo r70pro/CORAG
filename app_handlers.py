@@ -230,3 +230,38 @@ def trigger_download_report(port_val):
         port_val = 8000
     report_path = generate_diagnostic_report_file(int(port_val))
     return gr.update(value=report_path, visible=True)
+
+
+def handle_get_installed_models_ui():
+    from system_diagnostics import get_installed_models_data
+
+    data = get_installed_models_data()
+    rows = []
+    deletable_choices = []
+    for m in data.get("models", []):
+        status_text = "ACTIVE" if m.get("is_active") else "Available"
+        rows.append([
+            m["id"],
+            m["model_type"],
+            f"{m['context_length']:,} tokens",
+            m["human_size"],
+            status_text,
+            m["modified_at"],
+        ])
+        if not m.get("is_active"):
+            deletable_choices.append(m["id"])
+    return rows, gr.update(choices=deletable_choices, value=None)
+
+
+def handle_delete_installed_model_ui(selected_model_id):
+    from system_diagnostics import delete_installed_models
+
+    if not selected_model_id:
+        rows, dropdown_update = handle_get_installed_models_ui()
+        return "⚠️ No model selected for deletion.", rows, dropdown_update
+
+    success, msg, deleted, reclaimed = delete_installed_models([selected_model_id])
+    rows, dropdown_update = handle_get_installed_models_ui()
+    status_msg = f"✓ {msg}" if success else f"❌ {msg}"
+    return status_msg, rows, dropdown_update
+

@@ -72,9 +72,11 @@ class DockerLogsResponse(BaseModel):
 
 
 class DockerModelsResponse(BaseModel):
-    """List of available / cached model names."""
+    """List of available / cached model names and their max content lengths."""
 
     models: list[str] = Field(default_factory=list, description="Available model identifiers")
+    max_lengths: dict[str, int] = Field(default_factory=dict, description="Max content length limits per model")
+
 
 
 
@@ -279,3 +281,46 @@ class CleanupResponse(BaseModel):
     message: str = ""
     reclaimed_bytes: int = 0
     reclaimed_str: str = ""
+
+
+class InstalledModelItem(BaseModel):
+    """Metadata for an installed / cached HuggingFace model."""
+
+    id: str = Field(..., description="HuggingFace model ID e.g. allenai/olmOCR-2-7B-1025-FP8")
+    name: str = Field(..., description="Short model name")
+    folder: str = Field(..., description="Cache directory name e.g. models--allenai--olmOCR-2-7B-1025-FP8")
+    path: str = Field(..., description="Absolute path on disk")
+    cache_source: str = Field("User HF Cache", description="Source location description e.g. KIRAG Workspace | User HF Cache | IQRAG Cache")
+    size_bytes: int = Field(..., description="Total size in bytes")
+    human_size: str = Field(..., description="Formatted size string e.g. 19.10 GB")
+    context_length: int = Field(..., description="Context window max token length")
+    model_type: str = Field("LLM", description="Vision LLM | LLM | Embedding | Reranker")
+    is_active: bool = Field(False, description="True if currently loaded in active container or settings")
+    is_stub: bool = Field(False, description="True if folder contains only reference stub files without real weight blobs")
+    modified_at: str = Field("", description="Last modified timestamp")
+
+
+class InstalledModelsResponse(BaseModel):
+    """List of all installed models with summary disk metrics."""
+
+    models: list[InstalledModelItem] = Field(default_factory=list)
+    total_count: int = 0
+    total_size_bytes: int = 0
+    total_human_size: str = "0 B"
+
+
+class DeleteModelsRequest(BaseModel):
+    """Payload to delete selected cached models."""
+
+    model_ids: list[str] = Field(..., description="List of model IDs or folder names to remove")
+
+
+class DeleteModelsResponse(BaseModel):
+    """Response from model deletion operation."""
+
+    success: bool = True
+    message: str = ""
+    deleted_models: list[str] = Field(default_factory=list)
+    reclaimed_bytes: int = 0
+    reclaimed_str: str = "0 B"
+

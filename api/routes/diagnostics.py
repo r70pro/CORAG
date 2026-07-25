@@ -4,12 +4,27 @@ System diagnostics API routes.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter
 from fastapi.responses import FileResponse
 
-from api.models import CleanupRequest, CleanupResponse, GPUInfo, HealthResponse, ServiceHealth
+from api.models import (
+    CleanupRequest,
+    CleanupResponse,
+    DeleteModelsRequest,
+    DeleteModelsResponse,
+    GPUInfo,
+    HealthResponse,
+    InstalledModelItem,
+    InstalledModelsResponse,
+    ServiceHealth,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
 
 
 @router.get("/health", response_model=HealthResponse, summary="Full health check")
@@ -122,3 +137,53 @@ def execute_cleanup(req: CleanupRequest):
         reclaimed_bytes=0,
         reclaimed_str="",
     )
+
+
+@router.get("/models", response_model=InstalledModelsResponse, summary="Get all installed/cached models")
+def get_installed_models():
+    """Return detailed metadata and disk space usage for all installed/cached models."""
+    try:
+        from system_diagnostics import get_installed_models_data
+
+        data = get_installed_models_data()
+        models = [InstalledModelItem(**m) for m in data.get("models", [])]
+        return InstalledModelsResponse(
+            models=models,
+            total_count=data.get("total_count", len(models)),
+            total_size_bytes=data.get("total_size_bytes", 0),
+            total_human_size=data.get("total_human_size", "0 B"),
+        )
+    except Exception as e:
+        logger.error(f"Error fetching installed models: {e}")
+        return InstalledModelsResponse(
+            models=[],
+            total_count=0,
+            total_size_bytes=0,
+            total_human_size="0 B",
+        )
+
+
+@router.delete("/models", response_model=DeleteModelsResponse, summary="Delete selected installed models")
+def delete_models(req: DeleteModelsRequest):
+    """Delete selected cached model directories from disk to reclaim storage space."""
+    try:
+        from system_diagnostics import delete_installed_models, format_bytes_human
+
+        success, msg, deleted, reclaimed = delete_installed_models(req.model_ids)
+        return DeleteModelsResponse(
+            success=success,
+            message=msg,
+            deleted_models=deleted,
+            reclaimed_bytes=reclaimed,
+            reclaimed_str=format_bytes_human(reclaimed),
+        )
+    except Exception as e:
+        logger.error(f"Error deleting installed models: {e}")
+        return DeleteModelsResponse(
+            success=False,
+            message=f"Failed to delete models: {str(e)}",
+            deleted_models=[],
+            reclaimed_bytes=0,
+            reclaimed_str="0 B",
+        )
+

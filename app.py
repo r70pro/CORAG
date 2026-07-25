@@ -10,6 +10,8 @@ from app_handlers import (
     get_gpu_metrics,  # noqa: F401
     go_next_page,
     go_prev_page,
+    handle_delete_installed_model_ui,
+    handle_get_installed_models_ui,
     periodic_diagnostics_check,
     periodic_status_check,
     select_view,
@@ -543,6 +545,26 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                                 value="Loading hardware utilization..."
                             )
 
+                with gr.Row():
+                    with gr.Column(elem_classes=["glass-panel"]):
+                        gr.HTML(
+                            "<h3 class='inline-section-header'>📦 Installed Models & Local Disk Storage</h3>"
+                        )
+                        installed_models_df = gr.Dataframe(
+                            headers=["Model ID", "Category", "Context Window", "Disk Size", "Status", "Last Modified"],
+                            datatype=["str", "str", "str", "str", "str", "str"],
+                            col_count=(6, "fixed"),
+                            interactive=False,
+                        )
+                        with gr.Row():
+                            delete_model_dropdown = gr.Dropdown(
+                                label="Select Installed Model to Delete",
+                                choices=[],
+                                interactive=True,
+                            )
+                            delete_model_btn = gr.Button("🗑️ Delete Selected Model Cache", variant="stop")
+                        delete_model_status = gr.Markdown()
+
     # Extra hidden buttons for backwards compatibility / test suite (since tests patch header buttons)
     with gr.Row(visible=False):
         header_docker_start_btn = gr.Button("Start", visible=False)
@@ -584,7 +606,10 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
     rag_chat_btn.click(lambda: select_view(4), outputs=nav_outputs).then(
         chat_components["refresh_fn"], outputs=[chat_components["active_case_selector"]]
     )
-    diagnostics_btn.click(lambda: select_view(5), outputs=nav_outputs)
+    diagnostics_btn.click(lambda: select_view(5), outputs=nav_outputs).then(
+        handle_get_installed_models_ui,
+        outputs=[installed_models_df, delete_model_dropdown],
+    )
 
     # Comfortable vs Compact Layout spacing handlers
     btn_comfortable.click(
@@ -827,10 +852,26 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
 
     demo.load(periodic_status_check, inputs=[docker_port_input], outputs=[backend_status_badge])
 
+    refresh_diag_btn.click(
+        handle_get_installed_models_ui,
+        outputs=[installed_models_df, delete_model_dropdown],
+    )
+
+    delete_model_btn.click(
+        handle_delete_installed_model_ui,
+        inputs=[delete_model_dropdown],
+        outputs=[delete_model_status, installed_models_df, delete_model_dropdown],
+    )
+
     demo.load(
         periodic_diagnostics_check,
         inputs=[docker_port_input],
         outputs=[backing_services_html, hardware_utilization_html, system_health_badge],
+    )
+
+    demo.load(
+        handle_get_installed_models_ui,
+        outputs=[installed_models_df, delete_model_dropdown],
     )
 
     import os

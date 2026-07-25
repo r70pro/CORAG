@@ -24,6 +24,7 @@ import {
   uploadMarkdownFiles,
 } from "@/lib/api";
 import { ResizableSplit } from "@/components/ResizableSplit";
+import { ResizableBlock } from "@/components/ResizableBlock";
 
 interface EmbeddingTelemetry {
   active_device: string;
@@ -440,11 +441,16 @@ export const EmbeddingPipeline: React.FC = () => {
           </div>
 
           {/* Bottom Resizable Batch Indexing Operations & Real-Time Console Panel */}
-          <div className="glass-panel p-4 rounded-2xl border border-slate-800 flex flex-col h-full min-h-0 space-y-3 relative z-10">
-            <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2 shrink-0">
-              <Terminal className="w-4 h-4 text-cyan-400 pointer-events-none" /> Batch Indexing Operations & Real-Time Console
-            </h3>
-
+          <ResizableBlock
+            id="embed_console"
+            defaultHeight={280}
+            className="glass-panel p-4 rounded-2xl border border-slate-800 flex flex-col h-full min-h-0 space-y-3 relative z-10"
+            title={
+              <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2 shrink-0">
+                <Terminal className="w-4 h-4 text-cyan-400 pointer-events-none" /> Batch Indexing Operations & Real-Time Console
+              </h3>
+            }
+          >
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-1 min-h-0">
               <div className="space-y-3 text-xs flex flex-col justify-center">
                 <div>
@@ -491,7 +497,7 @@ export const EmbeddingPipeline: React.FC = () => {
                 ))}
               </div>
             </div>
-          </div>
+          </ResizableBlock>
         </ResizableSplit>
       </div>
     </div>

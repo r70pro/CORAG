@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import socket
@@ -6,6 +7,8 @@ import time
 from typing import Any
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 def get_service_latency(
@@ -573,3 +576,252 @@ def generate_diagnostic_report_file(port_val: int = 8000) -> str:
         f.write("\n".join(report))
 
     return report_path
+
+
+def format_bytes_human(num_bytes: int) -> str:
+    """Format byte count into human-readable string (e.g. 19.1 GB, 450 MB)."""
+    if num_bytes <= 0:
+        return "0 B"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    i = 0
+    size = float(num_bytes)
+    while size >= 1024.0 and i < len(units) - 1:
+        size /= 1024.0
+        i += 1
+    if i == 0:
+        return f"{int(size)} B"
+    return f"{size:.2f} {units[i]}"
+
+
+def get_installed_models_data() -> dict[str, Any]:
+    """
+    Scan all HuggingFace cache locations for installed models, computing total disk size,
+    context lengths, model categories, and active status.
+    """
+    import json
+
+    from settings_manager import MODEL_MAX_CONTENT_LENGTHS, load_settings
+
+    settings = load_settings()
+    active_models = {
+        settings.get("model_name", ""),
+        settings.get("analysis_model_name", ""),
+        settings.get("embedding_model", ""),
+        settings.get("reranker_model", ""),
+    }
+    active_models.discard("")
+
+    cache_dirs = []
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        cache_dirs.append(os.path.join(hf_home, "hub"))
+
+    home_dir = os.path.expanduser("~")
+    cache_dirs.extend([
+        os.path.join(home_dir, ".cache", "huggingface", "hub"),
+        "/home/owner/KIRAG/workspace/huggingface/hub",
+        "/home/owner/IQRAG/.hf_cache/hub",
+    ])
+
+    models_list = []
+    visited_paths = set()
+    total_size_bytes = 0
+    seen_real_files = set()
+
+    for raw_c_dir in cache_dirs:
+        if not raw_c_dir:
+            continue
+        c_dir = os.path.realpath(raw_c_dir)
+        if c_dir in visited_paths or not os.path.exists(c_dir) or not os.path.isdir(c_dir):
+            continue
+        visited_paths.add(c_dir)
+
+        # Determine cache source label
+        if "workspace" in c_dir:
+            cache_source = "KIRAG Workspace"
+        elif "IQRAG" in c_dir:
+            cache_source = "IQRAG Cache"
+        else:
+            cache_source = "User HF Cache"
+
+        try:
+            for item in os.listdir(c_dir):
+                if item.startswith("models--"):
+                    model_path = os.path.join(c_dir, item)
+                    if not os.path.isdir(model_path):
+                        continue
+
+                    parts = item[len("models--"):].split("--", 1)
+                    if len(parts) == 2:
+                        model_id = f"{parts[0]}/{parts[1]}"
+                    else:
+                        model_id = item[len("models--"):]
+
+                    # Calculate model folder size on disk (avoid double counting symlinks)
+                    size_bytes = 0
+                    modified_timestamp = 0
+                    has_real_blobs = False
+
+                    try:
+                        for root, _, files in os.walk(model_path):
+                            for f in files:
+                                fp = os.path.join(root, f)
+                                try:
+                                    real_fp = os.path.realpath(fp)
+                                    st = os.stat(fp, follow_symlinks=False)
+                                    file_size = st.st_size
+                                    if not os.path.islink(fp):
+                                        size_bytes += file_size
+                                        if file_size > 1048576:  # > 1 MB weight blob
+                                            has_real_blobs = True
+                                    if real_fp not in seen_real_files:
+                                        seen_real_files.add(real_fp)
+                                        if not os.path.islink(fp):
+                                            total_size_bytes += file_size
+
+                                    if st.st_mtime > modified_timestamp:
+                                        modified_timestamp = st.st_mtime
+                                except Exception:
+                                    pass
+                    except Exception as e:
+                        logger.warning(f"Error calculating size for {model_path}: {e}")
+
+                    # Determine context length
+                    context_len = MODEL_MAX_CONTENT_LENGTHS.get(model_id)
+                    if not context_len:
+                        # Try reading from config.json in snapshot directory
+                        try:
+                            snapshots_dir = os.path.join(model_path, "snapshots")
+                            if os.path.exists(snapshots_dir):
+                                for s in os.listdir(snapshots_dir):
+                                    cfg_path = os.path.join(snapshots_dir, s, "config.json")
+                                    if os.path.exists(cfg_path):
+                                        with open(cfg_path, encoding="utf-8") as cf:
+                                            cfg_data = json.load(cf)
+                                            context_len = (
+                                                cfg_data.get("max_position_embeddings")
+                                                or cfg_data.get("seq_length")
+                                                or cfg_data.get("max_sequence_length")
+                                            )
+                                            if context_len:
+                                                break
+                        except Exception:
+                            pass
+                    if not context_len:
+                        context_len = 131072 if "35B" in model_id or "70B" in model_id else 8192
+
+                    # Determine model category/type
+                    lower_id = model_id.lower()
+                    if "reranker" in lower_id:
+                        model_type = "Reranker"
+                    elif any(kw in lower_id for kw in ["bge-", "embedding", "minilm"]):
+                        model_type = "Embedding"
+                    elif any(kw in lower_id for kw in ["olmocr", "vision", "-vl", "gemma-4"]):
+                        model_type = "Vision LLM"
+                    else:
+                        model_type = "LLM"
+
+                    is_stub = size_bytes < 1048576 and not has_real_blobs
+                    mod_time_str = (
+                        time.strftime("%Y-%m-%d %H:%M", time.localtime(modified_timestamp))
+                        if modified_timestamp > 0
+                        else "N/A"
+                    )
+
+                    # Format human size with stub/empty status if incomplete
+                    formatted_size = format_bytes_human(size_bytes)
+                    if is_stub:
+                        formatted_size = f"{formatted_size} (Stub/Empty)"
+
+                    models_list.append({
+                        "id": model_id,
+                        "name": parts[1] if len(parts) == 2 else model_id,
+                        "folder": item,
+                        "path": model_path,
+                        "cache_source": cache_source,
+                        "size_bytes": size_bytes,
+                        "human_size": formatted_size,
+                        "context_length": int(context_len),
+                        "model_type": model_type,
+                        "is_active": False,  # Evaluated post-sort below for primary non-stub model
+                        "is_stub": is_stub,
+                        "modified_at": mod_time_str,
+                    })
+        except Exception as e:
+            logger.error(f"Error scanning models in cache directory {c_dir}: {e}")
+
+    # Sort models by size descending so complete models rank higher than stubs
+    models_list.sort(key=lambda x: x["size_bytes"], reverse=True)
+
+    # Assign is_active only to the primary non-stub installation for each active model ID
+    active_marked = set()
+    for m in models_list:
+        if m["id"] in active_models and not m["is_stub"] and m["id"] not in active_marked:
+            m["is_active"] = True
+            active_marked.add(m["id"])
+
+    return {
+        "models": models_list,
+        "total_count": len(models_list),
+        "total_size_bytes": total_size_bytes,
+        "total_human_size": format_bytes_human(total_size_bytes),
+    }
+
+
+def delete_installed_models(model_ids: list[str]) -> tuple[bool, str, list[str], int]:
+    """
+    Delete selected model directories from HuggingFace cache.
+    Returns (success, message, list of deleted model IDs, reclaimed bytes).
+    """
+    import shutil
+
+    if not model_ids:
+        return False, "No models specified for deletion.", [], 0
+
+    data = get_installed_models_data()
+
+    deleted_models = []
+    skipped_active = []
+    reclaimed_bytes = 0
+
+    for m_id in model_ids:
+        target_info = None
+        # Match by exact path first, then folder, ID, or partial name
+        for m in data["models"]:
+            if m["path"] == m_id or m["folder"] == m_id or m["id"] == m_id or m["name"] == m_id:
+                target_info = m
+                break
+
+        if not target_info:
+            continue
+
+        model_key = target_info["id"]
+        if target_info.get("is_active"):
+            skipped_active.append(model_key)
+            continue
+
+        m_path = target_info["path"]
+        if os.path.exists(m_path) or os.path.islink(m_path):
+            try:
+                if os.path.islink(m_path) or os.path.isfile(m_path):
+                    os.unlink(m_path)
+                elif os.path.isdir(m_path):
+                    shutil.rmtree(m_path)
+                deleted_models.append(model_key)
+                reclaimed_bytes += target_info["size_bytes"]
+                logger.info(f"Successfully deleted cached model path: {m_path}")
+            except Exception as e:
+                logger.error(f"Error removing model path {m_path}: {e}")
+
+    reclaimed_str = format_bytes_human(reclaimed_bytes)
+    msg_parts = []
+    if deleted_models:
+        msg_parts.append(f"Successfully deleted {len(deleted_models)} model(s) ({reclaimed_str} reclaimed).")
+    if skipped_active:
+        msg_parts.append(f"Skipped {len(skipped_active)} active model(s) ({', '.join(skipped_active)}).")
+
+    if not deleted_models and skipped_active:
+        return False, " ".join(msg_parts), [], 0
+
+    return True, " ".join(msg_parts) if msg_parts else "No models were deleted.", deleted_models, reclaimed_bytes
+

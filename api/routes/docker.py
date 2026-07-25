@@ -4,6 +4,8 @@ Docker container management API routes.
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter
 
 from api.models import (
@@ -19,11 +21,12 @@ router = APIRouter()
 
 @router.get("/models", response_model=DockerModelsResponse, summary="Get available/cached models")
 def get_models():
-    """Return list of cached and default preset model names."""
-    from docker_manager import get_cached_models
+    """Return list of cached and default preset model names with max context lengths."""
+    from docker_manager import get_cached_models_info
 
-    models = get_cached_models()
-    return DockerModelsResponse(models=models)
+    models, max_lengths = get_cached_models_info()
+    return DockerModelsResponse(models=models, max_lengths=max_lengths)
+
 
 
 @router.get("/status", response_model=DockerStatusResponse, summary="Get container status")
@@ -60,25 +63,25 @@ def get_logs(tail: int = 200):
 
 
 @router.post("/start", response_model=MessageResponse, summary="Start container")
-def start_container():
+async def start_container():
     """Start the existing vLLM inference container."""
     from docker_manager import start_docker_container
 
-    success, msg = start_docker_container()
+    success, msg = await asyncio.to_thread(start_docker_container)
     return MessageResponse(success=success, message=msg)
 
 
 @router.post("/stop", response_model=MessageResponse, summary="Stop container")
-def stop_container():
+async def stop_container():
     """Stop the running vLLM inference container."""
     from docker_manager import stop_docker_container
 
-    success, msg = stop_docker_container()
+    success, msg = await asyncio.to_thread(stop_docker_container)
     return MessageResponse(success=success, message=msg)
 
 
 @router.post("/create", response_model=MessageResponse, summary="Create/recreate container")
-def create_container(req: DockerCreateRequest):
+async def create_container(req: DockerCreateRequest):
     """Create or recreate the vLLM inference container with the given parameters."""
     import os
 
@@ -101,7 +104,8 @@ def create_container(req: DockerCreateRequest):
     max_model_len = req.max_model_len if req.max_model_len else settings.get("docker_max_model_len", 15360)
     tensor_parallel_size = req.tensor_parallel_size if req.tensor_parallel_size else settings.get("docker_tensor_parallel", 1)
 
-    success, msg = create_docker_container(
+    success, msg = await asyncio.to_thread(
+        create_docker_container,
         hf_token, port, model, gpu_mem, max_model_len, tensor_parallel_size
     )
     # Persist the new settings
@@ -122,10 +126,11 @@ def create_container(req: DockerCreateRequest):
 
 
 @router.post("/shutdown", response_model=MessageResponse, summary="Shutdown and remove")
-def shutdown_container():
+async def shutdown_container():
     """Stop and remove the vLLM inference container."""
     from docker_manager import shutdown_docker_container
 
-    success, msg = shutdown_docker_container()
+    success, msg = await asyncio.to_thread(shutdown_docker_container)
     return MessageResponse(success=success, message=msg)
+
 

@@ -10,6 +10,9 @@ import {
   HardDrive,
   Copy,
   Check,
+  Box,
+  Search,
+  AlertTriangle,
 } from "lucide-react";
 import {
   fetchSystemHealth,
@@ -19,9 +22,13 @@ import {
   stopDockerContainer,
   createDockerContainer,
   executeCleanup,
+  fetchInstalledModels,
+  deleteInstalledModels,
+  InstalledModelItem,
   API_BASE_URL,
 } from "@/lib/api";
 import { ResizableSplit } from "@/components/ResizableSplit";
+import { ResizableBlock } from "@/components/ResizableBlock";
 
 interface ServiceStatus {
   name: string;
@@ -112,6 +119,87 @@ export const SystemDiagnostics: React.FC = () => {
   const [cleanPycache, setCleanPycache] = useState<boolean>(true);
   const [cleanHf, setCleanHf] = useState<boolean>(false);
   const [cleanupStatus, setCleanupStatus] = useState<string>("");
+
+  // Installed Models Management state
+  const [installedModels, setInstalledModels] = useState<InstalledModelItem[]>([]);
+  const [totalModelsSize, setTotalModelsSize] = useState<string>("0 B");
+  const [modelsLoading, setModelsLoading] = useState<boolean>(false);
+  const [selectedModelKeys, setSelectedModelKeys] = useState<string[]>([]);
+  const [modelSearchQuery, setModelSearchQuery] = useState<string>("");
+  const [modelTypeFilter, setModelTypeFilter] = useState<string>("ALL");
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState<boolean>(false);
+  const [isDeletingModels, setIsDeletingModels] = useState<boolean>(false);
+  const [modelActionMessage, setModelActionMessage] = useState<string>("");
+  const [deduplicateModels, setDeduplicateModels] = useState<boolean>(false);
+
+  const loadInstalledModelsList = useCallback(async () => {
+    setModelsLoading(true);
+    try {
+      const res = await fetchInstalledModels();
+      if (res && Array.isArray(res.models)) {
+        setInstalledModels(res.models);
+        setTotalModelsSize(res.total_human_size || "0 B");
+      }
+    } catch (err) {
+      console.error("Error loading installed models:", err);
+    } finally {
+      setModelsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const initModels = async () => {
+      if (mounted) {
+        await loadInstalledModelsList();
+      }
+    };
+    initModels();
+    return () => {
+      mounted = false;
+    };
+  }, [loadInstalledModelsList]);
+
+  const toggleSelectModel = (key: string) => {
+    setSelectedModelKeys((prev) =>
+      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
+    );
+  };
+
+  const toggleSelectAllModels = (filtered: InstalledModelItem[]) => {
+    const selectableKeys = filtered.filter((m) => !m.is_active).map((m) => m.path || m.id);
+    if (selectedModelKeys.length === selectableKeys.length && selectableKeys.length > 0) {
+      setSelectedModelKeys([]);
+    } else {
+      setSelectedModelKeys(selectableKeys);
+    }
+  };
+
+  const handleConfirmDeleteModels = async () => {
+    if (selectedModelKeys.length === 0) return;
+    setIsDeletingModels(true);
+    const count = selectedModelKeys.length;
+    addLogMessage(`[${new Date().toLocaleTimeString()}] Requesting deletion of ${count} installed model(s)...`);
+    try {
+      const res = await deleteInstalledModels(selectedModelKeys);
+      if (res && res.success) {
+        addLogMessage(`[${new Date().toLocaleTimeString()}] Delete models success: ${res.message}`);
+        setModelActionMessage(`✓ ${res.message}`);
+        setSelectedModelKeys([]);
+        setDeleteConfirmOpen(false);
+        await loadInstalledModelsList();
+      } else {
+        const errMsg = res?.message || "Failed to delete selected models.";
+        addLogMessage(`[${new Date().toLocaleTimeString()}] [ERROR] Delete models failed: ${errMsg}`);
+        setModelActionMessage(`❌ ${errMsg}`);
+      }
+    } catch (err) {
+      addLogMessage(`[${new Date().toLocaleTimeString()}] [ERROR] Delete models error: ${String(err)}`);
+      setModelActionMessage(`❌ Error: ${String(err)}`);
+    } finally {
+      setIsDeletingModels(false);
+    }
+  };
 
   // Diagnostic Log console
   const [logMessages, setLogMessages] = useState<string[]>([
@@ -592,11 +680,333 @@ export const SystemDiagnostics: React.FC = () => {
                 </div>
               </div>
             </div>
+
+            {/* Installed Models & Local Disk Storage Manager Card */}
+            {(() => {
+              // Deduplication logic if enabled
+              let displayModels = installedModels;
+              if (deduplicateModels) {
+                const uniqueMap = new Map<string, InstalledModelItem & { copyCount: number; paths: string[] }>();
+                for (const m of installedModels) {
+                  const existing = uniqueMap.get(m.id);
+                  if (!existing) {
+                    uniqueMap.set(m.id, { ...m, copyCount: 1, paths: [m.path] });
+                  } else {
+                    existing.copyCount += 1;
+                    existing.paths.push(m.path);
+                    existing.size_bytes = Math.max(existing.size_bytes, m.size_bytes);
+                    if (m.is_active) existing.is_active = true;
+                    if (!m.is_stub) existing.is_stub = false;
+                  }
+                }
+                displayModels = Array.from(uniqueMap.values());
+              }
+
+              const filteredModels = displayModels.filter((m) => {
+                const matchesSearch =
+                  !modelSearchQuery ||
+                  m.id.toLowerCase().includes(modelSearchQuery.toLowerCase()) ||
+                  m.name.toLowerCase().includes(modelSearchQuery.toLowerCase()) ||
+                  m.path.toLowerCase().includes(modelSearchQuery.toLowerCase());
+                const matchesType =
+                  modelTypeFilter === "ALL" ||
+                  m.model_type.toLowerCase() === modelTypeFilter.toLowerCase();
+                return matchesSearch && matchesType;
+              });
+
+              const selectableKeys = filteredModels
+                .filter((m) => !m.is_active)
+                .map((m) => m.path || m.id);
+
+              return (
+                <ResizableBlock
+                  id="diag_installed_models"
+                  defaultHeight={420}
+                  className="glass-panel p-4 rounded-2xl space-y-4 border border-slate-800 relative z-10"
+                  headerActions={
+                    <div className="flex items-center gap-2">
+                      {selectedModelKeys.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setDeleteConfirmOpen(true)}
+                          className="px-3 py-1 rounded-xl bg-rose-950/80 hover:bg-rose-900 text-rose-200 text-xs font-bold flex items-center gap-1.5 border border-rose-800/80 shadow-md cursor-pointer transition-all"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                          Delete Selected ({selectedModelKeys.length})
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={loadInstalledModelsList}
+                        disabled={modelsLoading}
+                        className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 text-xs flex items-center gap-1 cursor-pointer transition-all disabled:opacity-50"
+                        title="Refresh Installed Models List"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${modelsLoading ? "animate-spin" : ""}`} />
+                      </button>
+                    </div>
+                  }
+                  title={
+                    <div className="flex flex-wrap items-center space-x-2">
+                      <Box className="w-4 h-4 text-cyan-400" />
+                      <h3 className="text-sm font-bold text-slate-100">
+                        Installed Models & Local Disk Storage
+                      </h3>
+                      <span className="text-xs font-mono px-2.5 py-0.5 rounded-full bg-slate-900 text-cyan-300 border border-slate-800 font-semibold">
+                        {installedModels.length} Cache Folders ({totalModelsSize})
+                      </span>
+                    </div>
+                  }
+                >
+
+                  {/* Filter, Search & Deduplication Bar */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center space-x-2 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 flex-1 max-w-md">
+                      <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <input
+                        type="text"
+                        placeholder="Filter installed models by name, ID, path, or location..."
+                        value={modelSearchQuery}
+                        onChange={(e) => setModelSearchQuery(e.target.value)}
+                        className="bg-transparent text-slate-100 placeholder-slate-500 text-xs focus:outline-none w-full"
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      {/* Deduplicate Models Toggle */}
+                      <label className="flex items-center space-x-1.5 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800 text-[11px] font-medium text-slate-300 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={deduplicateModels}
+                          onChange={(e) => setDeduplicateModels(e.target.checked)}
+                          className="accent-indigo-500 rounded cursor-pointer"
+                        />
+                        <span>Group Unique Models</span>
+                      </label>
+
+                      <div className="flex flex-wrap items-center gap-1">
+                        {["ALL", "Vision LLM", "LLM", "Embedding", "Reranker"].map((cat) => (
+                          <button
+                            key={cat}
+                            type="button"
+                            onClick={() => setModelTypeFilter(cat)}
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                              modelTypeFilter === cat
+                                ? "bg-indigo-600 text-white shadow-sm"
+                                : "bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800"
+                            }`}
+                          >
+                            {cat}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Models Table with Resizable Container */}
+                  <div className="bg-slate-950 rounded-xl border border-slate-800 overflow-hidden flex-1 flex flex-col min-h-0">
+                    <div className="overflow-x-auto overflow-y-auto flex-1 min-h-0">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-900 text-slate-400 border-b border-slate-800 font-semibold sticky top-0 z-10">
+                          <tr>
+                            <th className="p-2.5 w-10 text-center">
+                              <input
+                                type="checkbox"
+                                checked={
+                                  selectableKeys.length > 0 &&
+                                  selectableKeys.every((k) => selectedModelKeys.includes(k))
+                                }
+                                onChange={() => toggleSelectAllModels(filteredModels)}
+                                className="accent-indigo-500 rounded cursor-pointer"
+                                title="Select All non-active models"
+                              />
+                            </th>
+                            <th className="p-2.5">Model Name & ID</th>
+                            <th className="p-2.5">Cache Location / Source</th>
+                            <th className="p-2.5">Type</th>
+                            <th className="p-2.5">Context Window</th>
+                            <th className="p-2.5">Disk Size</th>
+                            <th className="p-2.5">Last Modified</th>
+                            <th className="p-2.5 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60 text-slate-200">
+                          {filteredModels.length > 0 ? (
+                            filteredModels.map((m: InstalledModelItem) => {
+                              const itemKey = m.path || m.id;
+                              const isSelected = selectedModelKeys.includes(itemKey);
+                              const isStub = m.is_stub || m.human_size?.includes("Stub");
+                              const sourceLabel = m.cache_source || (
+                                m.path?.includes("workspace") ? "KIRAG Workspace" :
+                                m.path?.includes("IQRAG") ? "IQRAG Cache" : "User HF Cache"
+                              );
+                              const sourceStyle =
+                                sourceLabel === "KIRAG Workspace"
+                                  ? "bg-purple-500/20 text-purple-300 border-purple-500/30"
+                                  : sourceLabel === "IQRAG Cache"
+                                  ? "bg-amber-500/20 text-amber-300 border-amber-500/30"
+                                  : "bg-indigo-500/20 text-indigo-300 border-indigo-500/30";
+
+                              return (
+                                <tr
+                                  key={itemKey}
+                                  className={`hover:bg-slate-900/60 transition-colors ${
+                                    isSelected ? "bg-indigo-950/20" : ""
+                                  }`}
+                                >
+                                  <td className="p-2.5 text-center">
+                                    <input
+                                      type="checkbox"
+                                      checked={isSelected}
+                                      disabled={m.is_active}
+                                      onChange={() => toggleSelectModel(itemKey)}
+                                      className="accent-indigo-500 rounded cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                                    />
+                                  </td>
+                                  <td className="p-2.5">
+                                    <div className="font-semibold text-slate-100 flex flex-wrap items-center gap-1.5">
+                                      <span>{m.id}</span>
+                                      {m.is_active && (
+                                        <span className="px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                          ACTIVE
+                                        </span>
+                                      )}
+                                      {m.copyCount && m.copyCount > 1 && (
+                                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                                          {m.copyCount} Cache Copies
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div
+                                      className="text-[10px] font-mono text-slate-400 truncate max-w-sm"
+                                      title={m.path}
+                                    >
+                                      {m.path}
+                                    </div>
+                                  </td>
+                                  <td className="p-2.5">
+                                    <span
+                                      className={`px-2 py-0.5 rounded text-[10px] font-bold border ${sourceStyle}`}
+                                      title={m.path}
+                                    >
+                                      {sourceLabel}
+                                    </span>
+                                  </td>
+                                  <td className="p-2.5">
+                                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-indigo-300 border border-slate-800">
+                                      {m.model_type}
+                                    </span>
+                                  </td>
+                                  <td className="p-2.5 font-mono text-slate-300">
+                                    {m.context_length.toLocaleString()} tokens
+                                  </td>
+                                  <td className="p-2.5 font-mono">
+                                    {isStub ? (
+                                      <div className="flex flex-wrap items-center gap-1">
+                                        <span className="text-amber-400 font-bold">{m.human_size}</span>
+                                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                          Incomplete / Stub
+                                        </span>
+                                      </div>
+                                    ) : (
+                                      <span className="font-semibold text-cyan-300">{m.human_size}</span>
+                                    )}
+                                  </td>
+                                  <td className="p-2.5 text-[11px] text-slate-400">
+                                    {m.modified_at}
+                                  </td>
+                                  <td className="p-2.5 text-right">
+                                    <button
+                                      type="button"
+                                      disabled={m.is_active || isDeletingModels}
+                                      onClick={() => {
+                                        setSelectedModelKeys([itemKey]);
+                                        setDeleteConfirmOpen(true);
+                                      }}
+                                      className="p-1.5 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-900/50 text-[11px] font-semibold transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                                      title={m.is_active ? "Cannot delete currently active model" : "Delete model from cache"}
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          ) : (
+                            <tr>
+                              <td colSpan={8} className="p-4 text-center text-slate-400 text-xs italic">
+                                {modelsLoading
+                                  ? "Scanning installed models in cache..."
+                                  : "No installed models found matching filter criteria."}
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {modelActionMessage && (
+                    <p className="text-xs font-mono text-cyan-400">{modelActionMessage}</p>
+                  )}
+                </ResizableBlock>
+              );
+            })()}
           </div>
 
+          {/* Delete Confirmation Modal */}
+          {deleteConfirmOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
+              <div className="glass-panel p-5 rounded-2xl border border-slate-800 max-w-md w-full space-y-4 shadow-2xl">
+                <div className="flex items-center space-x-3 text-rose-400">
+                  <AlertTriangle className="w-6 h-6 shrink-0" />
+                  <h3 className="text-base font-bold text-slate-100">
+                    Confirm Model Cache Deletion
+                  </h3>
+                </div>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  Are you sure you want to delete <strong>{selectedModelKeys.length}</strong> selected model directory/directories from local storage? This action cannot be undone.
+                </p>
+
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 max-h-40 overflow-y-auto space-y-1 text-xs font-mono text-rose-300">
+                  {selectedModelKeys.map((k) => (
+                    <div key={k} className="truncate">• {k}</div>
+                  ))}
+                </div>
+
+                <div className="flex items-center justify-end space-x-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setDeleteConfirmOpen(false)}
+                    disabled={isDeletingModels}
+                    className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-semibold border border-slate-800 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmDeleteModels}
+                    disabled={isDeletingModels}
+                    className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-rose-500/20 cursor-pointer disabled:opacity-50"
+                  >
+                    {isDeletingModels ? (
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="w-4 h-4" />
+                    )}
+                    {isDeletingModels ? "Deleting..." : "Permanently Delete"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Bottom Resizable Diagnostic Console with Live Container Logs */}
-          <div className="glass-panel p-4 rounded-2xl border border-slate-800 flex flex-col h-full min-h-0 space-y-2 relative">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2 shrink-0">
+          <ResizableBlock
+            id="diag_console"
+            defaultHeight={300}
+            className="glass-panel p-4 rounded-2xl border border-slate-800 flex flex-col h-full min-h-0 space-y-2 relative"
+            title={
               <div className="flex items-center space-x-2">
                 <button
                   type="button"
@@ -621,8 +1031,8 @@ export const SystemDiagnostics: React.FC = () => {
                   🖥️ Diagnostic System Log
                 </button>
               </div>
-
-              {/* Console Toolbar Controls */}
+            }
+            headerActions={
               <div className="flex items-center space-x-2 text-[11px]">
                 {activeConsoleTab === "docker" && (
                   <>
@@ -668,8 +1078,8 @@ export const SystemDiagnostics: React.FC = () => {
                   </button>
                 )}
               </div>
-            </div>
-
+            }
+          >
             {/* Resizable Log View Window */}
             <div
               ref={logContainerRef}
@@ -690,7 +1100,7 @@ export const SystemDiagnostics: React.FC = () => {
                 ))
               )}
             </div>
-          </div>
+          </ResizableBlock>
         </ResizableSplit>
       </div>
     </div>

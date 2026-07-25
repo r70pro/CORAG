@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { fetchCaseSummary, deleteCases } from "@/lib/api";
 import { ResizableSplit } from "@/components/ResizableSplit";
+import { ResizableBlock } from "@/components/ResizableBlock";
 
 interface TimelineEvent {
   date: string;
@@ -416,9 +417,40 @@ export const CaseDashboard: React.FC = () => {
           </div>
 
           {/* Bottom Resizable Timeline Section */}
-          <div className="glass-panel p-4 md:p-5 rounded-2xl flex flex-col h-full min-h-0 space-y-3 border border-slate-800">
+          <ResizableBlock
+            id="case_timeline"
+            defaultHeight={350}
+            className="glass-panel p-4 md:p-5 rounded-2xl flex flex-col h-full min-h-0 space-y-3 border border-slate-800"
+            title={
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2 shrink-0 w-full">
+                <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-cyan-400" />
+                  Chronological Medicolegal Timeline: {activeCase?.client_name || "No Active Case"}
+                </h3>
+                <span className="text-xs font-mono text-slate-400 pr-2">
+                  {activeCase?.date_range || ""}
+                </span>
+              </div>
+            }
+            headerActions={
+              <div className="flex items-center space-x-2 text-xs shrink-0">
+                <Filter className="w-3.5 h-3.5 text-indigo-400" />
+                <span className="text-slate-400">Filter Type:</span>
+                <select
+                  value={docTypeFilter}
+                  onChange={(e) => setDocTypeFilter(e.target.value)}
+                  className="bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1 text-slate-200 focus:outline-none"
+                >
+                  <option value="all">All Document Types</option>
+                  <option value="Specialist Correspondence">Specialist Correspondence</option>
+                  <option value="Imaging Report">Imaging Report</option>
+                  <option value="Operation Record">Operation Record</option>
+                </select>
+              </div>
+            }
+          >
             {/* Filter & Search Bar */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 shrink-0">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 shrink-0 mb-2">
               <div className="relative flex-1">
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
                 <input
@@ -429,31 +461,6 @@ export const CaseDashboard: React.FC = () => {
                   className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-9 pr-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
                 />
               </div>
-
-              <div className="flex items-center space-x-2 text-xs shrink-0">
-                <Filter className="w-3.5 h-3.5 text-indigo-400" />
-                <span className="text-slate-400">Filter Type:</span>
-                <select
-                  value={docTypeFilter}
-                  onChange={(e) => setDocTypeFilter(e.target.value)}
-                  className="bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-slate-200 focus:outline-none"
-                >
-                  <option value="all">All Document Types</option>
-                  <option value="Specialist Correspondence">Specialist Correspondence</option>
-                  <option value="Imaging Report">Imaging Report</option>
-                  <option value="Operation Record">Operation Record</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between border-b border-slate-800 pb-2 shrink-0">
-              <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2">
-                <Clock className="w-4 h-4 text-cyan-400" />
-                Chronological Medicolegal Timeline: {activeCase?.client_name || "No Active Case"}
-              </h3>
-              <span className="text-xs font-mono text-slate-400">
-                {activeCase?.date_range || ""}
-              </span>
             </div>
 
             <div className="flex-1 min-h-0 overflow-y-auto pr-1">
@@ -495,7 +502,7 @@ export const CaseDashboard: React.FC = () => {
                 </div>
               )}
             </div>
-          </div>
+          </ResizableBlock>
         </ResizableSplit>
       </div>
     </div>
