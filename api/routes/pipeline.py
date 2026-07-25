@@ -5,13 +5,66 @@ OCR pipeline management API routes.
 from __future__ import annotations
 
 import json
+import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from api.models import MessageResponse, PipelineStartRequest, PipelineStatusResponse, RunInfo
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@router.post("/upload", summary="Upload source PDF documents for ingestion")
+async def upload_pipeline_files(
+    request: Request,
+    files: list[UploadFile] | UploadFile | None = File(default=None),
+):
+    """Upload one or more PDF files for ingestion pipeline processing."""
+    import os
+    from fastapi import HTTPException
+    from settings_manager import WORKSPACE_DIR
+
+    try:
+        file_list: list[UploadFile] = []
+        if files:
+            if isinstance(files, list):
+                file_list.extend(files)
+            else:
+                file_list.append(files)
+
+        if not file_list:
+            try:
+                form = await request.form()
+                raw_files = form.getlist("files") or form.getlist("file")
+                for f in raw_files:
+                    if isinstance(f, UploadFile) or hasattr(f, "filename"):
+                        file_list.append(f)
+            except Exception as fe:
+                logger.warning(f"Error parsing request form fallback: {fe}")
+
+        if not file_list:
+            raise HTTPException(status_code=400, detail="No files provided for upload.")
+
+        upload_dir = os.path.join(WORKSPACE_DIR, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        saved_paths = []
+
+        for upload in file_list:
+            raw_name = os.path.basename(upload.filename or "").strip()
+            safe_name = raw_name if raw_name else "document.pdf"
+            dest_path = os.path.join(upload_dir, safe_name)
+            content = await upload.read()
+            with open(dest_path, "wb") as buffer:
+                buffer.write(content)
+            saved_paths.append(dest_path)
+        return {"success": True, "file_paths": saved_paths}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Upload pipeline files failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
 @router.post("/start", summary="Start OCR pipeline (SSE stream)")
@@ -29,6 +82,7 @@ def start_pipeline(req: PipelineStartRequest):
 
     # Build mock file objects with .name attributes from file paths
     files = []
+    missing_paths = []
     for path in req.file_paths:
         resolved_path = path
         if not os.path.isfile(resolved_path):
@@ -43,10 +97,11 @@ def start_pipeline(req: PipelineStartRequest):
                     resolved_path = cand
                     break
         if not os.path.isfile(resolved_path):
-            return MessageResponse(success=False, message=f"File not found: {path}")
-        f = MagicMock()
-        f.name = resolved_path
-        files.append(f)
+            missing_paths.append(path)
+        else:
+            f = MagicMock()
+            f.name = resolved_path
+            files.append(f)
 
     def _extract_int_stat(val: object) -> int:
         if isinstance(val, int):
@@ -67,6 +122,23 @@ def start_pipeline(req: PipelineStartRequest):
         return 0
 
     def event_generator():
+        if missing_paths or not files:
+            err_msg = f"File(s) not found: {', '.join(missing_paths or req.file_paths)}"
+            event_data = {
+                "log_text": f"[Error] {err_msg}",
+                "status_badge": "<span class='badge-failed'>File Not Found</span>",
+                "progress_html": "<div class='stat-card'><div class='stat-value'>0%</div></div>",
+                "completed_pages": 0,
+                "failed_pages": 0,
+                "run_id": "",
+                "file_status_html": "",
+                "upload_manifest_html": "",
+                "error": err_msg,
+            }
+            yield f"data: {json.dumps(event_data)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
         try:
             for result in process_pdfs(
                 files=files,
@@ -91,7 +163,7 @@ def start_pipeline(req: PipelineStartRequest):
                 yield f"data: {json.dumps(event_data)}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'error': str(e), 'log_text': f'[Error] {e}', 'status_badge': '<span class=\"badge-failed\">Failed</span>'})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

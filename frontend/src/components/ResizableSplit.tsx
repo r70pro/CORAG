@@ -22,11 +22,20 @@ export const ResizableSplit: React.FC<ResizableSplitProps> = ({
   const childArray = React.Children.toArray(children);
   const count = childArray.length;
 
+  // Helper to compare array contents for shallow equality
+  const areArraysEqual = (a?: number[], b?: number[]) => {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    if (a.length !== b.length) return false;
+    return a.every((val, idx) => val === b[idx]);
+  };
+
   // Memoize fallback defaults
+  const initialSizesKey = initialSizes ? JSON.stringify(initialSizes) : "";
   const fallbackSizes = React.useMemo(() => {
     if (initialSizes && initialSizes.length === count) return initialSizes;
     return new Array(count).fill(100 / count);
-  }, [count, initialSizes]);
+  }, [count, initialSizesKey]);
 
   const defaultMinSizes = React.useMemo(() => {
     if (minSizes && minSizes.length === count) return minSizes;
@@ -36,7 +45,7 @@ export const ResizableSplit: React.FC<ResizableSplitProps> = ({
   const [sizes, setSizes] = useState<number[]>(fallbackSizes);
 
   const [prevFallback, setPrevFallback] = useState<number[]>(fallbackSizes);
-  if (prevFallback !== fallbackSizes) {
+  if (!areArraysEqual(prevFallback, fallbackSizes)) {
     setPrevFallback(fallbackSizes);
     setSizes(fallbackSizes);
   }

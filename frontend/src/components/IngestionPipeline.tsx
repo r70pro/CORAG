@@ -14,9 +14,41 @@ import {
   Layers,
   FileText,
 } from "lucide-react";
-import { triggerIngestSSE, stopPipelineRun, updateSettings, fetchSettings } from "@/lib/api";
+import { triggerIngestSSE, stopPipelineRun, updateSettings, fetchSettings, uploadPipelineFiles } from "@/lib/api";
 import { ResizableSplit } from "@/components/ResizableSplit";
 import { ResizableBlock } from "@/components/ResizableBlock";
+
+function parseFileStatusHtml(htmlStr: string): { name: string; pages: number | string; status: string }[] {
+  if (!htmlStr) return [];
+  const items: { name: string; pages: number | string; status: string }[] = [];
+  const trRegex = /<tr[^>]*>\s*<td[^>]*>(.*?)<\/td>\s*<td[^>]*>(.*?)<\/td>\s*<td[^>]*>(.*?)<\/td>\s*<\/tr>/gi;
+  let match;
+  while ((match = trRegex.exec(htmlStr)) !== null) {
+    const rawName = match[1].replace(/<[^>]+>/g, "").trim();
+    const rawPages = match[2].replace(/<[^>]+>/g, "").trim();
+    const rawStatus = match[3].replace(/<[^>]+>/g, "").trim();
+    if (rawName && rawName !== "File") {
+      items.push({ name: rawName, pages: rawPages, status: rawStatus });
+    }
+  }
+  return items;
+}
+
+function parseManifestHtml(htmlStr: string): string[] {
+  if (!htmlStr) return [];
+  const items: string[] = [];
+  const trRegex = /<tr[^>]*>\s*<td[^>]*>(.*?)<\/td>\s*<td[^>]*>(.*?)<\/td>\s*<td[^>]*>(.*?)<\/td>\s*<\/tr>/gi;
+  let match;
+  while ((match = trRegex.exec(htmlStr)) !== null) {
+    const rawName = match[1].replace(/<[^>]+>/g, "").trim();
+    const rawPages = match[2].replace(/<[^>]+>/g, "").trim();
+    const rawSize = match[3].replace(/<[^>]+>/g, "").trim();
+    if (rawName && !rawName.startsWith("Total")) {
+      items.push(`${rawName} (${rawPages} pgs, ${rawSize})`);
+    }
+  }
+  return items;
+}
 
 export const IngestionPipeline: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
@@ -62,12 +94,12 @@ export const IngestionPipeline: React.FC = () => {
 
   // Manifest & File Status HTML representations
   const [manifestItems, setManifestItems] = useState<string[]>([
-    "Docling_test_file.pdf (2.18 MB)",
+    "Docling_test_file.pdf (Target PDF)",
   ]);
   const [fileStatuses, setFileStatuses] = useState<
-    { name: string; pages: number; status: string }[]
+    { name: string; pages: number | string; status: string }[]
   >([
-    { name: "Docling_test_file.pdf", pages: 12, status: "Ready" },
+    { name: "Docling_test_file.pdf", pages: "-", status: "Ready" },
   ]);
 
   const handleSaveConfig = async () => {
@@ -84,16 +116,37 @@ export const IngestionPipeline: React.FC = () => {
     setConfigStatus(res.message || "Saved");
   };
 
-  const handleStartPipeline = () => {
+  const handleStartPipeline = async () => {
     setIsProcessing(true);
     setStatusBadge("Processing");
     setProgressPct(0);
     setCompletedPages(0);
     setFailedPages(0);
 
-    const targetPaths = pdfFiles.length > 0
-      ? pdfFiles.map((f) => f.name)
-      : [selectedFilePath];
+    setFileStatuses((prev) =>
+      prev.map((item) => ({ ...item, status: "Processing..." }))
+    );
+
+    let targetPaths: string[] = [];
+
+    if (pdfFiles.length > 0) {
+      try {
+        setLogMessages((prev) => [...prev, `[Upload] Uploading ${pdfFiles.length} file(s) to server...`]);
+        targetPaths = await uploadPipelineFiles(pdfFiles);
+      } catch (uploadErr) {
+        setLogMessages((prev) => [...prev, `[Upload Warning] ${String(uploadErr)}. Falling back to target file path.`]);
+        targetPaths = selectedFilePath ? [selectedFilePath] : [];
+      }
+    } else if (selectedFilePath) {
+      targetPaths = [selectedFilePath];
+    }
+
+    if (targetPaths.length === 0) {
+      setLogMessages((prev) => [...prev, "[Error] No valid input file selected or specified."]);
+      setStatusBadge("Error");
+      setIsProcessing(false);
+      return;
+    }
 
     triggerIngestSSE(
       {
@@ -108,14 +161,40 @@ export const IngestionPipeline: React.FC = () => {
       },
       (eventData: unknown) => {
         const data = (eventData || {}) as Record<string, unknown>;
+        if (data.error && typeof data.error === "string") {
+          setLogMessages((prev) => [...prev, `[Error] ${data.error}`]);
+          setStatusBadge("Failed");
+          setIsProcessing(false);
+          setFileStatuses((prev) =>
+            prev.map((item) => ({ ...item, status: "Failed" }))
+          );
+          return;
+        }
         if (data.log_text && typeof data.log_text === "string") {
           setLogMessages((prev) => [...prev, data.log_text as string]);
         }
         if (data.status_badge && typeof data.status_badge === "string") {
           setStatusBadge(data.status_badge);
+          if (data.status_badge.includes("Failed") || data.status_badge.includes("Error") || data.status_badge.includes("Unreachable")) {
+            setIsProcessing(false);
+          }
         }
         if (data.run_id && typeof data.run_id === "string") {
           setActiveRunId(data.run_id);
+        }
+
+        if (typeof data.file_status_html === "string" && data.file_status_html.trim()) {
+          const parsedStatus = parseFileStatusHtml(data.file_status_html);
+          if (parsedStatus.length > 0) {
+            setFileStatuses(parsedStatus);
+          }
+        }
+
+        if (typeof data.upload_manifest_html === "string" && data.upload_manifest_html.trim()) {
+          const parsedManifest = parseManifestHtml(data.upload_manifest_html);
+          if (parsedManifest.length > 0) {
+            setManifestItems(parsedManifest);
+          }
         }
 
         let curCompleted = completedPages;
@@ -137,25 +216,38 @@ export const IngestionPipeline: React.FC = () => {
             setCompletedPages(curCompleted);
             setTotalPages(curTotal);
           }
-          const matchPct = data.progress_html.match(/(\d+)%/);
+          const matchPct = data.progress_html.match(/>(\d+)%</) || data.progress_html.match(/font-semibold[^>]*>(\d+)%/);
           if (matchPct && matchPct[1]) {
             setProgressPct(Math.min(100, parseInt(matchPct[1], 10)));
           } else if (curTotal > 0) {
             setProgressPct(Math.min(100, Math.round((curCompleted / curTotal) * 100)));
+          } else {
+            setProgressPct(0);
           }
         } else if (curTotal > 0) {
           setProgressPct(Math.min(100, Math.round((curCompleted / curTotal) * 100)));
+        } else {
+          setProgressPct(0);
         }
       },
       (err) => {
         setLogMessages((prev) => [...prev, `[Error] ${String(err)}`]);
         setStatusBadge("Error");
         setIsProcessing(false);
+        setFileStatuses((prev) =>
+          prev.map((item) => ({ ...item, status: "Error" }))
+        );
       },
       () => {
-        setStatusBadge("Completed");
+        setStatusBadge((prev) => (prev.includes("Error") || prev.includes("Failed") ? prev : "Completed"));
         setIsProcessing(false);
-        setLogMessages((prev) => [...prev, "[Complete] OCR Ingestion pipeline completed successfully. ✅"]);
+        setFileStatuses((prev) =>
+          prev.map((item) => ({
+            ...item,
+            status: item.status.includes("Failed") || item.status.includes("Error") ? item.status : "Done",
+          }))
+        );
+        setLogMessages((prev) => [...prev, "[Complete] Pipeline batch processing finished."]);
       }
     );
   };
@@ -211,7 +303,7 @@ export const IngestionPipeline: React.FC = () => {
 
           <span
             className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
-              statusBadge === "Running"
+              statusBadge === "Running" || statusBadge === "Processing"
                 ? "bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse"
                 : statusBadge === "Completed"
                 ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
@@ -378,7 +470,7 @@ export const IngestionPipeline: React.FC = () => {
                           setPdfFiles(files);
                           if (files.length > 0) {
                             setManifestItems(files.map((f) => `${f.name} (${(f.size / (1024 * 1024)).toFixed(2)} MB)`));
-                            setFileStatuses(files.map((f) => ({ name: f.name, pages: 10, status: "Ready" })));
+                            setFileStatuses(files.map((f) => ({ name: f.name, pages: "-", status: "Ready" })));
                           }
                         }}
                         className="hidden"
@@ -407,7 +499,7 @@ export const IngestionPipeline: React.FC = () => {
                         onChange={(e) => {
                           setSelectedFilePath(e.target.value);
                           setManifestItems([`${e.target.value.split("/").pop()} (Target PDF)`]);
-                          setFileStatuses([{ name: e.target.value.split("/").pop() || e.target.value, pages: 12, status: "Ready" }]);
+                          setFileStatuses([{ name: e.target.value.split("/").pop() || e.target.value, pages: "-", status: "Ready" }]);
                         }}
                         placeholder="/home/owner/Downloads/Docling_test_file.pdf"
                         className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-slate-200 font-mono"
@@ -419,6 +511,7 @@ export const IngestionPipeline: React.FC = () => {
                         type="button"
                         onClick={handleStartPipeline}
                         disabled={isProcessing}
+                        suppressHydrationWarning
                         className="flex-1 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/20 cursor-pointer select-none"
                       >
                         <Play className="w-4 h-4 pointer-events-none" /> Start Batch Processing
@@ -427,6 +520,7 @@ export const IngestionPipeline: React.FC = () => {
                         type="button"
                         onClick={handleStopPipeline}
                         disabled={!isProcessing}
+                        suppressHydrationWarning
                         className="px-4 py-2 rounded-xl bg-rose-950/60 hover:bg-rose-900/60 disabled:opacity-40 text-rose-300 font-semibold text-xs flex items-center gap-1.5 border border-rose-800/60 cursor-pointer select-none"
                       >
                         <Square className="w-3.5 h-3.5 text-rose-400 pointer-events-none" /> Stop Process
@@ -469,42 +563,66 @@ export const IngestionPipeline: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Manifest & File Status Tables (Side by Side) */}
+                {/* Manifest & File Status Tables (Side by Side Resizable Blocks) */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="glass-panel p-4 rounded-2xl space-y-2 border border-slate-800">
-                    <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
-                      <FileText className="w-3.5 h-3.5 text-indigo-400" /> Upload Manifest
-                    </h4>
-                    <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 text-xs font-mono text-slate-300 space-y-1 max-h-28 overflow-y-auto">
+                  <ResizableBlock
+                    id="ingest_upload_manifest"
+                    defaultHeight={180}
+                    minHeight={100}
+                    className="glass-panel p-4 rounded-2xl border border-slate-800 flex flex-col min-h-0"
+                    title={
+                      <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5 shrink-0">
+                        <FileText className="w-3.5 h-3.5 text-indigo-400" /> Upload Manifest
+                      </h4>
+                    }
+                  >
+                    <div className="flex-1 min-h-0 bg-slate-950 p-2.5 rounded-xl border border-slate-800 text-xs font-mono text-slate-300 space-y-1.5 overflow-y-auto">
                       {manifestItems.map((item, i) => (
-                        <div key={i} className="flex items-center gap-1.5">
-                          <span className="text-indigo-400">📄</span>
-                          <span>{item}</span>
+                        <div key={i} className="flex items-center gap-2 py-0.5 border-b border-slate-900/60 last:border-0">
+                          <span className="text-indigo-400 text-sm">📄</span>
+                          <span className="truncate">{item}</span>
                         </div>
                       ))}
                     </div>
-                  </div>
+                  </ResizableBlock>
 
-                  <div className="glass-panel p-4 rounded-2xl space-y-2 border border-slate-800">
-                    <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
-                      <Layers className="w-3.5 h-3.5 text-indigo-400" /> Per-File Status
-                    </h4>
-                    <div className="bg-slate-950 rounded-xl border border-slate-800 overflow-hidden max-h-28 overflow-y-auto text-xs">
+                  <ResizableBlock
+                    id="ingest_per_file_status"
+                    defaultHeight={180}
+                    minHeight={100}
+                    className="glass-panel p-4 rounded-2xl border border-slate-800 flex flex-col min-h-0"
+                    title={
+                      <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5 shrink-0">
+                        <Layers className="w-3.5 h-3.5 text-indigo-400" /> Per-File Status
+                      </h4>
+                    }
+                  >
+                    <div className="flex-1 min-h-0 bg-slate-950 rounded-xl border border-slate-800 overflow-y-auto text-xs">
                       <table className="w-full text-left font-mono">
-                        <thead className="bg-slate-900 text-slate-400 text-[10px]">
+                        <thead className="bg-slate-900 text-slate-400 text-[10px] sticky top-0 z-10">
                           <tr>
-                            <th className="p-1.5">File</th>
-                            <th className="p-1.5">Pages</th>
-                            <th className="p-1.5">Status</th>
+                            <th className="p-2">File</th>
+                            <th className="p-2 text-center">Pages</th>
+                            <th className="p-2 text-center">Status</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-800/60 text-[11px] text-slate-300">
                           {fileStatuses.map((fs, i) => (
-                            <tr key={i}>
-                              <td className="p-1.5">{fs.name}</td>
-                              <td className="p-1.5">{fs.pages}</td>
-                              <td className="p-1.5">
-                                <span className="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[10px]">
+                            <tr key={i} className="hover:bg-slate-900/40 transition-colors">
+                              <td className="p-2 max-w-[180px] truncate" title={fs.name}>{fs.name}</td>
+                              <td className="p-2 text-center text-slate-400">{fs.pages}</td>
+                              <td className="p-2 text-center">
+                                <span
+                                  className={`px-2 py-0.5 rounded text-[10px] font-semibold inline-block ${
+                                    fs.status.includes("Done") || fs.status.includes("Success") || fs.status.includes("✓")
+                                      ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                                      : fs.status.includes("Failed") || fs.status.includes("Error") || fs.status.includes("✗")
+                                      ? "bg-rose-500/20 text-rose-300 border border-rose-500/30"
+                                      : fs.status.includes("Processing") || fs.status.includes("Running")
+                                      ? "bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse"
+                                      : "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30"
+                                  }`}
+                                >
                                   {fs.status}
                                 </span>
                               </td>
@@ -513,7 +631,7 @@ export const IngestionPipeline: React.FC = () => {
                         </tbody>
                       </table>
                     </div>
-                  </div>
+                  </ResizableBlock>
                 </div>
               </div>
 

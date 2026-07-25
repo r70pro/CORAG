@@ -34,4 +34,31 @@ describe("ResizableSplit Component", () => {
       expect(leftPanel).toHaveStyle("flex-basis: 30%");
     });
   });
+
+  test("maintains restored split sizes across parent re-renders with new inline initialSizes references", async () => {
+    localStorage.setItem("kirag_split_test_rerender", JSON.stringify([45, 55]));
+
+    const { rerender } = render(
+      <ResizableSplit storageKey="test_rerender" initialSizes={[65, 35]}>
+        <div>Top Section</div>
+        <div>Bottom Log</div>
+      </ResizableSplit>
+    );
+
+    const topSection = screen.getByText("Top Section").parentElement;
+    await waitFor(() => {
+      expect(topSection).toHaveStyle("flex-basis: 45%");
+    });
+
+    // Re-render with new array instance of same values
+    rerender(
+      <ResizableSplit storageKey="test_rerender" initialSizes={[65, 35]}>
+        <div>Top Section Updated</div>
+        <div>Bottom Log Updated</div>
+      </ResizableSplit>
+    );
+
+    const updatedTop = screen.getByText("Top Section Updated").parentElement;
+    expect(updatedTop).toHaveStyle("flex-basis: 45%");
+  });
 });

@@ -3,10 +3,9 @@ const getApiBaseUrl = () => {
     return process.env.NEXT_PUBLIC_API_URL;
   }
   if (typeof window !== "undefined") {
-    const host = window.location.hostname;
-    // Standardize localhost -> 127.0.0.1 to prevent Firefox IPv6 ::1 resolution connection errors
-    const targetHost = !host || host === "localhost" ? "127.0.0.1" : host;
-    return `${window.location.protocol}//${targetHost}:8001`;
+    // In browser context, relative URLs route via Next.js proxy rewrite, ensuring
+    // same-origin iframe embedding and preventing third-party cookie/storage access warnings.
+    return "";
   }
   return "http://127.0.0.1:8001";
 };
@@ -148,6 +147,50 @@ export async function stopDockerContainer() {
   }
 }
 
+// Upload PDF files for pipeline processing.
+// Uploads directly to the FastAPI backend to bypass Next.js proxy body size limits
+// which can cause HTTP 500 for large PDF files (>10MB).
+const DIRECT_API_URL = "http://127.0.0.1:8001";
+
+export async function uploadPipelineFiles(files: File[]): Promise<string[]> {
+  const formData = new FormData();
+  files.forEach((f) => formData.append("files", f));
+
+  // Try direct upload to FastAPI backend first (bypasses Next.js proxy size limits)
+  const uploadUrls = [
+    `${DIRECT_API_URL}/api/pipeline/upload`,
+    ...(API_BASE_URL ? [`${API_BASE_URL}/api/pipeline/upload`] : []),
+  ];
+
+  let lastError: Error | null = null;
+  for (const url of uploadUrls) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        body: formData,
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        let detail = text;
+        try {
+          const json = JSON.parse(text);
+          if (json.detail) detail = typeof json.detail === "string" ? json.detail : JSON.stringify(json.detail);
+        } catch {
+          // Use text fallback
+        }
+        lastError = new Error(`Upload failed with HTTP ${res.status}${detail ? `: ${detail}` : ""}`);
+        continue; // Try next URL
+      }
+      const data = await res.json();
+      return data.file_paths || [];
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      // Network error — try next URL
+    }
+  }
+  throw lastError || new Error("Upload failed: no available upload endpoints");
+}
+
 // Trigger Ingestion Pipeline via SSE
 export function triggerIngestSSE(
   payload: PipelineStartPayload,
@@ -160,36 +203,57 @@ export function triggerIngestSSE(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   })
-    .then((res) => {
-      if (!res.body) return;
+    .then(async (res) => {
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        onError(new Error(`Pipeline error HTTP ${res.status}: ${text}`));
+        return;
+      }
+      if (!res.body) {
+        onComplete();
+        return;
+      }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
+      let buffer = "";
 
       function readChunk() {
         reader.read().then(({ done, value }) => {
           if (done) {
+            if (buffer.trim()) {
+              processChunk(buffer);
+            }
             onComplete();
             return;
           }
-          const text = decoder.decode(value);
-          const lines = text.split("\n\n");
-          for (const line of lines) {
-            if (line.startsWith("data: ")) {
-              const dataStr = line.replace("data: ", "").trim();
-              if (dataStr === "[DONE]") {
-                onComplete();
-                return;
-              }
-              try {
-                const parsed = JSON.parse(dataStr);
-                onMessage(parsed);
-              } catch {
-                // Ignore parse errors
-              }
-            }
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split("\n\n");
+          buffer = parts.pop() || "";
+
+          for (const part of parts) {
+            processChunk(part);
           }
           readChunk();
-        });
+        }).catch((err) => onError(err));
+      }
+
+      function processChunk(chunkText: string) {
+        const lines = chunkText.split("\n");
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const dataStr = line.replace("data: ", "").trim();
+            if (dataStr === "[DONE]") {
+              onComplete();
+              return;
+            }
+            try {
+              const parsed = JSON.parse(dataStr);
+              onMessage(parsed);
+            } catch {
+              // Ignore parse errors
+            }
+          }
+        }
       }
 
       readChunk();

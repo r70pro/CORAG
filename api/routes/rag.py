@@ -404,15 +404,21 @@ def index_all_runs():
 
 @router.post("/upload-markdown", summary="Upload external markdown files")
 async def upload_markdown(
-    files: list[UploadFile] = File(...),
+    files: list[UploadFile] | UploadFile | None = File(default=None),
     case_option: str = Form("new"),
     new_case_name: str = Form(""),
 ):
     """Upload and index external markdown files into the corpus."""
     import os
     import tempfile
+    from fastapi import HTTPException
 
     from indexing_service import CorpusIndexingService
+
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided for upload.")
+
+    file_list = files if isinstance(files, list) else [files]
 
     # Write uploaded files to a temp dir so the indexer can read them.
     # Sanitise the client-supplied filename via basename so a path like
@@ -420,7 +426,7 @@ async def upload_markdown(
     temp_dir = tempfile.mkdtemp()
     saved_paths = []
     try:
-        for upload in files:
+        for upload in file_list:
             safe_name = os.path.basename(upload.filename or "").strip()
             if not safe_name or "/" in safe_name or "\\" in safe_name or ".." in safe_name:
                 continue

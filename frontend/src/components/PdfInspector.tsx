@@ -24,6 +24,23 @@ interface RunItem {
   files?: string[];
 }
 
+const renderFormattedText = (text: string) => {
+  // Simple regex parser for bold, italic, and inline code
+  const parts = text.split(/(\*\*.*?\*\*|\*.*?\*|`.*?`)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+      return <strong key={index} className="font-bold text-cyan-200">{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith("*") && part.endsWith("*") && part.length > 2) {
+      return <em key={index} className="italic text-indigo-200">{part.slice(1, -1)}</em>;
+    }
+    if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
+      return <code key={index} className="bg-slate-900 text-amber-300 font-mono px-1 py-0.5 rounded text-[11px] border border-slate-800">{part.slice(1, -1)}</code>;
+    }
+    return part;
+  });
+};
+
 const MarkdownRenderer: React.FC<{ content: string }> = ({ content }) => {
   if (!content) {
     return <div className="text-slate-500 italic p-4">No markdown content loaded.</div>;
@@ -52,44 +69,63 @@ const MarkdownRenderer: React.FC<{ content: string }> = ({ content }) => {
               const trimmed = line.trim();
               if (!trimmed) return null;
 
+              if (trimmed === "---" || trimmed === "***") {
+                return <hr key={lIdx} className="border-slate-800 my-2" />;
+              }
+
               if (trimmed.startsWith("# ")) {
                 return (
                   <h1 key={lIdx} className="text-sm font-bold text-cyan-300 border-b border-cyan-500/20 pb-1 mt-3 mb-1">
-                    {trimmed.slice(2)}
+                    {renderFormattedText(trimmed.slice(2))}
                   </h1>
                 );
               }
               if (trimmed.startsWith("## ")) {
                 return (
                   <h2 key={lIdx} className="text-xs font-bold text-indigo-300 border-b border-indigo-500/20 pb-1 mt-2 mb-1">
-                    {trimmed.slice(3)}
+                    {renderFormattedText(trimmed.slice(3))}
                   </h2>
                 );
               }
               if (trimmed.startsWith("### ")) {
                 return (
                   <h3 key={lIdx} className="text-xs font-semibold text-slate-200 mt-2 mb-1">
-                    {trimmed.slice(4)}
+                    {renderFormattedText(trimmed.slice(4))}
                   </h3>
+                );
+              }
+              if (trimmed.startsWith("#### ")) {
+                return (
+                  <h4 key={lIdx} className="text-xs font-semibold text-slate-300 mt-1 mb-1">
+                    {renderFormattedText(trimmed.slice(5))}
+                  </h4>
                 );
               }
               if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
                 return (
                   <li key={lIdx} className="text-xs text-slate-300 ml-4 list-disc">
-                    {trimmed.slice(2)}
+                    {renderFormattedText(trimmed.slice(2))}
+                  </li>
+                );
+              }
+              if (/^\d+\.\s/.test(trimmed)) {
+                const match = trimmed.match(/^(\d+\.\s)(.*)/);
+                return (
+                  <li key={lIdx} className="text-xs text-slate-300 ml-4 list-decimal">
+                    {renderFormattedText(match ? match[2] : trimmed)}
                   </li>
                 );
               }
               if (trimmed.startsWith("> ")) {
                 return (
                   <blockquote key={lIdx} className="border-l-2 border-indigo-500 pl-3 py-1 bg-indigo-950/30 text-indigo-200 rounded-r-lg text-xs italic">
-                    {trimmed.slice(2)}
+                    {renderFormattedText(trimmed.slice(2))}
                   </blockquote>
                 );
               }
               return (
                 <p key={lIdx} className="text-xs text-slate-300 leading-relaxed">
-                  {line}
+                  {renderFormattedText(line)}
                 </p>
               );
             })}
@@ -453,12 +489,11 @@ export const PdfInspector: React.FC = () => {
             >
               {selectedRun ? (
                 <iframe
-                  key={`${selectedRun}-${selectedFilename}-${currentPage}-${viewMode}`}
+                  key={`${selectedRun}-${selectedFilename}`}
                   src={`${API_BASE_URL}/api/documents/runs/${selectedRun}/pdf#page=${currentPage}`}
-                  className="w-full h-full rounded-lg border-0"
+                  className="w-full h-full rounded-lg border-0 bg-slate-950"
                   title="Source PDF Viewer"
-                  sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
-                  referrerPolicy="no-referrer"
+                  loading="eager"
                 />
               ) : (
                 <div className="p-4 bg-slate-900 border border-slate-800 rounded-lg text-center space-y-2 my-auto">

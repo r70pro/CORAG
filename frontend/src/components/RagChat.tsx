@@ -457,6 +457,7 @@ export const RagChat: React.FC = () => {
                     <button
                       type="button"
                       disabled={isIndexing}
+                      suppressHydrationWarning
                       onClick={handleIndexSelectedRun}
                       className="flex-1 py-1 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer select-none"
                     >
@@ -465,6 +466,7 @@ export const RagChat: React.FC = () => {
                     <button
                       type="button"
                       disabled={isIndexing}
+                      suppressHydrationWarning
                       onClick={handleIndexAllRuns}
                       className="flex-1 py-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 text-xs font-semibold border border-slate-700 cursor-pointer select-none"
                     >
@@ -676,6 +678,7 @@ export const RagChat: React.FC = () => {
                         type="button"
                         onClick={handleSend}
                         disabled={isStreaming || !prompt.trim()}
+                        suppressHydrationWarning
                         className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs flex items-center gap-2 shadow-lg shadow-indigo-500/20 cursor-pointer select-none"
                       >
                         {isStreaming ? (

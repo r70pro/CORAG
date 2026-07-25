@@ -319,6 +319,45 @@ class TestAPI(unittest.TestCase):
         lines = [line for line in response.iter_lines() if line]
         self.assertTrue(any("run_id" in line for line in lines))
 
+    def test_pipeline_upload(self):
+        files = [("files", ("test.pdf", b"%PDF-1.4 test content", "application/pdf"))]
+        response = self.client.post("/api/pipeline/upload", files=files)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["success"])
+        self.assertTrue(len(data["file_paths"]) == 1)
+
+    def test_pipeline_upload_with_spaces(self):
+        files = [("files", ("test file with spaces.pdf", b"%PDF-1.4 test content", "application/pdf"))]
+        response = self.client.post("/api/pipeline/upload", files=files)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["success"])
+        self.assertTrue(data["file_paths"][0].endswith("test file with spaces.pdf"))
+
+    def test_pipeline_upload_single_file_param(self):
+        files = {"files": ("test_single.pdf", b"%PDF-1.4 test content", "application/pdf")}
+        response = self.client.post("/api/pipeline/upload", files=files)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["success"])
+        self.assertTrue(data["file_paths"][0].endswith("test_single.pdf"))
+
+    def test_pipeline_upload_multiple_files(self):
+        files = [
+            ("files", ("file1.pdf", b"%PDF-1.4 content 1", "application/pdf")),
+            ("files", ("file2.pdf", b"%PDF-1.4 content 2", "application/pdf")),
+        ]
+        response = self.client.post("/api/pipeline/upload", files=files)
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(len(data["file_paths"]), 2)
+
+    def test_pipeline_upload_empty(self):
+        response = self.client.post("/api/pipeline/upload")
+        self.assertEqual(response.status_code, 400)
+
     # ── RAG ───────────────────────────────────────────────────────────────────
 
     @patch("rag_infra_manager.start_and_init_rag")

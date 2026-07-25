@@ -76,7 +76,8 @@ def get_run_pdf(run_name: str):
 
     headers = {
         "Content-Disposition": "inline; filename=document.pdf",
-        "Cross-Origin-Resource-Policy": "cross-origin",
+        "Cross-Origin-Resource-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "unsafe-none",
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "public, max-age=3600",
     }
@@ -145,6 +146,7 @@ def get_run_doc_info(run_name: str, filename: str = ""):
 
     page_ranges = []
     results_dir = os.path.join(run_dir, "results")
+    pdf_filename = filename.rsplit(".", 1)[0] + ".pdf" if filename else ""
     if os.path.exists(results_dir):
         for f in os.listdir(results_dir):
             if f.endswith(".jsonl"):
@@ -155,11 +157,17 @@ def get_run_doc_info(run_name: str, filename: str = ""):
                             if not line.strip():
                                 continue
                             data = json.loads(line)
-                            attributes = data.get("attributes", {})
-                            pdf_page_numbers = attributes.get("pdf_page_numbers", [])
-                            if pdf_page_numbers:
-                                page_ranges = pdf_page_numbers
-                                break
+                            source_file = data.get("metadata", {}).get("Source-File", "")
+                            if (
+                                not pdf_filename
+                                or source_file == f"inputs/{pdf_filename}"
+                                or os.path.basename(source_file) == pdf_filename
+                            ):
+                                attributes = data.get("attributes", {})
+                                pdf_page_numbers = attributes.get("pdf_page_numbers", [])
+                                if pdf_page_numbers:
+                                    page_ranges = pdf_page_numbers
+                                    break
                 except Exception as e:
                     logger.error(f"Error reading jsonl {jsonl_path}: {e}")
                 if page_ranges:
@@ -177,17 +185,24 @@ def get_run_doc_info(run_name: str, filename: str = ""):
 
     pages_markdown = {}
     if full_markdown:
+        valid_ranges = False
         if page_ranges:
             for r in page_ranges:
                 if len(r) >= 3:
                     s_idx, e_idx, p_num = r[0], r[1], r[2]
-                    pages_markdown[str(p_num)] = full_markdown[s_idx:e_idx]
-        else:
-            chunk_len = max(1, len(full_markdown) // max(1, total_pages))
-            for p in range(1, total_pages + 1):
-                start = (p - 1) * chunk_len
-                end = len(full_markdown) if p == total_pages else p * chunk_len
-                pages_markdown[str(p)] = full_markdown[start:end]
+                    if 0 <= s_idx < e_idx <= len(full_markdown):
+                        pages_markdown[str(p_num)] = full_markdown[s_idx:e_idx]
+                        valid_ranges = True
+
+        if not valid_ranges:
+            import re
+            splits = re.split(r'\n\s*(?:---|<!--\s*page\s*\d+\s*-->)\s*\n', full_markdown, flags=re.IGNORECASE)
+            if len(splits) > 1:
+                for idx, text in enumerate(splits, start=1):
+                    pages_markdown[str(idx)] = text.strip()
+            else:
+                for p in range(1, max(1, total_pages) + 1):
+                    pages_markdown[str(p)] = full_markdown
 
     return {
         "run_name": run_name,
