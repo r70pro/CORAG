@@ -9,6 +9,7 @@ Provides:
 """
 
 import json
+import logging
 import os
 from collections.abc import Generator
 from typing import Any
@@ -16,6 +17,8 @@ from typing import Any
 import httpx
 
 from rag.retriever import format_context_for_llm, search_similar
+
+logger = logging.getLogger(__name__)
 
 # ── Loaded-model resolution cache ────────────────────────────
 # The /models probe in analyze() is per-query expensive. Cache the *list of
@@ -34,6 +37,15 @@ _MODEL_EQUIVALENTS = {
 # RAG analysis retrieval constants
 STRUCTURED_MODE_MIN_TOP_K = 50
 STRUCTURED_MODE_SCORE_THRESHOLD = 0.05
+
+
+def invalidate_model_cache():
+    """Clear the model resolution cache.
+
+    Call this after a vLLM container is recreated so that subsequent
+    queries re-probe the server instead of using stale cached model IDs.
+    """
+    _model_cache.clear()
 
 
 def _get_loaded_models(server_url: str) -> list[str]:
@@ -81,7 +93,12 @@ def _resolve_loaded_model(server_url: str, model_name: str):
         if _MODEL_EQUIVALENTS.get(loaded) == model_name:
             return loaded, False
 
-    return loaded_models[0], True
+    fallback = loaded_models[0]
+    logger.warning(
+        "Model '%s' not loaded in vLLM at %s. Falling back to '%s'.",
+        model_name, server_url, fallback,
+    )
+    return fallback, True
 
 
 def _is_equivalent(m1: str, m2: str) -> bool:

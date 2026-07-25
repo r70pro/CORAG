@@ -202,6 +202,9 @@ def build_case_dashboard_ui():
         get_choices_fn = get_rag_ui_fn("_get_indexed_run_choices", _get_indexed_run_choices)
         if not run_id:
             return build_html_fn(), gr.update(), "⚠️ No case selected."
+
+        from settings_manager import delete_run_directory
+
         try:
             from rag.db import delete_run_data
 
@@ -225,6 +228,12 @@ def build_case_dashboard_ui():
             log_to_rag(f"Deleted blobs from MinIO: {run_id[:12]}...")
         except Exception as e:
             log_to_rag(f"Storage delete warning: {e}")
+
+        try:
+            delete_run_directory(run_id)
+            log_to_rag(f"Deleted run folder from disk: {run_id[:12]}...")
+        except Exception as e:
+            log_to_rag(f"Disk directory delete warning: {e}")
 
         try:
             from rag.cache import invalidate_query_cache
@@ -255,6 +264,8 @@ def build_case_dashboard_ui():
         if not run_ids:
             return build_html_fn(), gr.update(), "", "⚠️ No case selected."
 
+        from settings_manager import delete_run_directory
+
         deleted_count = 0
         for run_id in run_ids:
             try:
@@ -281,6 +292,12 @@ def build_case_dashboard_ui():
                 log_to_rag(f"Deleted blobs from MinIO: {run_id[:12]}...")
             except Exception as e:
                 log_to_rag(f"Storage delete warning: {e}")
+
+            try:
+                delete_run_directory(run_id)
+                log_to_rag(f"Deleted run folder from disk: {run_id[:12]}...")
+            except Exception as e:
+                log_to_rag(f"Disk directory delete warning: {e}")
 
         try:
             from rag.cache import invalidate_query_cache
@@ -323,6 +340,8 @@ def build_case_dashboard_ui():
         if not run_ids:
             return build_html_fn(), gr.update(), "", "⚠️ No cases to delete."
 
+        from settings_manager import delete_run_directory
+
         deleted_count = 0
         for run_id in run_ids:
             try:
@@ -349,6 +368,12 @@ def build_case_dashboard_ui():
                 log_to_rag(f"Deleted blobs from MinIO: {run_id[:12]}...")
             except Exception as e:
                 log_to_rag(f"Storage delete warning: {e}")
+
+            try:
+                delete_run_directory(run_id)
+                log_to_rag(f"Deleted run folder from disk: {run_id[:12]}...")
+            except Exception as e:
+                log_to_rag(f"Disk directory delete warning: {e}")
 
         try:
             from rag.cache import invalidate_query_cache

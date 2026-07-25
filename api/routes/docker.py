@@ -108,15 +108,27 @@ async def create_container(req: DockerCreateRequest):
         create_docker_container,
         hf_token, port, model, gpu_mem, max_model_len, tensor_parallel_size
     )
+
+    # Invalidate stale model resolution cache after container recreation
+    try:
+        from rag.analyzer import invalidate_model_cache
+        invalidate_model_cache()
+    except Exception:
+        pass
+
     # Persist the new settings
     if success:
+        server_url = f"http://localhost:{port}/v1"
         new_settings = {
             "docker_port": port,
             "model_name": model,
             "docker_gpu_mem": gpu_mem,
             "docker_max_model_len": max_model_len,
             "docker_tensor_parallel": tensor_parallel_size,
-            "server_url": f"http://localhost:{port}/v1",
+            "server_url": server_url,
+            # Keep analysis settings in sync when model changes
+            "analysis_model_name": model,
+            "analysis_server_url": server_url,
         }
         if hf_token and hf_token != "********":
             new_settings["hf_token"] = hf_token

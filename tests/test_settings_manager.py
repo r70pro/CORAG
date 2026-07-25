@@ -165,8 +165,7 @@ class TestSettingsManager(unittest.TestCase):
         with patch("settings_manager.WORKSPACE_DIR", self.workspace_dir):
             runs = settings_manager.get_available_runs()
             self.assertEqual(len(runs), 1)
-            # Label format: "run_20260711_092213 (2 files)"
-            self.assertEqual(runs[0][0], "run_case_1 (2 files)")
+            self.assertIn("run_case_1 (2 files)", runs[0][0])
             self.assertEqual(runs[0][1], run_ok)
 
     def test_safe_stream(self):

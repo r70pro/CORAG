@@ -137,8 +137,22 @@ export const PdfInspector: React.FC = () => {
       }
     };
     init();
+
+    const handleCasesUpdated = () => {
+      if (isMounted) {
+        init();
+      }
+    };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("casesUpdated", handleCasesUpdated);
+    }
+
     return () => {
       isMounted = false;
+      if (typeof window !== "undefined") {
+        window.removeEventListener("casesUpdated", handleCasesUpdated);
+      }
     };
   }, []);
 

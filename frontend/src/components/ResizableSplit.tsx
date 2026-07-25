@@ -33,22 +33,33 @@ export const ResizableSplit: React.FC<ResizableSplitProps> = ({
     return new Array(count).fill(0); // Allow full 0% collapse by default for max flexibility
   }, [count, minSizes]);
 
-  const [sizes, setSizes] = useState<number[]>(() => {
-    if (storageKey && typeof window !== "undefined") {
+  const [sizes, setSizes] = useState<number[]>(fallbackSizes);
+
+  const [prevFallback, setPrevFallback] = useState<number[]>(fallbackSizes);
+  if (prevFallback !== fallbackSizes) {
+    setPrevFallback(fallbackSizes);
+    setSizes(fallbackSizes);
+  }
+
+  // Restore stored split sizes post-mount to prevent SSR hydration mismatch
+  useEffect(() => {
+    if (!storageKey || typeof window === "undefined") return;
+    const animId = requestAnimationFrame(() => {
       try {
         const saved = localStorage.getItem(`kirag_split_${storageKey}`);
         if (saved) {
           const parsed = JSON.parse(saved);
           if (Array.isArray(parsed) && parsed.length === count) {
-            return parsed;
+            setSizes(parsed);
           }
         }
       } catch (e) {
         console.error("Error reading stored split sizes:", e);
       }
-    }
-    return fallbackSizes;
-  });
+    });
+    return () => cancelAnimationFrame(animId);
+  }, [storageKey, count]);
+
   const [isDragging, setIsDragging] = useState<number | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);

@@ -273,14 +273,14 @@ class TestOLMOCRApp(unittest.TestCase):
         self.assertTrue("Success" in final_yield[1])
 
     @patch("httpx.get")
-    @patch("pypdf.PdfReader")
+    @patch("pipeline_manager.PdfReader")
     @patch("shutil.copy")
     @patch("subprocess.Popen")
     @patch("time.monotonic")
     def test_process_pdfs_progress_parsing(self, mock_time, mock_popen, mock_copy, mock_pdf, mock_get):
         # Set up mocks
         mock_get.return_value = MagicMock(status_code=200)
-        mock_pdf.return_value.pages = [1, 2]
+        mock_pdf.return_value.pages = range(50)
         
         # Mock time generator to avoid StopIteration
         time_counter = [10.0]

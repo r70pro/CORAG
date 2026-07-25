@@ -106,7 +106,7 @@ def get_case_dashboard_data(
 
 
 def make_progress_bar_html(completed: int, total: int, elapsed_secs: float = 0) -> str:
-    pct = int((completed / total) * 100) if total > 0 else 0
+    pct = min(100, int((completed / total) * 100)) if total > 0 else 0
     # ETA calculation
     eta_str = ""
     if completed > 0 and elapsed_secs > 0 and completed < total:
@@ -419,6 +419,18 @@ def make_system_health_badge_html(data: dict[str, Any]) -> str:
 
         if failed_services == ["vllm"] and vllm_progress:
             progress = vllm_progress
+            # Distinguish between loading progress and load failure
+            if progress.get("failed"):
+                error_label = progress.get("eta", "Unknown Error")
+                return f"""
+                <div style='display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;'>
+                    <span class='badge-failed' style='padding: 6px 12px; font-weight: 700;'>✗ Model Load Failed</span>
+                    <div style='font-size: 0.75rem; color: #fca5a5; line-height: 1.2;'>
+                        <span style='font-weight: 600;'>{error_label}</span><br>
+                        <span style='color: #e2e8f0;'>Check container logs for details.</span>
+                    </div>
+                </div>
+                """
             return f"""
             <div style='display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;'>
                 <span class='badge-running' style='padding: 6px 12px; font-weight: 700; animation: pulse 2s infinite;'>⚡ Model Loading</span>

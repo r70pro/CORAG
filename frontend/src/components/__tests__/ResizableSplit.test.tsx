@@ -1,5 +1,5 @@
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { ResizableSplit } from "../ResizableSplit";
 
 describe("ResizableSplit Component", () => {
@@ -19,7 +19,7 @@ describe("ResizableSplit Component", () => {
     expect(panelA).toHaveStyle("flex-basis: 60%");
   });
 
-  test("restores split sizes from localStorage after mount", () => {
+  test("restores split sizes from localStorage after mount", async () => {
     localStorage.setItem("kirag_split_test_restore", JSON.stringify([30, 70]));
 
     render(
@@ -30,6 +30,8 @@ describe("ResizableSplit Component", () => {
     );
 
     const leftPanel = screen.getByText("Left Panel").parentElement;
-    expect(leftPanel).toHaveStyle("flex-basis: 30%");
+    await waitFor(() => {
+      expect(leftPanel).toHaveStyle("flex-basis: 30%");
+    });
   });
 });

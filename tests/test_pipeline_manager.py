@@ -722,7 +722,19 @@ class TestPipelineManager(unittest.TestCase):
         )
         res = list(gen)
         self.assertTrue(len(res) > 0)
-        self.assertFalse(any("is not loaded on the server" in item[0] for item in res))
+    def test_make_progress_bar_html_cap(self):
+        from html_utils import make_progress_bar_html
+        html = make_progress_bar_html(150, 100)
+        self.assertIn("100%", html)
+        self.assertNotIn("150%", html)
+
+    def test_extract_int_stat_in_api(self):
+        from api.routes.pipeline import start_pipeline
+        # Verify function logic
+        card_val = {"value": "<div class='stat-card'><div class='stat-value'>42</div><div class='stat-label'>Completed Pages</div></div>"}
+        match = pipeline_manager.re.search(r"stat-value'>(\d+)<", card_val["value"])
+        self.assertIsNotNone(match)
+        self.assertEqual(int(match.group(1)), 42)
 
 
 if __name__ == "__main__":

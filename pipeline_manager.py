@@ -526,10 +526,12 @@ def process_pdfs(
                 if match_f:
                     failed_pages = max(failed_pages, int(match_f.group(1).replace(",", "")))
 
+            if total_pages > 0:
+                completed_pages = min(completed_pages, total_pages)
+
             md_inputs_dir = os.path.join(run_dir, "markdown", "inputs")
             if os.path.exists(md_inputs_dir):
                 completed_mds = [f for f in os.listdir(md_inputs_dir) if f.endswith(".md")]
-                temp_completed_pages = 0
                 for md_file in completed_mds:
                     match = re.match(r"^(\d+)_", md_file)
                     if match:
@@ -537,9 +539,8 @@ def process_pdfs(
                         completed_file_indices.add(file_idx)
                         orig_name = file_mapping.get(file_idx, md_file)
                         choice_tuple = (orig_name, md_file)
-                        streaming_choices.append(choice_tuple)
-                    temp_completed_pages += file_page_counts.get(file_idx, 1)
-                completed_pages = max(completed_pages, temp_completed_pages)
+                        if choice_tuple not in streaming_choices:
+                            streaming_choices.append(choice_tuple)
 
             now = time.monotonic()
             if now - last_yield_time >= 0.2:

@@ -155,14 +155,25 @@ def ui_recreate_container(hf_token, port, model, gpu_mem, max_model_len, tensor_
     success, msg = create_fn(hf_token, port_int, model_str, gpu_mem_float, max_len_int, tp_int)
     _, badge = status_fn(port_int)
 
+    # Invalidate stale model resolution cache after container recreation
+    try:
+        from rag.analyzer import invalidate_model_cache
+        invalidate_model_cache()
+    except Exception:
+        pass
+
     settings = load_settings()
+    new_url = f"http://localhost:{port_int}/v1"
     new_settings = {
         "docker_port": port_int,
         "model_name": model_str,
         "docker_gpu_mem": gpu_mem_float,
         "docker_max_model_len": max_len_int,
         "docker_tensor_parallel": tp_int,
-        "server_url": f"http://localhost:{port_int}/v1",
+        "server_url": new_url,
+        # Keep analysis settings in sync when model changes
+        "analysis_model_name": model_str,
+        "analysis_server_url": new_url,
     }
     # Only update hf_token if user provided a new non-masked token
     if hf_token and str(hf_token).strip() and str(hf_token).strip() != "********":
@@ -170,7 +181,6 @@ def ui_recreate_container(hf_token, port, model, gpu_mem, max_model_len, tensor_
 
     settings.update(new_settings)
     save_settings_fn(settings)
-    new_url = f"http://localhost:{port_int}/v1"
     return msg, badge, new_url
 
 

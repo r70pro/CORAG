@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   FileSpreadsheet,
   Upload,
@@ -14,7 +14,7 @@ import {
   Layers,
   FileText,
 } from "lucide-react";
-import { triggerIngestSSE, stopPipelineRun, updateSettings } from "@/lib/api";
+import { triggerIngestSSE, stopPipelineRun, updateSettings, fetchSettings } from "@/lib/api";
 import { ResizableSplit } from "@/components/ResizableSplit";
 import { ResizableBlock } from "@/components/ResizableBlock";
 
@@ -40,6 +40,21 @@ export const IngestionPipeline: React.FC = () => {
   const [guidedDecoding, setGuidedDecoding] = useState<boolean>(true);
   const [advancedOpen, setAdvancedOpen] = useState<boolean>(false);
   const [configStatus, setConfigStatus] = useState<string>("");
+
+  // Load pipeline settings from backend on mount so values stay in sync
+  useEffect(() => {
+    fetchSettings()
+      .then((settings) => {
+        if (settings?.server_url) setServerUrl(String(settings.server_url));
+        if (settings?.model_name) setModelName(String(settings.model_name));
+        if (settings?.workers) setWorkers(Number(settings.workers) || 4);
+        if (settings?.max_concurrent_requests) setMaxConcurrent(Number(settings.max_concurrent_requests) || 20);
+        if (settings?.target_longest_image_dim) setTargetDim(Number(settings.target_longest_image_dim) || 1288);
+        if (settings?.max_page_retries) setMaxRetries(Number(settings.max_page_retries) || 8);
+        if (settings?.guided_decoding !== undefined) setGuidedDecoding(Boolean(settings.guided_decoding));
+      })
+      .catch(() => {});
+  }, []);
 
   // Source Files
   const [pdfFiles, setPdfFiles] = useState<File[]>([]);
@@ -72,7 +87,9 @@ export const IngestionPipeline: React.FC = () => {
   const handleStartPipeline = () => {
     setIsProcessing(true);
     setStatusBadge("Processing");
-    setProgressPct(5);
+    setProgressPct(0);
+    setCompletedPages(0);
+    setFailedPages(0);
 
     const targetPaths = pdfFiles.length > 0
       ? pdfFiles.map((f) => f.name)
@@ -100,22 +117,34 @@ export const IngestionPipeline: React.FC = () => {
         if (data.run_id && typeof data.run_id === "string") {
           setActiveRunId(data.run_id);
         }
+
+        let curCompleted = completedPages;
+        let curTotal = totalPages;
+
         if (typeof data.completed_pages === "number") {
+          curCompleted = data.completed_pages;
           setCompletedPages(data.completed_pages);
         }
         if (typeof data.failed_pages === "number") {
           setFailedPages(data.failed_pages);
         }
+
         if (data.progress_html && typeof data.progress_html === "string") {
-          const matchPct = data.progress_html.match(/(\d+)%/);
-          if (matchPct && matchPct[1]) {
-            setProgressPct(parseInt(matchPct[1], 10));
-          }
           const matchPages = data.progress_html.match(/(\d+)\/(\d+)\s+Pages/);
           if (matchPages && matchPages[1] && matchPages[2]) {
-            setCompletedPages(parseInt(matchPages[1], 10));
-            setTotalPages(parseInt(matchPages[2], 10));
+            curCompleted = parseInt(matchPages[1], 10);
+            curTotal = parseInt(matchPages[2], 10);
+            setCompletedPages(curCompleted);
+            setTotalPages(curTotal);
           }
+          const matchPct = data.progress_html.match(/(\d+)%/);
+          if (matchPct && matchPct[1]) {
+            setProgressPct(Math.min(100, parseInt(matchPct[1], 10)));
+          } else if (curTotal > 0) {
+            setProgressPct(Math.min(100, Math.round((curCompleted / curTotal) * 100)));
+          }
+        } else if (curTotal > 0) {
+          setProgressPct(Math.min(100, Math.round((curCompleted / curTotal) * 100)));
         }
       },
       (err) => {
@@ -124,7 +153,6 @@ export const IngestionPipeline: React.FC = () => {
         setIsProcessing(false);
       },
       () => {
-        setProgressPct(100);
         setStatusBadge("Completed");
         setIsProcessing(false);
         setLogMessages((prev) => [...prev, "[Complete] OCR Ingestion pipeline completed successfully. ✅"]);

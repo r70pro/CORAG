@@ -113,16 +113,13 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
         name: id.replace(/_/g, " "),
       }));
 
-      // Default fallback if empty
-      if (caseOptions.length === 0) {
-        caseOptions.push({ id: "souki_enclosures", name: "souki enclosures" });
-      }
-
       setCasesList(caseOptions);
 
       // Auto-set active case if missing or invalid
       if (!activeCaseId && caseOptions.length > 0) {
         onSelectCase(caseOptions[0].id);
+      } else if (caseOptions.length === 0) {
+        onSelectCase("");
       }
     } catch {
       // Failed to load header telemetry
@@ -144,9 +141,22 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
         loadHeaderData();
       }
     }, 10000);
+
+    const handleCasesUpdated = () => {
+      if (active) {
+        loadHeaderData();
+      }
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("casesUpdated", handleCasesUpdated);
+    }
+
     return () => {
       active = false;
       clearInterval(interval);
+      if (typeof window !== "undefined") {
+        window.removeEventListener("casesUpdated", handleCasesUpdated);
+      }
     };
   }, [loadHeaderData]);
 
@@ -220,11 +230,17 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
             className="bg-transparent text-xs font-bold text-indigo-200 focus:outline-none cursor-pointer max-w-[150px] truncate"
             title="Switch Active Case Context"
           >
-            {casesList.map((c) => (
-              <option key={c.id} value={c.id} className="bg-slate-900 text-slate-200">
-                {c.id}
+            {casesList.length === 0 ? (
+              <option value="" disabled className="bg-slate-900 text-slate-400">
+                No cases available
               </option>
-            ))}
+            ) : (
+              casesList.map((c) => (
+                <option key={c.id} value={c.id} className="bg-slate-900 text-slate-200">
+                  {c.id}
+                </option>
+              ))
+            )}
           </select>
         </div>
       </div>
@@ -334,6 +350,11 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
               <span className="badge-success inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 shadow-sm shadow-emerald-500/10">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                 ✓ System Healthy
+              </span>
+            ) : vllmProgress && vllmProgress.pct === -1 ? (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-rose-950/80 text-rose-300 border border-rose-500/40">
+                <AlertTriangle className="w-3 h-3 text-rose-400" />
+                ✗ Load Failed: {vllmProgress.eta}
               </span>
             ) : vllmProgress ? (
               <span className="badge-running inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-amber-950/80 text-amber-300 border border-amber-500/40 animate-pulse">

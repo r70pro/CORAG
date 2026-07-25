@@ -74,6 +74,20 @@ def get_service_latency(
 
 
 def get_vllm_loading_progress() -> dict[str, Any] | None:
+    # Fatal error patterns that indicate vLLM has crashed or failed to load.
+    # Checked before positive progress indicators so failures are surfaced
+    # instead of showing "loading" indefinitely.
+    _FAILURE_PATTERNS = [
+        (r"CUDA out of memory", "CUDA Out of Memory"),
+        (r"torch\.OutOfMemoryError", "GPU Out of Memory"),
+        (r"No available memory for the cache blocks", "Insufficient VRAM for KV Cache"),
+        (r"Cannot re-initialize CUDA in forked subprocess", "CUDA Fork Error"),
+        (r"max seq len .+ is larger than the maximum", "Max Sequence Length Exceeded"),
+        (r"The model's max seq len", "Max Sequence Length Exceeded"),
+        (r"not enough memory", "Insufficient Memory"),
+        (r"Killed\s*$", "Process Killed (OOM)"),
+    ]
+
     try:
         res = subprocess.run(
             ["docker", "logs", "--tail", "50", "olmocr"],
@@ -85,6 +99,46 @@ def get_vllm_loading_progress() -> dict[str, Any] | None:
         if res.returncode == 0 and res.stdout:
             lines = res.stdout.splitlines()
 
+            # ── Failure detection ─────────────────────────────
+            # Scan from the end of the log for fatal error patterns.
+            # Only flag a failure if no positive "server ready" line follows it
+            # (to avoid false positives from prior container runs).
+            has_ready_line = any(
+                "Application startup complete" in ln
+                or "Uvicorn running on" in ln
+                or "Started server process" in ln
+                for ln in lines
+            )
+            if not has_ready_line:
+                for line in reversed(lines):
+                    for pattern, label in _FAILURE_PATTERNS:
+                        if re.search(pattern, line, re.IGNORECASE):
+                            return {
+                                "pct": -1,
+                                "shards_loaded": "FAILED",
+                                "shards_total": "ERROR",
+                                "eta": label,
+                                "failed": True,
+                                "error_line": line.strip()[:200],
+                            }
+                    # Also detect Python tracebacks
+                    if "Traceback (most recent call last)" in line:
+                        # Find the last line of the traceback for error summary
+                        error_summary = "Python Exception"
+                        for tl in reversed(lines):
+                            if tl.strip() and not tl.startswith(" ") and "Traceback" not in tl:
+                                error_summary = tl.strip()[:120]
+                                break
+                        return {
+                            "pct": -1,
+                            "shards_loaded": "FAILED",
+                            "shards_total": "ERROR",
+                            "eta": error_summary,
+                            "failed": True,
+                            "error_line": error_summary,
+                        }
+
+            # ── Positive progress detection ───────────────────
             # Check for CUDA graphs capture
             for line in reversed(lines):
                 if "Capturing CUDA graphs" in line:

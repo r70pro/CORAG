@@ -40,6 +40,7 @@ class RunInfo(BaseModel):
     run_dir: str
     run_id: str = ""
     file_count: int = 0
+    is_indexed: bool = False
 
 
 # ── Docker ────────────────────────────────────────────────────────────────────

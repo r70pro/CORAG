@@ -42,16 +42,38 @@ def delete_cases(req: DeleteCasesRequest):
         logger = logging.getLogger(__name__)
 
         def _purge_run_dir_from_disk(run_id: str):
+            import hashlib
             import shutil
 
-            from settings_manager import WORKSPACE_DIR
+            from settings_manager import WORKSPACE_DIR, delete_run_directory
+
+            delete_run_directory(run_id)
             bundled_ws = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "workspace")
             fallback_ws = os.path.join(os.path.expanduser("~"), ".local", "share", "kirag", "workspace")
             for ws in [WORKSPACE_DIR, bundled_ws, fallback_ws]:
                 if ws and os.path.exists(ws):
                     try:
                         for name in os.listdir(ws):
-                            if name == run_id or (name.startswith("run_") and run_id in name):
+                            target = os.path.join(ws, name)
+                            if os.path.isdir(target):
+                                hashed_id = hashlib.sha256(target.encode()).hexdigest()[:16]
+                                if name == run_id or hashed_id == run_id or (name.startswith("run_") and run_id in name):
+                                    shutil.rmtree(target, ignore_errors=True)
+                    except Exception:
+                        pass
+
+        def _purge_all_run_dirs_from_disk():
+            import shutil
+
+            from settings_manager import WORKSPACE_DIR
+
+            bundled_ws = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "workspace")
+            fallback_ws = os.path.join(os.path.expanduser("~"), ".local", "share", "kirag", "workspace")
+            for ws in [WORKSPACE_DIR, bundled_ws, fallback_ws]:
+                if ws and os.path.exists(ws):
+                    try:
+                        for name in os.listdir(ws):
+                            if name.startswith("run_"):
                                 target = os.path.join(ws, name)
                                 if os.path.isdir(target):
                                     shutil.rmtree(target, ignore_errors=True)
@@ -81,6 +103,12 @@ def delete_cases(req: DeleteCasesRequest):
                     except Exception as e:
                         logger.warning(f"Disk purge error for {rid}: {e}")
                     count += 1
+
+            # Sweep all remaining run_* directories from disk workspace
+            try:
+                _purge_all_run_dirs_from_disk()
+            except Exception as e:
+                logger.warning(f"Full disk sweep error: {e}")
 
             # Invalidate query cache
             try:
@@ -355,7 +383,7 @@ def index_run(req: IndexRunRequest):
     """Index a single OCR run into the RAG corpus."""
     from indexing_service import CorpusIndexingService
 
-    messages = list(CorpusIndexingService.index_run(req.run_dir))
+    messages = list(CorpusIndexingService.index_run(req.run_dir, force=True))
     return MessageResponse(
         success=any("✅" in m or "Done" in m for m in messages),
         message="\n".join(messages),
@@ -367,7 +395,7 @@ def index_all_runs():
     """Index all available OCR runs into the RAG corpus."""
     from indexing_service import CorpusIndexingService
 
-    messages = list(CorpusIndexingService.index_all_runs())
+    messages = list(CorpusIndexingService.index_all_runs(force=True))
     return MessageResponse(
         success=any("✅" in m or "Done" in m for m in messages),
         message="\n".join(messages),

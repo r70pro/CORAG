@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Brain,
   Zap,
@@ -69,14 +69,14 @@ export const EmbeddingPipeline: React.FC = () => {
     "Ready for dense vector embedding & Qdrant indexing operations.",
   ]);
 
-  const loadTelemetryData = async () => {
+  const loadTelemetryData = useCallback(async () => {
     setLoadingTelemetry(true);
     const data = await fetchEmbeddingTelemetry();
     if (data) {
       setTelemetry(data);
     }
     setLoadingTelemetry(false);
-  };
+  }, []);
 
   const loadRuns = async () => {
     const runs = await fetchPipelineRuns();
@@ -106,10 +106,24 @@ export const EmbeddingPipeline: React.FC = () => {
       }
     };
     init();
+
+    const handleCasesUpdated = () => {
+      if (isMounted) {
+        loadTelemetryData();
+      }
+    };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("casesUpdated", handleCasesUpdated);
+    }
+
     return () => {
       isMounted = false;
+      if (typeof window !== "undefined") {
+        window.removeEventListener("casesUpdated", handleCasesUpdated);
+      }
     };
-  }, []);
+  }, [loadTelemetryData]);
 
   const handleSaveConfig = async () => {
     setConfigStatus("Saving configuration...");

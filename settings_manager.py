@@ -176,17 +176,75 @@ def load_settings():
                 defaults.update(user_settings)
         except Exception as e:
             logger.error(f"Error loading settings: {e}")
+    # Sync analysis_model_name if empty or missing
+    if not defaults.get("analysis_model_name"):
+        defaults["analysis_model_name"] = defaults.get("model_name", "allenai/olmOCR-2-7B-1025-FP8")
     return defaults
 
 
 def save_settings(settings):
     try:
         os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+        # Ensure analysis_model_name is set if missing
+        if "model_name" in settings and "analysis_model_name" not in settings:
+            settings["analysis_model_name"] = settings["model_name"]
         with open(SETTINGS_FILE, "w") as f:
             json.dump(settings, f, indent=2)
         return "Settings saved successfully."
     except Exception as e:
         return f"Error saving settings: {e}"
+
+
+def delete_run_directory(run_id_or_path: str) -> bool:
+    """Delete run directory from workspace(s) matching run_id or folder path."""
+    if not run_id_or_path:
+        return False
+    import hashlib
+    import shutil
+
+    # Direct path provided
+    if os.path.exists(run_id_or_path) and os.path.isdir(run_id_or_path):
+        try:
+            shutil.rmtree(run_id_or_path, ignore_errors=True)
+            return True
+        except Exception as e:
+            logger.warning(f"Error removing run directory {run_id_or_path}: {e}")
+
+    # Check via DB first for registered run_dir
+    try:
+        from rag.db import get_connection
+
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT run_dir FROM ocr_runs WHERE run_id = %s", (run_id_or_path,))
+                row = cur.fetchone()
+                if row and row[0] and os.path.exists(row[0]):
+                    shutil.rmtree(row[0], ignore_errors=True)
+                    return True
+    except Exception:
+        pass
+
+    # Search candidate workspace directories
+    candidate_ws = [
+        WORKSPACE_DIR,
+        os.path.join(os.path.expanduser("~"), ".local", "share", "kirag", "workspace"),
+    ]
+    deleted_any = False
+    for ws in candidate_ws:
+        if not os.path.exists(ws):
+            continue
+        try:
+            for item in os.listdir(ws):
+                item_path = os.path.join(ws, item)
+                if not os.path.isdir(item_path):
+                    continue
+                item_id = hashlib.sha256(item_path.encode()).hexdigest()[:16]
+                if item_id == run_id_or_path or item == run_id_or_path:
+                    shutil.rmtree(item_path, ignore_errors=True)
+                    deleted_any = True
+        except Exception:
+            pass
+    return deleted_any
 
 
 def get_available_runs(workspace_dir: str | None = None):
@@ -210,6 +268,12 @@ def get_available_runs(workspace_dir: str | None = None):
 
     seen_names = set()
 
+    # Safely import DB index checker
+    try:
+        from rag.db import is_run_indexed
+    except Exception:
+        is_run_indexed = None
+
     for ws in candidate_dirs:
         if not os.path.exists(ws):
             continue
@@ -228,10 +292,27 @@ def get_available_runs(workspace_dir: str | None = None):
                 md_files = [f for f in os.listdir(md_dir) if f.endswith(".md")]
                 if md_files:
                     seen_names.add(name)
-                    display = f"{name} ({len(md_files)} file{'s' if len(md_files) != 1 else ''})"
+                    is_indexed = False
+                    if is_run_indexed is not None:
+                        try:
+                            import hashlib
+
+                            hashed_id = hashlib.sha256(run_dir.encode()).hexdigest()[:16]
+                            is_indexed = (
+                                is_run_indexed(name, check_vector_store=False)
+                                or is_run_indexed(hashed_id, check_vector_store=False)
+                                or is_run_indexed(run_dir, check_vector_store=False)
+                            )
+                        except Exception:
+                            is_indexed = False
+
+                    badge = "✅ " if is_indexed else "📄 "
+                    suffix = " [INDEXED]" if is_indexed else ""
+                    display = f"{badge}{name} ({len(md_files)} file{'s' if len(md_files) != 1 else ''}){suffix}"
                     runs.append((display, run_dir))
 
     # Sort runs by name descending
     runs.sort(key=lambda r: os.path.basename(r[1]), reverse=True)
     return runs
+
 

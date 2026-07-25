@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   MessageSquareText,
   Send,
@@ -26,6 +26,7 @@ import {
   indexAllRuns,
   exportChatHistory,
   updateSettings,
+  fetchSettings,
 } from "@/lib/api";
 import { ResizableSplit } from "@/components/ResizableSplit";
 
@@ -60,6 +61,7 @@ interface AvailableRunItem {
   run_dir?: string;
   display_name?: string;
   run_id?: string;
+  is_indexed?: boolean;
 }
 
 export const RagChat: React.FC = () => {
@@ -87,6 +89,21 @@ export const RagChat: React.FC = () => {
   });
   const [availableRuns, setAvailableRuns] = useState<AvailableRunItem[]>([]);
   const [selectedRunDir, setSelectedRunDir] = useState<string>("");
+
+  const loadInfra = useCallback(async () => {
+    const status = (await fetchRagInfraStatus()) as InfraStatus;
+    setInfraStatus(status);
+    const stats = (await fetchCorpusStats()) as CorpusStats;
+    setCorpusStats(stats);
+    const runs = (await fetchPipelineRuns()) as AvailableRunItem[];
+    setAvailableRuns(runs || []);
+    if (runs && runs.length > 0 && !selectedRunDir) {
+      setSelectedRunDir(runs[0].run_dir || "");
+    }
+  }, [selectedRunDir]);
+
+  const [isIndexing, setIsIndexing] = useState<boolean>(false);
+  const [indexingMsg, setIndexingMsg] = useState<string>("");
 
   // Analysis settings
   const [modelUrl, setModelUrl] = useState<string>("http://localhost:8000/v1");
@@ -131,13 +148,35 @@ export const RagChat: React.FC = () => {
     },
   ]);
 
-  const loadInfra = async () => {
-    const status = (await fetchRagInfraStatus()) as InfraStatus;
-    setInfraStatus(status);
-    const stats = (await fetchCorpusStats()) as CorpusStats;
-    setCorpusStats(stats);
-    const runs = (await fetchPipelineRuns()) as AvailableRunItem[];
-    setAvailableRuns(runs || []);
+  const handleIndexSelectedRun = async () => {
+    const targetDir = selectedRunDir || (availableRuns.length > 0 ? availableRuns[0].run_dir : "");
+    if (!targetDir || isIndexing) return;
+    setIsIndexing(true);
+    setIndexingMsg("⏳ Indexing selected run...");
+    try {
+      const res = await indexRun(targetDir);
+      setIndexingMsg(res.message || "✅ Indexing completed successfully.");
+      await loadInfra();
+    } catch (err) {
+      setIndexingMsg(`❌ Indexing error: ${String(err)}`);
+    } finally {
+      setIsIndexing(false);
+    }
+  };
+
+  const handleIndexAllRuns = async () => {
+    if (isIndexing) return;
+    setIsIndexing(true);
+    setIndexingMsg("⏳ Indexing all runs...");
+    try {
+      const res = await indexAllRuns();
+      setIndexingMsg(res.message || "✅ Bulk indexing completed successfully.");
+      await loadInfra();
+    } catch (err) {
+      setIndexingMsg(`❌ Bulk indexing error: ${String(err)}`);
+    } finally {
+      setIsIndexing(false);
+    }
   };
 
   useEffect(() => {
@@ -152,12 +191,41 @@ export const RagChat: React.FC = () => {
       const runs = (await fetchPipelineRuns()) as AvailableRunItem[];
       if (!isMounted) return;
       setAvailableRuns(runs || []);
+
+      try {
+        const settings = (await fetchSettings()) as Record<string, unknown>;
+        if (isMounted && settings) {
+          if (settings.analysis_server_url) setModelUrl(String(settings.analysis_server_url));
+          else if (settings.server_url) setModelUrl(String(settings.server_url));
+
+          if (settings.analysis_model_name) setModelName(String(settings.analysis_model_name));
+          else if (settings.model_name) setModelName(String(settings.model_name));
+
+          if (settings.retrieval_top_k) setTopK(Number(settings.retrieval_top_k));
+        }
+      } catch {
+        // Fallback to default state
+      }
     };
     init();
+
+    const handleCasesUpdated = () => {
+      if (isMounted) {
+        loadInfra();
+      }
+    };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("casesUpdated", handleCasesUpdated);
+    }
+
     return () => {
       isMounted = false;
+      if (typeof window !== "undefined") {
+        window.removeEventListener("casesUpdated", handleCasesUpdated);
+      }
     };
-  }, []);
+  }, [loadInfra]);
 
   const handleStartInfra = async () => {
     setInfraMsg("Starting services...");
@@ -367,23 +435,45 @@ export const RagChat: React.FC = () => {
                         </option>
                       ))}
                     </select>
+                    {selectedRunDir && (() => {
+                      const sel = availableRuns.find((r) => r.run_dir === selectedRunDir);
+                      const isIdx = sel?.is_indexed || sel?.display_name?.includes("[INDEXED]");
+                      return (
+                        <div className="mt-1 flex items-center text-[10px] font-mono">
+                          {isIdx ? (
+                            <span className="text-emerald-400 font-semibold bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-800/40">
+                              ✅ Indexed in Vector Corpus
+                            </span>
+                          ) : (
+                            <span className="text-amber-400 font-semibold bg-amber-950/60 px-1.5 py-0.5 rounded border border-amber-800/40">
+                              ⚡ Pending Indexing
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div className="flex items-center gap-2 pt-1">
                     <button
                       type="button"
-                      onClick={() => selectedRunDir && indexRun(selectedRunDir)}
-                      className="flex-1 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold cursor-pointer select-none"
+                      disabled={isIndexing}
+                      onClick={handleIndexSelectedRun}
+                      className="flex-1 py-1 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer select-none"
                     >
-                      Index Selected Run
+                      {isIndexing ? "Indexing..." : "Index Selected Run"}
                     </button>
                     <button
                       type="button"
-                      onClick={() => indexAllRuns()}
-                      className="flex-1 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 cursor-pointer select-none"
+                      disabled={isIndexing}
+                      onClick={handleIndexAllRuns}
+                      className="flex-1 py-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 text-xs font-semibold border border-slate-700 cursor-pointer select-none"
                     >
-                      Index All Runs
+                      {isIndexing ? "Indexing..." : "Index All Runs"}
                     </button>
                   </div>
+                  {indexingMsg && (
+                    <p className="text-[10px] font-mono text-cyan-300 text-center pt-1">{indexingMsg}</p>
+                  )}
                 </div>
               </div>
 

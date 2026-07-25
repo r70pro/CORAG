@@ -41,17 +41,17 @@ def get_available_runs(workspace_dir: str | None = None):
 # --- Forwarding wrappers to keep functions in rag_ui namespace for patching ---
 
 
-def index_run(run_dir, progress=None):
-    yield from rag_ui_handlers.index_run(run_dir, progress)
+def index_run(run_dir, progress=None, force=False):
+    yield from rag_ui_handlers.index_run(run_dir, progress, force=force)
 
 
-def index_all_runs(get_available_runs_fn=None):
+def index_all_runs(get_available_runs_fn=None, force=False):
     import sys
 
     rag_ui = sys.modules[__name__]
     if get_available_runs_fn is None:
         get_available_runs_fn = rag_ui.get_available_runs
-    yield from rag_ui_handlers.index_all_runs(get_available_runs_fn)
+    yield from rag_ui_handlers.index_all_runs(get_available_runs_fn, force=force)
 
 
 def start_rag_infra_ui():
@@ -289,7 +289,7 @@ def index_run_ui_wrapper(run_dir, progress=gr.Progress()):
     if progress is not None:
         progress(0.0, desc="Starting manual indexing...")
 
-    for update in rag_ui.index_run(run_dir):
+    for update in rag_ui.index_run(run_dir, force=True):
         if not update.startswith("[PROGRESS:"):
             rag_ui.log_to_rag(update)
         accumulated_status += update
@@ -328,7 +328,7 @@ def index_all_runs_ui_wrapper(progress=gr.Progress()):
     if progress is not None:
         progress(0.0, desc="Starting bulk indexing...")
 
-    for update in rag_ui.index_all_runs(get_available_runs_fn=rag_ui.get_available_runs):
+    for update in rag_ui.index_all_runs(get_available_runs_fn=rag_ui.get_available_runs, force=True):
         if not update.startswith("[PROGRESS:"):
             rag_ui.log_to_rag(update)
         accumulated_status += update

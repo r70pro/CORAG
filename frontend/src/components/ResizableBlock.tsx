@@ -32,47 +32,28 @@ export const ResizableBlock: React.FC<ResizableBlockProps> = ({
   canMove = false,
   children,
 }) => {
-  const [height, setHeight] = useState<number | null>(() => {
-    if (!id || typeof window === "undefined") return defaultHeight > 0 ? defaultHeight : null;
-    try {
-      const saved = localStorage.getItem(`kirag_block_dim_${id}`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (typeof parsed.height === "number") return parsed.height;
-      }
-    } catch (e) {
-      console.error(`Error restoring height for block ${id}:`, e);
-    }
-    return defaultHeight > 0 ? defaultHeight : null;
-  });
+  const [height, setHeight] = useState<number | null>(defaultHeight > 0 ? defaultHeight : null);
+  const [width, setWidth] = useState<string | number>(defaultWidth);
+  const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
 
-  const [width, setWidth] = useState<string | number>(() => {
-    if (!id || typeof window === "undefined") return defaultWidth;
-    try {
-      const saved = localStorage.getItem(`kirag_block_dim_${id}`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.width !== undefined) return parsed.width;
+  // Restore stored layout post-mount to avoid SSR hydration mismatch
+  useEffect(() => {
+    if (!id || typeof window === "undefined") return;
+    const animId = requestAnimationFrame(() => {
+      try {
+        const saved = localStorage.getItem(`kirag_block_dim_${id}`);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (typeof parsed.height === "number") setHeight(parsed.height);
+          if (parsed.width !== undefined) setWidth(parsed.width);
+          if (typeof parsed.isCollapsed === "boolean") setIsCollapsed(parsed.isCollapsed);
+        }
+      } catch (e) {
+        console.error(`Error restoring layout for block ${id}:`, e);
       }
-    } catch (e) {
-      console.error(`Error restoring width for block ${id}:`, e);
-    }
-    return defaultWidth;
-  });
-
-  const [isCollapsed, setIsCollapsed] = useState<boolean>(() => {
-    if (!id || typeof window === "undefined") return false;
-    try {
-      const saved = localStorage.getItem(`kirag_block_dim_${id}`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (typeof parsed.isCollapsed === "boolean") return parsed.isCollapsed;
-      }
-    } catch (e) {
-      console.error(`Error restoring collapse state for block ${id}:`, e);
-    }
-    return false;
-  });
+    });
+    return () => cancelAnimationFrame(animId);
+  }, [id]);
 
   const [isMaximized, setIsMaximized] = useState<boolean>(false);
   const [isResizing, setIsResizing] = useState<"height" | "width" | "both" | null>(null);

@@ -20,18 +20,18 @@ def _build_dashboard_html():
     return build_html()
 
 
-def index_run(run_dir, progress=None):
+def index_run(run_dir, progress=None, force=False):
     """Index a single OCR run into the RAG system."""
     from indexing_service import CorpusIndexingService
 
-    yield from CorpusIndexingService.index_run(run_dir)
+    yield from CorpusIndexingService.index_run(run_dir, force=force)
 
 
-def index_all_runs(get_available_runs_fn=None):
+def index_all_runs(get_available_runs_fn=None, force=False):
     """Index all available OCR runs into the RAG corpus."""
     from indexing_service import CorpusIndexingService
 
-    yield from CorpusIndexingService.index_all_runs(get_available_runs_fn)
+    yield from CorpusIndexingService.index_all_runs(get_available_runs_fn, force=force)
 
 
 def start_rag_infra_ui():
@@ -129,19 +129,28 @@ def stop_rag_infra_ui_wrapper():
 
 def index_run_ui_wrapper(run_dir):
     accumulated_status = ""
+    if not run_dir:
+        runs = get_available_runs()
+        if runs:
+            run_dir = runs[0][1]
+        else:
+            yield "⚠️ No available OCR run directory selected.", get_rag_logs()
+            return
     log_to_rag(f"Initiated manual indexing for run directory: {run_dir}")
-    for update in index_run(run_dir):
+    for update in index_run(run_dir, force=True):
+        if not update.startswith("[PROGRESS:"):
+            log_to_rag(update)
         accumulated_status += update
-        log_to_rag(update)
         yield accumulated_status, get_rag_logs()
 
 
 def index_all_runs_ui_wrapper():
     accumulated_status = ""
     log_to_rag("Initiated bulk indexing for all runs")
-    for update in index_all_runs():
+    for update in index_all_runs(force=True):
+        if not update.startswith("[PROGRESS:"):
+            log_to_rag(update)
         accumulated_status += update
-        log_to_rag(update)
         yield accumulated_status, get_rag_logs()
 
 

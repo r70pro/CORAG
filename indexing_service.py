@@ -11,13 +11,14 @@ class CorpusIndexingService:
     last_created_run_id = None
 
     @staticmethod
-    def index_run(run_dir):
+    def index_run(run_dir, force=False):
         """Index a single OCR run into the RAG system.
 
         Chunks all markdown files, embeds them, and stores in Qdrant + PostgreSQL.
 
         Args:
             run_dir: Path to the OCR run directory.
+            force: If True, bypass the early is_run_indexed check for manual re-indexing.
 
         Yields:
             Status update strings.
@@ -33,16 +34,17 @@ class CorpusIndexingService:
 
         yield f"🔄 Starting indexing for **{run_name}**...\n"
 
-        # Check if already indexed
-        try:
-            from rag.db import is_run_indexed
+        # Check if already indexed (unless force=True)
+        if not force:
+            try:
+                from rag.db import is_run_indexed
 
-            if is_run_indexed(run_id):
-                yield f"ℹ️ Run **{run_name}** is already indexed. Skipping.\n"
-                yield "✅ Done."
-                return
-        except Exception as e:
-            yield f"⚠️ Could not check index status: {e}\n"
+                if is_run_indexed(run_id):
+                    yield f"ℹ️ Run **{run_name}** is already indexed. Skipping.\n"
+                    yield "✅ Done."
+                    return
+            except Exception as e:
+                yield f"⚠️ Could not check index status: {e}\n"
 
         # Step 1: Chunk documents
         yield "📄 Chunking documents...\n"
@@ -184,7 +186,7 @@ class CorpusIndexingService:
         yield f"\n✅ Successfully indexed **{run_name}**: {total_docs} document(s), {total_chunks} chunk(s).\n"
 
     @staticmethod
-    def index_all_runs(get_available_runs_fn=None):
+    def index_all_runs(get_available_runs_fn=None, force=False):
         """Index all available OCR runs into the RAG corpus.
 
         Yields:
@@ -203,7 +205,7 @@ class CorpusIndexingService:
 
         for display_name, run_dir in runs:
             yield f"--- Processing: {display_name} ---\n"
-            yield from CorpusIndexingService.index_run(run_dir)
+            yield from CorpusIndexingService.index_run(run_dir, force=force)
             yield "\n"
 
         yield "\n✅ All runs processed."

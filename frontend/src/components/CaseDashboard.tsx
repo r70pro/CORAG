@@ -188,6 +188,9 @@ export const CaseDashboard: React.FC = () => {
     setStatusMsg(res.message || "Deleted selected cases.");
     setCheckedIds([]);
     await loadData();
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("casesUpdated"));
+    }
   };
 
   const handleDeleteAll = async () => {
@@ -199,6 +202,9 @@ export const CaseDashboard: React.FC = () => {
     setStatusMsg(res.message || "Deleted all cases.");
     setCheckedIds([]);
     await loadData();
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("casesUpdated"));
+    }
   };
 
   const activeCase = cases.find((c) => c.run_id === selectedCaseId) || cases[0];

@@ -48,6 +48,24 @@ def start_pipeline(req: PipelineStartRequest):
         f.name = resolved_path
         files.append(f)
 
+    def _extract_int_stat(val: object) -> int:
+        if isinstance(val, int):
+            return val
+        if isinstance(val, float):
+            return int(val)
+        if isinstance(val, dict):
+            raw_val = str(val.get("value", ""))
+            import re
+            match = re.search(r"stat-value'>(\d+)<", raw_val) or re.search(r"(\d+)", raw_val)
+            if match:
+                return int(match.group(1))
+        if isinstance(val, str):
+            import re
+            match = re.search(r"(\d+)", val)
+            if match:
+                return int(match.group(1))
+        return 0
+
     def event_generator():
         try:
             for result in process_pdfs(
@@ -64,8 +82,8 @@ def start_pipeline(req: PipelineStartRequest):
                     "log_text": result[0],
                     "status_badge": result[1] if isinstance(result[1], str) else "",
                     "progress_html": result[2],
-                    "completed_pages": result[3] if isinstance(result[3], int | str) else 0,
-                    "failed_pages": result[4] if isinstance(result[4], int | str) else 0,
+                    "completed_pages": _extract_int_stat(result[3]),
+                    "failed_pages": _extract_int_stat(result[4]),
                     "run_id": result[9],
                     "file_status_html": result[10] if isinstance(result[10], str) else "",
                     "upload_manifest_html": result[11] if isinstance(result[11], str) else "",
@@ -80,7 +98,7 @@ def start_pipeline(req: PipelineStartRequest):
 
 @router.get("/runs", response_model=list[RunInfo], summary="List available runs")
 def list_runs():
-    """Return all completed OCR runs with file counts."""
+    """Return all completed OCR runs with file counts and indexed status."""
     from settings_manager import get_available_runs
 
     runs = get_available_runs()
@@ -93,12 +111,14 @@ def list_runs():
         # Extract file count from display name, e.g. "run_... (3 files)"
         match = re.search(r"\((\d+)\s+file", display_name)
         file_count = int(match.group(1)) if match else 0
+        is_indexed = "[INDEXED]" in display_name or display_name.startswith("✅")
         result.append(
             RunInfo(
                 display_name=display_name,
                 run_dir=run_dir,
                 run_id=run_id,
                 file_count=file_count,
+                is_indexed=is_indexed,
             )
         )
     return result
