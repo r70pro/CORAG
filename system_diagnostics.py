@@ -381,6 +381,55 @@ def get_display_name(cmdline: str, default_name: str) -> str:
     return default_name
 
 
+def _query_compute_gpu_processes() -> dict[int, dict[str, Any]]:
+    """Return untruncated per-process GPU allocations from nvidia-smi.
+
+    The human-readable process table truncates six-digit memory values on
+    unified-memory devices such as GB10 (for example, ``100059`` is rendered
+    as ``10005...``).  The CSV query is stable and preserves the full value.
+    """
+    processes: dict[int, dict[str, Any]] = {}
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-compute-apps=pid,process_name,used_memory",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if result.returncode != 0:
+            return processes
+        for line in result.stdout.splitlines():
+            parts = [part.strip() for part in line.rsplit(",", 2)]
+            if len(parts) != 3 or parts[2].upper() in {"", "[N/A]", "N/A"}:
+                continue
+            try:
+                pid = int(parts[0])
+                memory_mib = int(float(parts[2]))
+            except (TypeError, ValueError):
+                continue
+            if pid <= 0 or memory_mib < 0:
+                continue
+            # A process can be returned more than once when it owns multiple
+            # contexts. Aggregate those allocations rather than dropping one.
+            if pid in processes:
+                processes[pid]["vram"] += memory_mib
+            else:
+                processes[pid] = {
+                    "gpu_id": 0,
+                    "pid": pid,
+                    "type": "C",
+                    "name": parts[1],
+                    "vram": memory_mib,
+                }
+    except Exception:
+        pass
+    return processes
+
+
 def get_gpu_metrics_data() -> dict[str, Any]:
     cuda_available = False
     gpu_name = "N/A"
@@ -446,12 +495,17 @@ def get_gpu_metrics_data() -> dict[str, Any]:
             pass
 
     if cuda_available and vram_total > 0:
-        processes = []
+        # Start with the non-truncated machine-readable compute allocations.
+        # The human table is still useful for graphics processes, which are
+        # not included by --query-compute-apps.
+        processes_by_pid = _query_compute_gpu_processes()
+        table_process_order: list[int] = []
         try:
             res_proc = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=3)
             if res_proc.returncode == 0 and res_proc.stdout:
                 lines = res_proc.stdout.splitlines()
                 in_process_section = False
+                parsed_table_row = False
                 for line in lines:
                     if "Processes:" in line:
                         in_process_section = True
@@ -460,7 +514,7 @@ def get_gpu_metrics_data() -> dict[str, Any]:
                         if "=====" in line:
                             continue
                         if "+-----" in line:
-                            if len(processes) > 0:
+                            if parsed_table_row:
                                 break
                             continue
                         match = re.search(
@@ -468,22 +522,40 @@ def get_gpu_metrics_data() -> dict[str, Any]:
                             line,
                         )
                         if match:
+                            parsed_table_row = True
                             gpu_id = int(match.group(1))
                             pid = int(match.group(2))
+                            if pid not in table_process_order:
+                                table_process_order.append(pid)
                             proc_type = match.group(3)
                             proc_name = match.group(4).strip()
                             vram_used_proc = int(match.group(5))
-                            processes.append(
-                                {
-                                    "gpu_id": gpu_id,
-                                    "pid": pid,
-                                    "type": proc_type,
-                                    "name": proc_name,
-                                    "vram": vram_used_proc,
-                                }
-                            )
+                            parsed = {
+                                "gpu_id": gpu_id,
+                                "pid": pid,
+                                "type": proc_type,
+                                "name": proc_name,
+                                "vram": vram_used_proc,
+                            }
+                            if pid in processes_by_pid:
+                                # Preserve the full CSV allocation while using
+                                # the table's process type/name when available.
+                                processes_by_pid[pid].update(
+                                    gpu_id=gpu_id,
+                                    type=proc_type,
+                                    name=proc_name,
+                                )
+                            else:
+                                processes_by_pid[pid] = parsed
         except Exception:
             pass
+
+        # Match nvidia-smi's familiar display order, then include any compute
+        # rows that were omitted entirely from the formatted table.
+        ordered_pids = table_process_order + [
+            pid for pid in processes_by_pid if pid not in table_process_order
+        ]
+        processes = [processes_by_pid[pid] for pid in ordered_pids]
 
         # Use system-wide process sum if global nvidia-smi query didn't give a positive value
         proc_vram_sum = float(sum(p["vram"] for p in processes))

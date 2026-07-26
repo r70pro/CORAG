@@ -70,6 +70,42 @@ def _history_to_pairs(history):
     return pairs
 
 
+def _parse_markdown_table_row(line):
+    """Parse one pipe-delimited Markdown row, preserving escaped pipes.
+
+    LLM-generated provenance commonly contains ``\\|`` inside a cell. A plain
+    ``str.split("|")`` corrupts those citations and produces invalid CSV/DOCX
+    column counts.
+    """
+    stripped = line.strip()
+    if not (stripped.startswith("|") and stripped.endswith("|")):
+        return []
+    if not stripped[1:-1].strip():
+        return []
+
+    cells = []
+    current = []
+    escaped = False
+    for char in stripped[1:-1]:
+        if escaped:
+            if char == "|":
+                current.append("|")
+            else:
+                current.extend(("\\", char))
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == "|":
+            cells.append("".join(current).strip())
+            current = []
+        else:
+            current.append(char)
+    if escaped:
+        current.append("\\")
+    cells.append("".join(current).strip())
+    return cells
+
+
 def export_chat_markdown(history, mode="Free Q&A", active_case="All Cases"):
     """Export a chat session as a Markdown file.
 
@@ -223,7 +259,7 @@ def export_timeline_csv(history, active_case="All Cases"):
                 if re.match(r"^\|[\s\-:|]+\|$", stripped):
                     continue
                 # Parse cells
-                cells = [c.strip() for c in stripped.split("|")[1:-1]]
+                cells = _parse_markdown_table_row(stripped)
                 if not headers:
                     headers = cells
                     in_table = True
@@ -493,11 +529,11 @@ def export_timeline_docx(history, active_case="All Cases"):
                 and i + 1 < len(lines)
                 and re.match(r"^\s*\|[\s\-:|]+\|\s*$", lines[i + 1].strip())
             ):
-                headers = [c.strip() for c in lines[i].strip().split("|")[1:-1]]
+                headers = _parse_markdown_table_row(lines[i])
                 i += 2
                 rows = []
                 while i < len(lines) and lines[i].strip().startswith("|"):
-                    rows.append([c.strip() for c in lines[i].strip().split("|")[1:-1]])
+                    rows.append(_parse_markdown_table_row(lines[i]))
                     i += 1
                 if headers or rows:
                     tables.append((headers, rows))

@@ -338,7 +338,9 @@ def query_llm_streaming(
     """
     url = server_url.rstrip("/") + "/chat/completions"
 
-    is_reasoning_model = "reasoning" in model_name.lower() or "r1" in model_name.lower()
+    normalized_model_name = model_name.lower()
+    is_reasoning_model = "reasoning" in normalized_model_name or "r1" in normalized_model_name
+    is_qwen3_model = "qwen3" in normalized_model_name
     actual_temp = 0.7 if (is_reasoning_model and temperature == 0.1) else temperature
 
     payload = {
@@ -350,6 +352,11 @@ def query_llm_streaming(
     }
     if is_reasoning_model:
         payload["repetition_penalty"] = 1.05
+    if is_qwen3_model:
+        # Qwen3 enables visible chain-of-thought by default.  RAG responses must
+        # contain only the user-facing answer so reasoning neither leaks into
+        # exports nor consumes the configured output budget before the answer.
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
 
     try:
         with httpx.stream(
@@ -412,7 +419,9 @@ def query_llm(
     """
     url = server_url.rstrip("/") + "/chat/completions"
 
-    is_reasoning_model = "reasoning" in model_name.lower() or "r1" in model_name.lower()
+    normalized_model_name = model_name.lower()
+    is_reasoning_model = "reasoning" in normalized_model_name or "r1" in normalized_model_name
+    is_qwen3_model = "qwen3" in normalized_model_name
     actual_temp = 0.7 if (is_reasoning_model and temperature == 0.1) else temperature
 
     payload = {
@@ -424,6 +433,8 @@ def query_llm(
     }
     if is_reasoning_model:
         payload["repetition_penalty"] = 1.05
+    if is_qwen3_model:
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
 
     try:
         response = httpx.post(

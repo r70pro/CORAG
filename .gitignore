@@ -18,3 +18,5 @@ backups/
 build/
 dist/
 *.egg-info/
+frontend/test-results/
+frontend/playwright-report/

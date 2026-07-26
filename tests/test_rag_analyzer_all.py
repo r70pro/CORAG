@@ -255,6 +255,37 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         payload = mock_post.call_args[1]["json"]
         self.assertEqual(payload["repetition_penalty"], 1.05)
 
+    @patch("httpx.stream")
+    def test_query_llm_streaming_disables_qwen3_thinking(self, mock_stream):
+        mock_stream.return_value = MockStreamResponse(200, ["data: [DONE]"])
+
+        list(
+            rag_anz.query_llm_streaming(
+                [], "http://localhost:8000/v1", "Qwen/Qwen3.6-35B-A3B"
+            )
+        )
+
+        payload = mock_stream.call_args.kwargs["json"]
+        self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": False})
+
+    @patch("httpx.post")
+    def test_query_llm_disables_qwen3_thinking(self, mock_post):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "answer"}}]
+        }
+        mock_post.return_value = mock_response
+
+        self.assertEqual(
+            rag_anz.query_llm(
+                [], "http://localhost:8000/v1", "Qwen/Qwen3.6-35B-A3B"
+            ),
+            "answer",
+        )
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": False})
+
     @patch("rag.analyzer.search_similar")
     @patch("rag.analyzer.format_context_for_llm")
     @patch("rag.analyzer.query_llm_streaming")

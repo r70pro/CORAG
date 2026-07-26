@@ -1,6 +1,7 @@
 import React from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { RagChat } from "../RagChat";
+import { triggerRagChatSSE } from "@/lib/api";
 
 jest.mock("@/lib/api", () => ({
   triggerRagChatSSE: jest.fn(),
@@ -26,6 +27,10 @@ jest.mock("@/lib/api", () => ({
 }));
 
 describe("RagChat Component", () => {
+  beforeEach(() => {
+    jest.mocked(triggerRagChatSSE).mockReset();
+  });
+
   test("renders RAG analysis chat interface and input area", async () => {
     render(<RagChat />);
 
@@ -52,5 +57,51 @@ describe("RagChat Component", () => {
     expect(screen.queryByText(/Gavin Weekes/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/2024AL0008570/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Pages 1-3/i)).not.toBeInTheDocument();
+  });
+
+  test("omits empty optional filters from a RAG request", async () => {
+    render(<RagChat />);
+
+    const input = screen.getByPlaceholderText(/Ask a medicolegal question or request an audit.../i);
+    fireEvent.change(input, { target: { value: "Build a timeline" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send Query" }));
+
+    await waitFor(() => {
+      expect(triggerRagChatSSE).toHaveBeenCalledWith(
+        expect.objectContaining({
+          query: "Build a timeline",
+          case_id: undefined,
+          doc_type: undefined,
+          author: undefined,
+          date_from: undefined,
+          date_to: undefined,
+        }),
+        expect.any(Function),
+        expect.any(Function),
+        expect.any(Function),
+      );
+    });
+  });
+
+  test("flushes streamed text and leaves the cleared composer settled when DONE completes", async () => {
+    jest.mocked(triggerRagChatSSE).mockImplementation(
+      (_payload, onChunk, _onError, onComplete) => {
+        onChunk("Timeline complete");
+        onComplete();
+        return { cancel: jest.fn() };
+      },
+    );
+    render(<RagChat />);
+
+    const input = screen.getByPlaceholderText(/Ask a medicolegal question or request an audit.../i);
+    fireEvent.change(input, { target: { value: "Build a timeline" } });
+    const send = screen.getByRole("button", { name: "Send Query" });
+    fireEvent.click(send);
+
+    await waitFor(() => {
+      expect(screen.getByText("Timeline complete")).toBeInTheDocument();
+      expect(send).toHaveAccessibleName("Send Query");
+      expect(send).toBeDisabled();
+    });
   });
 });

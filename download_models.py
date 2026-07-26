@@ -41,7 +41,6 @@ if not HF_TOKEN:
 
 MODELS = [
     "Qwen/Qwen3.6-35B-A3B",
-    "nvidia/Qwen3.6-35B-A3B-NVFP4",
     "nvidia/Phi-4-reasoning-plus-NVFP4",
     "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
     "nvidia/Llama-3.3-70B-Instruct-NVFP4",

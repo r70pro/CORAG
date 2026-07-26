@@ -68,6 +68,7 @@ _embedding_model_name = None
 _embedding_model_lock = threading.Lock()
 _reranker_model = None
 _reranker_model_name = None
+_reranker_model_device = None
 _reranker_model_lock = threading.Lock()
 
 
@@ -676,7 +677,7 @@ def load_reranker_model(model_name=None, device=None):
 
     Uses lazy loading with singleton pattern.
     """
-    global _reranker_model, _reranker_model_name
+    global _reranker_model, _reranker_model_name, _reranker_model_device
 
     if model_name is None:
         try:
@@ -690,11 +691,20 @@ def load_reranker_model(model_name=None, device=None):
         except Exception:
             device = "cuda"
 
-    if _reranker_model is not None and _reranker_model_name == model_name:
+    device = str(device).lower()
+    if (
+        _reranker_model is not None
+        and _reranker_model_name == model_name
+        and _reranker_model_device == device
+    ):
         return _reranker_model
 
     with _reranker_model_lock:
-        if _reranker_model is not None and _reranker_model_name == model_name:
+        if (
+            _reranker_model is not None
+            and _reranker_model_name == model_name
+            and _reranker_model_device == device
+        ):
             return _reranker_model
 
         from sentence_transformers import CrossEncoder
@@ -702,5 +712,6 @@ def load_reranker_model(model_name=None, device=None):
         logger.info(f"Loading reranker model '{model_name}' on {device}...")
         _reranker_model = CrossEncoder(model_name, device=device)
         _reranker_model_name = model_name
+        _reranker_model_device = device
         logger.info("Reranker model loaded successfully.")
         return _reranker_model

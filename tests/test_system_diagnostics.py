@@ -305,6 +305,10 @@ class TestSystemDiagnostics(unittest.TestCase):
 """
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout=smi_query_out),
+            MagicMock(
+                returncode=0,
+                stdout="111, /usr/bin/python, 500\n333, /usr/local/bin/app, 50\n",
+            ),
             MagicMock(returncode=0, stdout=smi_proc_section),
         ]
 
@@ -352,12 +356,16 @@ class TestSystemDiagnostics(unittest.TestCase):
 +-----------------------------------------------------------------------------+
 |  GPU   GI   CI        PID   Type   Process name                             |
 |=============================================================================|
-|    0   N/A  N/A   1499941      C   VLLM::EngineCore                    83146MiB |
-|    0   N/A  N/A    167924      C   python: app.py                       4701MiB |
+|    0   N/A  N/A   1499941      C   VLLM::EngineCore                     10005... |
+|    0   N/A  N/A    167924      C   python: app.py                        3997MiB |
 +-----------------------------------------------------------------------------+
 """
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout=smi_query_out),
+            MagicMock(
+                returncode=0,
+                stdout="1499941, VLLM::EngineCore, 100059\n167924, python, 3997\n",
+            ),
             MagicMock(returncode=0, stdout=smi_proc_section),
         ]
 
@@ -372,8 +380,11 @@ class TestSystemDiagnostics(unittest.TestCase):
                 res = system_diagnostics.get_gpu_metrics_data()
                 self.assertTrue(res["cuda_available"])
                 self.assertEqual(res["gpu_name"], "NVIDIA GB10")
-                # vram_used should prioritize active process sum (83146 + 4701 = 87847) over local PyTorch allocation (2168)
-                self.assertEqual(res["vram_used"], 87847.0)
+                # The machine-readable value must override the width-truncated
+                # 10005... value in the human-readable process table.
+                self.assertEqual(res["processes"][0]["vram"], 100059)
+                self.assertEqual(res["vram_used"], 104056.0)
+                self.assertGreater(res["vram_pct"], 80.0)
                 self.assertLessEqual(res["vram_potential_free"], res["vram_total"])
 
     @patch("subprocess.run")
@@ -400,6 +411,7 @@ class TestSystemDiagnostics(unittest.TestCase):
 """
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout=smi_query_out),
+            MagicMock(returncode=0, stdout=""),
             MagicMock(returncode=0, stdout=smi_proc_section),
         ]
 
@@ -601,6 +613,5 @@ class TestSystemDiagnostics(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
 
 

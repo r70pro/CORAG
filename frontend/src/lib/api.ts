@@ -412,7 +412,7 @@ export async function downloadDiagnosticReport() {
 
 export async function fetchSettings() {
   try {
-    return await requestJson<ApiResult>("/api/settings/");
+    return await requestJson<ApiResult>("/api/settings");
   } catch {
     return {};
   }
@@ -420,7 +420,7 @@ export async function fetchSettings() {
 
 export async function updateSettings(payload: Record<string, unknown>) {
   try {
-    return await requestJson<ApiResult>("/api/settings/", {
+    return await requestJson<ApiResult>("/api/settings", {
       method: "PUT",
       json: payload,
     });

@@ -204,9 +204,14 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
   ];
 
   // VRAM calculation
-  const vramUsed = gpuInfo?.vram_used ?? 4.2;
-  const vramTotal = gpuInfo?.vram_total ?? 24.0;
-  const vramPct = gpuInfo?.vram_pct ?? Math.round((vramUsed / vramTotal) * 100);
+  // The diagnostics API reports memory in MiB (the underlying nvidia-smi unit).
+  const vramUsed = gpuInfo?.vram_used ?? 0;
+  const vramTotal = gpuInfo?.vram_total ?? 0;
+  const vramPct =
+    gpuInfo?.vram_pct ??
+    (vramTotal > 0 ? Math.round((vramUsed / vramTotal) * 100) : 0);
+  const vramUsedGiB = vramUsed / 1024;
+  const vramTotalGiB = vramTotal / 1024;
 
   return (
     <header className="w-full bg-[#0d121f]/90 backdrop-blur-md border-b border-slate-800/80 sticky top-0 z-40 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 shadow-xl shadow-black/20">
@@ -282,7 +287,11 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
             <div className="flex flex-col text-left">
               <div className="flex items-center justify-between text-[10px] space-x-1 font-mono">
                 <span className="text-slate-400">VRAM</span>
-                <span className="text-cyan-300 font-bold">{vramUsed.toFixed(1)}/{vramTotal.toFixed(0)} GB</span>
+                <span className="text-cyan-300 font-bold">
+                  {vramTotal > 0
+                    ? `${vramUsedGiB.toFixed(1)}/${vramTotalGiB.toFixed(1)} GiB`
+                    : "Unavailable"}
+                </span>
               </div>
               {/* Mini gradient bar */}
               <div className="w-16 h-1.5 bg-slate-950 rounded-full overflow-hidden border border-slate-800 mt-0.5">
@@ -310,17 +319,9 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
                   <span className="text-slate-400">GPU Device:</span>
                   <span className="font-mono text-slate-200">{gpuInfo?.name || "NVIDIA GPU"}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">vLLM Container:</span>
-                  <span className="font-mono text-indigo-300">~3.5 GB (Dedicated)</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Embeddings & Torch:</span>
-                  <span className="font-mono text-emerald-300">~0.7 GB (Active)</span>
-                </div>
                 <div className="flex justify-between border-t border-slate-800 pt-1.5">
-                  <span className="text-slate-400">Total VRAM:</span>
-                  <span className="font-mono font-bold text-cyan-300">{vramUsed.toFixed(2)} / {vramTotal.toFixed(2)} GB</span>
+                  <span className="text-slate-400">Used / Total:</span>
+                  <span className="font-mono font-bold text-cyan-300">{vramUsedGiB.toFixed(2)} / {vramTotalGiB.toFixed(2)} GiB</span>
                 </div>
               </div>
             </div>

@@ -291,12 +291,13 @@ class TestRAGEmbeddingAll(unittest.TestCase):
             def __enter__(self):
                 rag_emb._reranker_model = "fake_inner_reranker"
                 rag_emb._reranker_model_name = "my_reranker"
+                rag_emb._reranker_model_device = "cpu"
                 return self
             def __exit__(self, exc_type, exc_val, exc_tb):
                 pass
         
         with patch("rag.embedding._reranker_model_lock", MockLockRerank()):
-            res = rag_emb.load_reranker_model("my_reranker")
+            res = rag_emb.load_reranker_model("my_reranker", "cpu")
             self.assertEqual(res, "fake_inner_reranker")
 
     @patch("rag.cache.is_healthy")
@@ -410,6 +411,7 @@ class TestRAGEmbeddingAll(unittest.TestCase):
         # Reset cached reference
         rag_emb._reranker_model = None
         rag_emb._reranker_model_name = None
+        rag_emb._reranker_model_device = None
 
         # 1. load_settings exception path for model and device
         mock_load_settings.side_effect = Exception("disk error")
@@ -419,6 +421,12 @@ class TestRAGEmbeddingAll(unittest.TestCase):
         # 2. Singleton caching hit path
         res2 = rag_emb.load_reranker_model(None, None)
         self.assertEqual(res, res2)
+
+        # The same checkpoint must be reloaded when its execution device changes.
+        calls_before_switch = mock_cross_encoder.call_count
+        rag_emb.load_reranker_model("BAAI/bge-reranker-large", "cpu")
+        self.assertEqual(mock_cross_encoder.call_count, calls_before_switch + 1)
+        self.assertEqual(mock_cross_encoder.call_args.kwargs["device"], "cpu")
 
     @patch("rag.cache.is_healthy", return_value=False)
     @patch("sentence_transformers.SentenceTransformer")

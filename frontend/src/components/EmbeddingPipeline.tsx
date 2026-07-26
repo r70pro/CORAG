@@ -193,7 +193,7 @@ export const EmbeddingPipeline: React.FC = () => {
               <h2 className="text-lg font-bold text-slate-100 tracking-wide flex items-center gap-2">
                 Embedding Pipeline
                 <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded-md bg-emerald-950 text-emerald-300 border border-emerald-800/50">
-                  ⚡ 50x GPU Accelerated
+                  CUDA/CPU Auto-Select
                 </span>
               </h2>
               <p className="text-xs text-slate-400">
@@ -217,7 +217,7 @@ export const EmbeddingPipeline: React.FC = () => {
 
           <div className="flex items-center space-x-1.5 bg-slate-950/80 border border-slate-800 rounded-xl px-2.5 py-1 text-xs font-mono text-slate-300">
             <span className="text-slate-500">Chunk Size:</span>
-            <span className="text-cyan-300 font-bold">{chunkSize} tokens ({chunkOverlap} ovlp)</span>
+            <span className="text-cyan-300 font-bold">{chunkSize} chars ({chunkOverlap} overlap)</span>
           </div>
 
           <button
@@ -281,8 +281,9 @@ export const EmbeddingPipeline: React.FC = () => {
 
                 <div className="space-y-3 text-xs">
                   <div>
-                    <label className="block text-slate-400 mb-1">Compute Engine Device</label>
+                    <label htmlFor="embedding-device" className="block text-slate-400 mb-1">Compute Engine Device</label>
                     <select
+                      id="embedding-device"
                       value={device}
                       onChange={(e) => setDevice(e.target.value)}
                       className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-slate-200 focus:outline-none"
@@ -294,8 +295,9 @@ export const EmbeddingPipeline: React.FC = () => {
                   </div>
 
                   <div>
-                    <label className="block text-slate-400 mb-1">Embedding Model Name</label>
+                    <label htmlFor="embedding-model" className="block text-slate-400 mb-1">Embedding Model Name</label>
                     <select
+                      id="embedding-model"
                       value={modelName}
                       onChange={(e) => setModelName(e.target.value)}
                       className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-slate-200 focus:outline-none"
@@ -398,8 +400,9 @@ export const EmbeddingPipeline: React.FC = () => {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2 text-xs">
                   <div>
-                    <label className="block text-slate-400 mb-1">Select Markdown Files (.md)</label>
+                    <label htmlFor="external-markdown-files" className="block text-slate-400 mb-1">Select Markdown Files (.md)</label>
                     <input
+                      id="external-markdown-files"
                       type="file"
                       multiple
                       accept=".md"
@@ -409,8 +412,9 @@ export const EmbeddingPipeline: React.FC = () => {
                   </div>
 
                   <div>
-                    <label className="block text-slate-400 mb-1">Target Case</label>
+                    <label htmlFor="external-markdown-target" className="block text-slate-400 mb-1">Target Case</label>
                     <select
+                      id="external-markdown-target"
                       value={targetCase}
                       onChange={(e) => setTargetCase(e.target.value)}
                       className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-slate-200 cursor-pointer"
@@ -426,8 +430,9 @@ export const EmbeddingPipeline: React.FC = () => {
 
                   {targetCase === "new" && (
                     <div>
-                      <label className="block text-slate-400 mb-1">New Case Name</label>
+                      <label htmlFor="external-markdown-case-name" className="block text-slate-400 mb-1">New Case Name</label>
                       <input
+                        id="external-markdown-case-name"
                         type="text"
                         placeholder="e.g. My Custom Case"
                         value={newCaseName}
@@ -468,8 +473,9 @@ export const EmbeddingPipeline: React.FC = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-1 min-h-0">
               <div className="space-y-3 text-xs flex flex-col justify-center">
                 <div>
-                  <label className="block text-slate-400 mb-1">Select OCR Run to Index</label>
+                  <label htmlFor="embedding-run" className="block text-slate-400 mb-1">Select OCR Run to Index</label>
                   <select
+                    id="embedding-run"
                     value={selectedRunDir}
                     onChange={(e) => setSelectedRunDir(e.target.value)}
                     className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-slate-200 cursor-pointer"

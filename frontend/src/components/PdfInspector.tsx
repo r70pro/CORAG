@@ -69,7 +69,17 @@ const parseStrictHtmlTable = (source: string): TableCell[][] | null => {
     /^<\/?(?:table|thead|tbody|tfoot|tr)>$/i;
   const allowedCell =
     /^<(?:th|td)(?:\s+(?:colspan|rowspan)\s*=\s*(?:["']\d+["']|\d+))*\s*>$|^<\/(?:th|td)>$/i;
-  if (tags.some((tag) => !allowedTag.test(tag) && !allowedCell.test(tag))) return null;
+  const allowedBreak = /^<br\s*\/?>$/i;
+  if (
+    tags.some(
+      (tag) =>
+        !allowedTag.test(tag) &&
+        !allowedCell.test(tag) &&
+        !allowedBreak.test(tag),
+    )
+  ) {
+    return null;
+  }
 
   const inner = trimmed.replace(/^<table>/i, "").replace(/<\/table>$/i, "");
   const rows: TableCell[][] = [];
@@ -92,11 +102,15 @@ const parseStrictHtmlTable = (source: string): TableCell[][] | null => {
       const cellIndex = cellMatch.index ?? 0;
       outsideCells += rowSource.slice(lastCellEnd, cellIndex);
       lastCellEnd = cellIndex + cellMatch[0].length;
-      if (/<[^>]*>/.test(cellMatch[3])) return null;
+      const cellSource = cellMatch[3];
+      const unsafeNestedTags = (cellSource.match(/<[^>]*>/g) || []).filter(
+        (tag) => !allowedBreak.test(tag),
+      );
+      if (unsafeNestedTags.length > 0) return null;
       const attributes = cellMatch[2] || "";
       cells.push({
         header: cellMatch[1].toLowerCase() === "th",
-        text: decodeHtmlEntities(cellMatch[3]),
+        text: decodeHtmlEntities(cellSource.replace(/<br\s*\/?>/gi, "\n")),
         colSpan: parseCellSpan(attributes, "colspan"),
         rowSpan: parseCellSpan(attributes, "rowspan"),
       });
@@ -415,7 +429,7 @@ export const PdfInspector: React.FC = () => {
               <h2 className="text-lg font-bold text-slate-100 tracking-wide flex items-center gap-2">
                 Layout Inspector
                 <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded-md bg-emerald-950 text-emerald-300 border border-emerald-800/50">
-                  98.4% High Quality OCR
+                  Source Verification Required
                 </span>
               </h2>
               <p className="text-xs text-slate-400">
@@ -474,10 +488,11 @@ export const PdfInspector: React.FC = () => {
           {/* Document Selector */}
           <div className="flex-1 flex flex-wrap items-center gap-3">
             <div className="flex-1 min-w-[200px]">
-              <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+              <label htmlFor="inspector-run" className="block text-[11px] font-semibold text-slate-400 mb-1">
                 📄 Select Processed Document Run
               </label>
               <select
+                id="inspector-run"
                 value={selectedRun}
                 onChange={(e) => handleRunChange(e.target.value)}
                 className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-slate-200 focus:outline-none"
@@ -492,10 +507,11 @@ export const PdfInspector: React.FC = () => {
 
             {runFiles.length > 1 && (
               <div className="min-w-[160px]">
-                <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                <label htmlFor="inspector-file" className="block text-[11px] font-semibold text-slate-400 mb-1">
                   File
                 </label>
                 <select
+                  id="inspector-file"
                   value={selectedFilename}
                   onChange={(e) => setSelectedFilename(e.target.value)}
                   className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-slate-200"

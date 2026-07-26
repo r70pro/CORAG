@@ -110,9 +110,11 @@ export const RagChat: React.FC = () => {
   const [modelUrl, setModelUrl] = useState<string>("http://localhost:8000/v1");
   const [modelName, setModelName] = useState<string>("nvidia/Phi-4-reasoning-plus-NVFP4");
   const [topK, setTopK] = useState<number>(8);
-  const [useReranker] = useState<boolean>(true);
-  const [rerankerModel] = useState<string>("BAAI/bge-reranker-large");
-  const [rerankerDevice] = useState<string>("cuda");
+  const [maxOutputTokens, setMaxOutputTokens] = useState<number>(4096);
+  const [useReranker, setUseReranker] = useState<boolean>(true);
+  const [rerankerModel, setRerankerModel] = useState<string>("BAAI/bge-reranker-large");
+  const [rerankerDevice, setRerankerDevice] = useState<string>("cuda");
+  const [analysisSettingsLoaded, setAnalysisSettingsLoaded] = useState<boolean>(false);
   const [saveConfigStatus, setSaveConfigStatus] = useState<string>("");
 
   // Search filters
@@ -189,9 +191,14 @@ export const RagChat: React.FC = () => {
           else if (settings.model_name) setModelName(String(settings.model_name));
 
           if (settings.retrieval_top_k) setTopK(Number(settings.retrieval_top_k));
+          if (typeof settings.use_reranker === "boolean") setUseReranker(settings.use_reranker);
+          if (settings.reranker_model) setRerankerModel(String(settings.reranker_model));
+          if (settings.reranker_device) setRerankerDevice(String(settings.reranker_device));
         }
       } catch {
         // Fallback to default state
+      } finally {
+        if (isMounted) setAnalysisSettingsLoaded(true);
       }
     };
     init();
@@ -270,6 +277,24 @@ export const RagChat: React.FC = () => {
 
     setMessages((prev) => [...prev, botMsg]);
 
+    // Token-level SSE can contain thousands of events. Batch UI updates so a
+    // long answer cannot starve the final DONE callback and leave the composer
+    // permanently disabled.
+    let pendingText = "";
+    let flushTimer: ReturnType<typeof setTimeout> | undefined;
+    const flushPendingText = () => {
+      if (flushTimer) clearTimeout(flushTimer);
+      flushTimer = undefined;
+      if (!pendingText) return;
+      const text = pendingText;
+      pendingText = "";
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id === botMsgId ? { ...message, text: message.text + text } : message,
+        ),
+      );
+    };
+
     ragRequestRef.current?.cancel("A new RAG request started");
     ragRequestRef.current = triggerRagChatSSE(
       {
@@ -278,22 +303,23 @@ export const RagChat: React.FC = () => {
         model_url: modelUrl,
         model_name: modelName,
         top_k: topK,
-        case_id: activeCase,
-        doc_type: filterDocType,
-        author: filterAuthor,
-        date_from: filterDateFrom,
-        date_to: filterDateTo,
+        case_id: activeCase || undefined,
+        doc_type: filterDocType || undefined,
+        author: filterAuthor || undefined,
+        date_from: filterDateFrom || undefined,
+        date_to: filterDateTo || undefined,
         use_reranker: useReranker,
         reranker_model: rerankerModel,
         reranker_device: rerankerDevice,
+        max_output_tokens: maxOutputTokens,
         stream: true,
       },
       (chunk) => {
-        setMessages((prev) =>
-          prev.map((m) => (m.id === botMsgId ? { ...m, text: m.text + chunk } : m))
-        );
+        pendingText += chunk;
+        if (!flushTimer) flushTimer = setTimeout(flushPendingText, 200);
       },
       (err) => {
+        flushPendingText();
         ragRequestRef.current = null;
         setMessages((prev) =>
           prev.map((m) =>
@@ -303,6 +329,7 @@ export const RagChat: React.FC = () => {
         setIsStreaming(false);
       },
       () => {
+        flushPendingText();
         ragRequestRef.current = null;
         setIsStreaming(false);
       }
@@ -349,7 +376,9 @@ export const RagChat: React.FC = () => {
 
           <div className="flex items-center space-x-1.5 bg-slate-950/80 border border-slate-800 rounded-xl px-2.5 py-1 text-xs font-mono text-slate-300">
             <span className="text-slate-500">Reranker:</span>
-            <span className="text-emerald-300 font-bold">{useReranker ? "Active (GPU)" : "Disabled"}</span>
+            <span className="text-emerald-300 font-bold">
+              {useReranker ? `Active (${rerankerDevice.toUpperCase()})` : "Disabled"}
+            </span>
           </div>
 
           <div className="flex items-center space-x-1.5 bg-slate-950/80 border border-slate-800 rounded-xl px-2.5 py-1 text-xs font-mono text-slate-300">
@@ -416,8 +445,9 @@ export const RagChat: React.FC = () => {
                     Runs: {corpusStats.indexed_runs} · Docs: {corpusStats.indexed_documents} · Chunks: {corpusStats.total_chunks}
                   </div>
                   <div>
-                    <label className="block text-slate-400 text-[10px] mb-1">Select OCR Run to Index</label>
+                    <label htmlFor="rag-index-run" className="block text-slate-400 text-[10px] mb-1">Select OCR Run to Index</label>
                     <select
+                      id="rag-index-run"
                       value={selectedRunDir}
                       onChange={(e) => setSelectedRunDir(e.target.value)}
                       className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-[11px] cursor-pointer"
@@ -480,20 +510,24 @@ export const RagChat: React.FC = () => {
                 </div>
                 <div className="p-3 space-y-2 text-xs">
                   <div>
-                    <label className="block text-slate-400 text-[10px] mb-0.5">Model Server URL</label>
+                    <label htmlFor="analysis-model-url" className="block text-slate-400 text-[10px] mb-0.5">Model Server URL</label>
                     <input
+                      id="analysis-model-url"
                       type="text"
                       value={modelUrl}
                       onChange={(e) => setModelUrl(e.target.value)}
+                      disabled={!analysisSettingsLoaded}
                       className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-[11px]"
                     />
                   </div>
                   <div>
-                    <label className="block text-slate-400 text-[10px] mb-0.5">Model Name</label>
+                    <label htmlFor="analysis-model-name" className="block text-slate-400 text-[10px] mb-0.5">Model Name</label>
                     <input
+                      id="analysis-model-name"
                       type="text"
                       value={modelName}
                       onChange={(e) => setModelName(e.target.value)}
+                      disabled={!analysisSettingsLoaded}
                       className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-[11px]"
                     />
                   </div>
@@ -509,9 +543,55 @@ export const RagChat: React.FC = () => {
                     onChange={(e) => setTopK(Number(e.target.value))}
                     className="w-full accent-indigo-500 cursor-pointer"
                   />
+                  <div>
+                    <label htmlFor="analysis-max-output-tokens" className="block text-slate-400 text-[10px] mb-0.5">Maximum Output Tokens</label>
+                    <input
+                      id="analysis-max-output-tokens"
+                      type="number"
+                      min={1}
+                      max={131071}
+                      value={maxOutputTokens}
+                      onChange={(event) => setMaxOutputTokens(Math.max(1, Number(event.target.value) || 1))}
+                      className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-[11px]"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 text-[11px] text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={useReranker}
+                      onChange={(event) => setUseReranker(event.target.checked)}
+                      disabled={!analysisSettingsLoaded}
+                    />
+                    Enable Cross-Encoder Reranker
+                  </label>
+                  <div>
+                    <label htmlFor="reranker-model" className="block text-slate-400 text-[10px] mb-0.5">Reranker Model</label>
+                    <input
+                      id="reranker-model"
+                      type="text"
+                      value={rerankerModel}
+                      onChange={(event) => setRerankerModel(event.target.value)}
+                      disabled={!analysisSettingsLoaded || !useReranker}
+                      className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-[11px] disabled:opacity-50"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="reranker-device" className="block text-slate-400 text-[10px] mb-0.5">Reranker Device</label>
+                    <select
+                      id="reranker-device"
+                      value={rerankerDevice}
+                      onChange={(event) => setRerankerDevice(event.target.value)}
+                      disabled={!analysisSettingsLoaded || !useReranker}
+                      className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-[11px] disabled:opacity-50"
+                    >
+                      <option value="cuda">CUDA GPU</option>
+                      <option value="cpu">CPU</option>
+                    </select>
+                  </div>
                   <button
                     type="button"
                     onClick={handleSaveAnalysisConfig}
+                    disabled={!analysisSettingsLoaded}
                     className="w-full py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 mt-1 cursor-pointer select-none"
                   >
                     Save Model Settings
@@ -680,7 +760,7 @@ export const RagChat: React.FC = () => {
                         ) : (
                           <Send className="w-4 h-4 pointer-events-none" />
                         )}
-                        <span>Send Query</span>
+                        <span>{isStreaming ? "Generating…" : "Send Query"}</span>
                       </button>
                     </div>
                   </div>
@@ -861,7 +941,7 @@ export const RagChat: React.FC = () => {
                       ) : (
                         <Send className="w-4 h-4 pointer-events-none" />
                       )}
-                      <span>Send Query</span>
+                      <span>{isStreaming ? "Generating…" : "Send Query"}</span>
                     </button>
                   </div>
                 </div>

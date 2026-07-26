@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import re
 from pathlib import Path
 
@@ -72,6 +73,10 @@ def test_pdf_upload_uses_bounded_reads_unique_name_and_escaped_metadata(
         "report&lt;img onerror=alert(1)&gt;.pdf"
     )
     assert (tmp_path / "workspace" / "uploads" / stored_name).is_file()
+    metadata_path = tmp_path / "workspace" / "uploads" / f"{stored_name}.metadata.json"
+    assert json.loads(metadata_path.read_text(encoding="utf-8")) == {
+        "original_name": "report&lt;img onerror=alert(1)&gt;.pdf"
+    }
     assert upload.read_sizes
     assert max(upload.read_sizes) == UPLOAD_CHUNK_BYTES
     assert upload.closed

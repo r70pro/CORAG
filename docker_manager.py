@@ -70,6 +70,22 @@ def check_server_ready(port):
         return False
 
 
+def get_docker_restart_count() -> int:
+    """Return the managed container's restart count, or zero when unavailable."""
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.RestartCount}}", CONTAINER_NAME],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return max(0, int(result.stdout.strip()))
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
 def get_docker_status_str(port):
     # Defensively coerce the port so an empty/non-numeric value (e.g. a cleared
     # Gradio Number widget) cannot raise TypeError in check_server_ready.
@@ -80,11 +96,17 @@ def get_docker_status_str(port):
     status = get_docker_status()
     if status == "not_found":
         return "not_found", "<span class='badge-idle'>Docker: Not Created</span>"
+    elif status == "foreign":
+        return "foreign", "<span class='badge-failed'>Docker: Foreign Container</span>"
     elif status == "exited":
         return "stopped", "<span class='badge-stopped'>Docker: Stopped</span>"
-    elif status in ("running", "restarting"):
+    elif status == "restarting":
+        return "error", "<span class='badge-failed'>Inference Server: Crash Loop</span>"
+    elif status == "running":
         if check_server_ready(port):
             return "ready", "<span class='badge-success'>Inference Server: Ready</span>"
+        elif get_docker_restart_count() > 0:
+            return "error", "<span class='badge-failed'>Inference Server: Startup Failed</span>"
         else:
             return "starting", "<span class='badge-running'>Server: Starting / Loading Model</span>"
     else:
@@ -633,6 +655,11 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tenso
             "--tensor-parallel-size",
             str(tp_int),
         ]
+        if "qwen3" in model.lower():
+            # Parse Qwen3 reasoning separately even though KIRAG analysis
+            # requests disable thinking. This keeps the OpenAI-compatible API
+            # correct for direct/advanced callers that explicitly enable it.
+            cmd.extend(["--reasoning-parser", "qwen3"])
         if remote_code:
             model_hash = hashlib.sha256(model.encode("utf-8")).hexdigest()[:12]
             safe_model_name = (

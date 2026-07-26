@@ -217,6 +217,20 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(data["status"], "ready")
         self.assertEqual(data["message"], "vLLM Running")
 
+    @patch("docker_manager.get_docker_status_str")
+    @patch("settings_manager.load_settings")
+    def test_docker_status_reports_foreign_container(self, mock_settings, mock_status_str):
+        mock_settings.return_value = {}
+        mock_status_str.return_value = (
+            "foreign",
+            "<span class='badge-failed'>Docker: Foreign Container</span>",
+        )
+
+        response = self.client.get("/api/docker/status")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "foreign")
+
     @patch("docker_manager.start_docker_container")
     def test_docker_start(self, mock_start):
         mock_start.return_value = (True, "Container started")
@@ -344,6 +358,8 @@ class TestAPI(unittest.TestCase):
         stored_pdf = os.path.join(self.upload_dir, "stored.pdf")
         with open(stored_pdf, "wb") as pdf:
             pdf.write(self.pdf_bytes)
+        with open(f"{stored_pdf}.metadata.json", "w", encoding="utf-8") as metadata:
+            json.dump({"original_name": "original report.pdf"}, metadata)
         mock_process.return_value = [("log", "badge", "progress", None, None, None, None, None, None, "run_id", "status", "manifest", "stop")]
 
         payload = {
@@ -357,6 +373,9 @@ class TestAPI(unittest.TestCase):
         # Read the event stream
         lines = [line for line in response.iter_lines() if line]
         self.assertTrue(any("run_id" in line for line in lines))
+        submitted_file = mock_process.call_args.kwargs["files"][0]
+        self.assertEqual(submitted_file.name, stored_pdf)
+        self.assertEqual(submitted_file.original_filename, "original report.pdf")
 
     def test_pipeline_upload(self):
         files = [("files", ("test.pdf", self.pdf_bytes, "application/pdf"))]

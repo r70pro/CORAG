@@ -42,12 +42,16 @@ def get_status():
     status = "unknown"
     if "Ready" in badge_html or "badge-success" in badge_html:
         status = "ready"
+    elif "Foreign Container" in badge_html:
+        status = "foreign"
     elif "Running" in badge_html or "Starting" in badge_html or "badge-running" in badge_html:
         status = "starting"
     elif "Stopped" in badge_html or "badge-stopped" in badge_html:
         status = "stopped"
     elif "Not Found" in badge_html or "badge-idle" in badge_html:
         status = "not_found"
+    elif "Error" in badge_html or "Failed" in badge_html or "badge-failed" in badge_html:
+        status = "error"
     return DockerStatusResponse(status=status, message=status_text, badge_html=badge_html)
 
 

@@ -232,6 +232,25 @@ End of timeline.
         self.assertEqual(rows[1], ["2020-01-01", "Injury", "Employer"])
         self.assertEqual(rows[2], ["2020-01-02", "Surgery", "Dr Smith"])
 
+    def test_export_timeline_csv_preserves_escaped_pipes_in_provenance(self):
+        history = [
+            {
+                "role": "assistant",
+                "content": (
+                    "| Date | Event | Source |\n"
+                    "|---|---|---|\n"
+                    "| 2020-01-01 | Injury | record.pdf \\| Page: 2 \\| Author: Dr Smith |"
+                ),
+            }
+        ]
+
+        path = self.track_file(export_timeline_csv(history, active_case="case-pipes"))
+        with open(path, "r", encoding="utf-8", newline="") as exported:
+            rows = list(csv.reader(exported))
+
+        self.assertEqual({len(row) for row in rows}, {3})
+        self.assertEqual(rows[1][2], "record.pdf | Page: 2 | Author: Dr Smith")
+
     def test_export_chat_docx_empty(self):
         self.assertIsNone(export_chat_docx(None))
         self.assertIsNone(export_chat_docx([]))
@@ -338,4 +357,3 @@ End of timeline.
         doc = docx.Document()
         # Direct call to empty headers and rows (line 380)
         self.assertIsNone(_add_docx_table(doc, [], []))
-

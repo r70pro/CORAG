@@ -138,6 +138,29 @@ describe("same-origin API client", () => {
     await expect(collectStream(oneByteAtATime)).resolves.toEqual(["héllo 🌏"]);
   });
 
+  test("completes on DONE even when transport cancellation would never settle", async () => {
+    const done = new TextEncoder().encode('data: {"chunk":"complete"}\n\ndata: [DONE]\n\n');
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(done);
+      },
+      cancel() {
+        return new Promise<void>(() => undefined);
+      },
+    });
+    global.fetch = jest.fn().mockResolvedValue(new Response(stream, { status: 200 }));
+
+    const completion = new Promise<string>((resolve, reject) => {
+      requestJsonSse<{ chunk: string }>("/api/stream", {}, {
+        onMessage: (event) => expect(event.chunk).toBe("complete"),
+        onError: reject,
+        onComplete: () => resolve("done"),
+      });
+    });
+
+    await expect(completion).resolves.toBe("done");
+  });
+
   test("the reusable parser accepts LF, CRLF, CR, comments, and multiple data lines", () => {
     const events: string[] = [];
     const parser = new BufferedSseParser((event) => events.push(event.data));

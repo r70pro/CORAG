@@ -185,6 +185,7 @@ def process_pdfs(
         os.environ.get("GRADIO_TEMP_DIR", os.path.join(tempfile.gettempdir(), "gradio"))
     ).resolve()
     pdf_paths: list[str] = []
+    original_filenames: list[str] = []
     for f in files:
         raw_p = None
         if isinstance(f, str):
@@ -201,6 +202,14 @@ def process_pdfs(
                 continue
             if safe_path.is_file():
                 pdf_paths.append(str(safe_path))
+                original_filename = getattr(f, "original_filename", safe_path.name)
+                if not isinstance(original_filename, str):
+                    original_filename = safe_path.name
+                try:
+                    validate_filename(original_filename, {".pdf"})
+                except PathSecurityError:
+                    original_filename = safe_path.name
+                original_filenames.append(original_filename)
 
     if not pdf_paths:
         yield _make_empty_yield("Invalid file uploads.", "<span class='badge-idle'>Idle</span>", "")
@@ -272,7 +281,7 @@ def process_pdfs(
     file_page_counts = {}
     file_sizes = {}
     for idx, path in enumerate(pdf_paths):
-        orig_name = os.path.basename(path)
+        orig_name = original_filenames[idx]
         file_mapping[idx] = orig_name
         try:
             file_sizes[idx] = os.path.getsize(path)
@@ -303,7 +312,7 @@ def process_pdfs(
 
     copied_relative_paths = []
     for idx, path in enumerate(pdf_paths):
-        orig_name = os.path.basename(path)
+        orig_name = original_filenames[idx]
         validate_filename(orig_name, {".pdf"})
         safe_name = f"{idx}_{orig_name}"
         dest = resolve_file_under(inputs_dir, safe_name, {".pdf"})

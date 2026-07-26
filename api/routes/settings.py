@@ -13,7 +13,7 @@ from settings_manager import load_settings, save_settings
 router = APIRouter()
 
 
-@router.get("/", response_model=dict, summary="Get current settings")
+@router.get("", response_model=dict, summary="Get current settings")
 def get_settings():
     """Return the full application settings dictionary."""
     settings = load_settings()
@@ -24,7 +24,7 @@ def get_settings():
 
 
 @router.put(
-    "/",
+    "",
     response_model=MessageResponse,
     summary="Update settings",
     dependencies=[Depends(verify_admin_key)],

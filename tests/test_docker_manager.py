@@ -83,10 +83,17 @@ class TestDockerManager(unittest.TestCase):
 
     @patch("docker_manager.get_docker_status")
     @patch("docker_manager.check_server_ready")
-    def test_get_docker_status_str(self, mock_ready, mock_status):
+    @patch("docker_manager.get_docker_restart_count", return_value=0)
+    def test_get_docker_status_str(self, mock_restart_count, mock_ready, mock_status):
         # Case: not_found
         mock_status.return_value = "not_found"
         self.assertEqual(docker_manager.get_docker_status_str(8000)[0], "not_found")
+
+        # Case: container exists but is not owned by KIRAG
+        mock_status.return_value = "foreign"
+        state, badge = docker_manager.get_docker_status_str(8000)
+        self.assertEqual(state, "foreign")
+        self.assertIn("Foreign Container", badge)
 
         # Case: exited
         mock_status.return_value = "exited"
@@ -100,6 +107,13 @@ class TestDockerManager(unittest.TestCase):
         # Case: running and starting
         mock_ready.return_value = False
         self.assertEqual(docker_manager.get_docker_status_str(8000)[0], "starting")
+
+        # A restart loop or prior failed restart must not remain "starting" forever.
+        mock_status.return_value = "restarting"
+        self.assertEqual(docker_manager.get_docker_status_str(8000)[0], "error")
+        mock_status.return_value = "running"
+        mock_restart_count.return_value = 1
+        self.assertEqual(docker_manager.get_docker_status_str(8000)[0], "error")
 
         # Case: error
         mock_status.return_value = "error"
@@ -344,7 +358,11 @@ class TestDockerManager(unittest.TestCase):
     @patch("subprocess.run")
     def test_create_docker_container_dotenv_token_and_port_conflict(self, mock_run):
         # 1. Test dotenv token fallback (lines 359-371)
-        with patch("docker_manager.get_docker_status", return_value="not_found"):
+        with patch("docker_manager.get_docker_status", return_value="not_found"), patch(
+            "docker_manager.find_port_occupant", return_value=None
+        ), patch(
+            "docker_manager.wait_for_port_free", return_value=True
+        ):
             with patch("os.path.exists", return_value=True):
                 with patch("builtins.open", unittest.mock.mock_open(read_data="HF_TOKEN=dotenv_token_123\n")):
                     with patch.dict(os.environ, {}, clear=True):
@@ -464,6 +482,20 @@ class TestDockerManager(unittest.TestCase):
         self.assertIn("@sha256:", docker_manager.resolve_vllm_image())
         self.assertNotIn("--trust-remote-code", cmd)
         self.assertNotIn("--ipc=host", cmd)
+
+    @patch("docker_manager.get_docker_status", return_value="not_found")
+    @patch("subprocess.run")
+    def test_qwen3_container_configures_reasoning_parser(self, mock_run, _mock_status):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        ok, _ = docker_manager.create_docker_container(
+            "token", 8000, "Qwen/Qwen3.6-35B-A3B", 0.8, 16000
+        )
+
+        self.assertTrue(ok)
+        cmd = mock_run.call_args.args[0]
+        parser_index = cmd.index("--reasoning-parser")
+        self.assertEqual(cmd[parser_index + 1], "qwen3")
 
     @patch("docker_manager.get_docker_status", return_value="not_found")
     @patch("subprocess.run")

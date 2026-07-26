@@ -570,7 +570,7 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
                                 "Last Modified",
                             ],
                             datatype=["str", "str", "str", "str", "str", "str"],
-                            col_count=(6, "fixed"),
+                            column_count=6,
                             interactive=False,
                         )
                         with gr.Row():

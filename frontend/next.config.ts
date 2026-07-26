@@ -3,7 +3,11 @@ import type { NextConfig } from "next";
 const isDevelopment = process.env.NODE_ENV === "development";
 const contentSecurityPolicy = [
   "default-src 'self'",
-  `script-src 'self'${isDevelopment ? " 'unsafe-inline' 'unsafe-eval'" : ""}`,
+  `script-src 'self'${isDevelopment ? " 'unsafe-eval'" : ""}`,
+  // Next.js emits inline bootstrap scripts for hydration. Limit the exception
+  // to script elements so inline event handlers and javascript: URLs remain
+  // blocked by the stricter script-src directive above.
+  "script-src-elem 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' blob: data:",
   "font-src 'self'",
@@ -12,7 +16,8 @@ const contentSecurityPolicy = [
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",
-  "frame-ancestors 'none'",
+  // The Layout Inspector embeds only the same-origin API proxy's PDF response.
+  "frame-ancestors 'self'",
 ].join("; ");
 
 const nextConfig: NextConfig = {
@@ -28,7 +33,7 @@ const nextConfig: NextConfig = {
         source: "/(.*)",
         headers: [
           { key: "Content-Security-Policy", value: contentSecurityPolicy },
-          { key: "X-Frame-Options", value: "DENY" },
+          { key: "X-Frame-Options", value: "SAMEORIGIN" },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "no-referrer" },
           {

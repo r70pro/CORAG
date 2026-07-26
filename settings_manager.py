@@ -122,7 +122,6 @@ VERSION = "2.0.3"
 SUPPORTED_MODELS = [
     "allenai/olmOCR-2-7B-1025-FP8",
     "Qwen/Qwen3.6-35B-A3B",
-    "nvidia/Qwen3.6-35B-A3B-NVFP4",
     "nvidia/Phi-4-reasoning-plus-NVFP4",
     "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
     "nvidia/Llama-3.3-70B-Instruct-NVFP4",
@@ -133,7 +132,6 @@ SUPPORTED_MODELS = [
 MODEL_MAX_CONTENT_LENGTHS = {
     "allenai/olmOCR-2-7B-1025-FP8": 131072,
     "Qwen/Qwen3.6-35B-A3B": 262144,
-    "nvidia/Qwen3.6-35B-A3B-NVFP4": 262144,
     "nvidia/Phi-4-reasoning-plus-NVFP4": 32768,
     "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4": 1048576,
     "nvidia/Llama-3.3-70B-Instruct-NVFP4": 131072,

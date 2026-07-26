@@ -50,7 +50,6 @@ interface SidebarProps {
 const DEFAULT_MODEL_MAX_LENGTHS: Record<string, number> = {
   "allenai/olmOCR-2-7B-1025-FP8": 131072,
   "Qwen/Qwen3.6-35B-A3B": 262144,
-  "nvidia/Qwen3.6-35B-A3B-NVFP4": 262144,
   "nvidia/Phi-4-reasoning-plus-NVFP4": 32768,
   "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4": 1048576,
   "nvidia/Llama-3.3-70B-Instruct-NVFP4": 131072,
@@ -295,8 +294,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div className="text-[10px] text-slate-400">Manage the local GPU inference container.</div>
 
               <div>
-                <label className="block text-slate-400 mb-0.5">Hugging Face Token</label>
+                <label htmlFor="docker-hf-token" className="block text-slate-400 mb-0.5">Hugging Face Token</label>
                 <input
+                  id="docker-hf-token"
                   type="password"
                   value={hfToken}
                   onChange={(e) => setHfToken(e.target.value)}
@@ -306,8 +306,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </div>
 
               <div>
-                <label className="block text-slate-400 mb-0.5">Model Name</label>
+                <label htmlFor="docker-model" className="block text-slate-400 mb-0.5">Model Name</label>
                 <select
+                  id="docker-model"
                   value={dockerModel}
                   onChange={(e) => handleModelChange(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-[11px]"
@@ -321,8 +322,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </div>
 
               <div>
-                <label className="block text-slate-400 mb-0.5">Docker Host Port</label>
+                <label htmlFor="docker-port" className="block text-slate-400 mb-0.5">Docker Host Port</label>
                 <input
+                  id="docker-port"
                   type="number"
                   value={dockerPort}
                   onChange={(e) => setDockerPort(Number(e.target.value))}
@@ -462,7 +464,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {saveStatus && <p className="text-[10px] font-mono text-emerald-400 text-center">{saveStatus}</p>}
 
         <div className="text-[10px] text-slate-400 text-center font-mono pt-1">
-          IQ-RAG Workstation v1.0.0
+          IQ-RAG Workstation v2.0.3
         </div>
       </div>
     </aside>

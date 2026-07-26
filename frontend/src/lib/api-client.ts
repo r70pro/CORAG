@@ -379,13 +379,8 @@ async function consumeSse<T>(
       }
       parser.push(value);
     }
-    if (streamDone) {
-      try {
-        await reader.cancel();
-      } catch {
-        // [DONE] is authoritative; transport cancellation is only cleanup.
-      }
-    }
+    // [DONE] is authoritative. Do not await reader.cancel(): some streaming
+    // proxies leave its promise pending after the complete SSE event arrived.
   } finally {
     signal?.removeEventListener("abort", cancelReader);
     reader.releaseLock();

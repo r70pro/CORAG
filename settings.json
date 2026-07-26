@@ -10,7 +10,7 @@
   "docker_gpu_mem": 0.8,
   "docker_max_model_len": 91136,
   "docker_tensor_parallel": 1,
-  "hf_token": "tok",
+  "hf_token": "",
   "analysis_model_name": "nvidia/Phi-4-reasoning-plus-NVFP4",
   "analysis_server_url": "http://localhost:8000/v1",
   "embedding_model": "BAAI/bge-large-en-v1.5",

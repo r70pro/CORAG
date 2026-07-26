@@ -113,9 +113,9 @@ export const IngestionPipeline: React.FC = () => {
       server_url: serverUrl,
       model_name: modelName,
       workers,
-      max_concurrent: maxConcurrent,
-      target_dim: targetDim,
-      max_retries: maxRetries,
+      max_concurrent_requests: maxConcurrent,
+      target_longest_image_dim: targetDim,
+      max_page_retries: maxRetries,
       guided_decoding: guidedDecoding,
     });
     setConfigStatus(res.message || "Saved");
@@ -341,8 +341,9 @@ export const IngestionPipeline: React.FC = () => {
 
             <div className="space-y-3 text-xs">
               <div>
-                <label className="block text-slate-400 mb-1">vLLM OpenAI Server URL</label>
+                <label htmlFor="ocr-server-url" className="block text-slate-400 mb-1">vLLM OpenAI Server URL</label>
                 <input
+                  id="ocr-server-url"
                   type="text"
                   value={serverUrl}
                   onChange={(e) => setServerUrl(e.target.value)}
@@ -352,8 +353,9 @@ export const IngestionPipeline: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-slate-400 mb-1">Model Name</label>
+                <label htmlFor="ocr-model" className="block text-slate-400 mb-1">Model Name</label>
                 <select
+                  id="ocr-model"
                   value={modelName}
                   onChange={(e) => setModelName(e.target.value)}
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-200"
@@ -508,8 +510,9 @@ export const IngestionPipeline: React.FC = () => {
                     </div>
 
                     <div>
-                      <label className="block text-slate-400 text-[11px] mb-1">Target File Path / Fallback</label>
+                      <label htmlFor="ocr-fallback-path" className="block text-slate-400 text-[11px] mb-1">Target File Path / Fallback</label>
                       <input
+                        id="ocr-fallback-path"
                         type="text"
                         value={selectedFilePath}
                         onChange={(e) => {

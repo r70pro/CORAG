@@ -84,4 +84,24 @@ describe("PdfInspector Component", () => {
     });
     expect(screen.getAllByText("<text>").length).toBeGreaterThan(0);
   });
+
+  test("renders line breaks inside otherwise strict OCR table cells", async () => {
+    const table = "<table><tr><th>Event</th></tr><tr><td>First line<br>Second line</td></tr></table>";
+    jest.mocked(fetchDocumentRuns).mockResolvedValue([
+      { run_name: "run_001", files: ["document.md"] }
+    ]);
+    jest.mocked(fetchMarkdownContent).mockResolvedValue(table);
+    jest.mocked(fetchDocumentInfo).mockResolvedValue({
+      total_pages: 1,
+      page_ranges: [[0, table.length, 1]],
+      pages_markdown: { "1": table },
+    });
+
+    render(<PdfInspector />);
+
+    await waitFor(() => {
+      expect(screen.getAllByRole("table").length).toBeGreaterThan(0);
+    });
+    expect(screen.getAllByText(/First line\s+Second line/).length).toBeGreaterThan(0);
+  });
 });

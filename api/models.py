@@ -79,7 +79,7 @@ class DockerCreateRequest(BaseModel):
 class DockerStatusResponse(BaseModel):
     """vLLM container status."""
 
-    status: str = Field(description="ready | starting | stopped | not_found | error")
+    status: str = Field(description="ready | starting | stopped | not_found | foreign | error")
     message: str = ""
     badge_html: str = ""
 
