@@ -1,16 +1,21 @@
-const getApiBaseUrl = () => {
-  if (process.env.NEXT_PUBLIC_API_URL) {
-    return process.env.NEXT_PUBLIC_API_URL;
-  }
-  if (typeof window !== "undefined") {
-    // In browser context, relative URLs route via Next.js proxy rewrite, ensuring
-    // same-origin iframe embedding and preventing third-party cookie/storage access warnings.
-    return "";
-  }
-  return "http://127.0.0.1:8001";
-};
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
-export const API_BASE_URL = getApiBaseUrl();
+import {
+  API_TIMEOUTS,
+  ApiError,
+  type ApiRequestHandle,
+  apiPathSegment,
+  apiUrl,
+  downloadBlob,
+  getErrorMessage,
+  requestBlob,
+  requestJson,
+  requestJsonSse,
+  requestText,
+} from "./api-client";
+
+export { ApiError, apiPathSegment, apiUrl };
+export type { ApiRequestHandle };
 
 export interface PipelineStartPayload {
   file_paths: string[];
@@ -38,86 +43,82 @@ export interface RagQueryPayload {
   use_reranker?: boolean;
   reranker_model?: string;
   reranker_device?: string;
+  max_output_tokens?: number;
 }
 
-// Fetch System Health
+type ApiResult = any;
+
+function failedResult(error: unknown): ApiResult {
+  return { success: false, message: getErrorMessage(error) };
+}
+
+function jsonPost<T = ApiResult>(path: string, payload?: unknown): Promise<T> {
+  return requestJson<T>(path, {
+    method: "POST",
+    ...(payload === undefined ? {} : { json: payload }),
+  });
+}
+
 export async function fetchSystemHealth() {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/health`);
-    if (!res.ok) {
-      return { status: "error", message: `HTTP ${res.status}: ${res.statusText}`, services: [], gpu: null };
+    return await requestJson<ApiResult>("/api/health");
+  } catch (error) {
+    if (error instanceof ApiError) {
+      return { status: "error", message: error.message, services: [], gpu: null };
     }
-    return await res.json();
-  } catch (err) {
-    return { status: "offline", error: String(err), services: [], gpu: null };
+    return { status: "offline", error: getErrorMessage(error), services: [], gpu: null };
   }
 }
 
-// Fetch Case Summaries
 export async function fetchCaseSummary() {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/case-summary`);
-    return await res.json();
-  } catch (err) {
-    return { error: String(err) };
+    return await requestJson<ApiResult>("/api/case-summary");
+  } catch (error) {
+    return { error: getErrorMessage(error) };
   }
 }
 
-// Fetch Case Timeline Events
 export async function fetchCaseTimeline(runId: string) {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/cases/${runId}/timeline`);
-    return await res.json();
-  } catch (err) {
-    return { run_id: runId, events: [], error: String(err) };
+    return await requestJson<ApiResult>(`/api/cases/${apiPathSegment(runId)}/timeline`);
+  } catch (error) {
+    return { run_id: runId, events: [], error: getErrorMessage(error) };
   }
 }
 
-
-// Fetch Pipeline Runs
 export async function fetchPipelineRuns() {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/pipeline/runs`);
-    return await res.json();
+    return await requestJson<ApiResult[]>("/api/pipeline/runs");
   } catch {
     return [];
   }
 }
 
-// Fetch Docker Server Status
 export async function fetchDockerStatus() {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/docker/status`);
-    return await res.json();
+    return await requestJson<ApiResult>("/api/docker/status");
   } catch {
     return { status: "unknown", is_ready: false };
   }
 }
 
-// Fetch Cached / Available Docker Models
 export async function fetchDockerModels() {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/docker/models`);
-    if (!res.ok) return { models: [] };
-    return await res.json();
+    return await requestJson<ApiResult>("/api/docker/models");
   } catch {
     return { models: [] };
   }
 }
 
-
-// Fetch Docker Container Logs
 export async function fetchDockerLogs(tail: number = 200) {
+  const query = new URLSearchParams({ tail: String(tail) });
   try {
-    const res = await fetch(`${API_BASE_URL}/api/docker/logs?tail=${tail}`);
-    if (!res.ok) return { logs: `HTTP ${res.status}: Failed to fetch container logs`, container_status: "error" };
-    return await res.json();
-  } catch (err) {
-    return { logs: `Error fetching container logs: ${String(err)}`, container_status: "error" };
+    return await requestJson<ApiResult>(`/api/docker/logs?${query}`);
+  } catch (error) {
+    return { logs: getErrorMessage(error), container_status: "error" };
   }
 }
 
-// Start Docker Container
 export async function startDockerContainer(payload: {
   hf_token?: string;
   model_name?: string;
@@ -126,228 +127,96 @@ export async function startDockerContainer(payload: {
   max_model_len?: number;
 }) {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/docker/start`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    return await res.json();
-  } catch (err) {
-    return { success: false, message: String(err) };
+    return await jsonPost("/api/docker/start", payload);
+  } catch (error) {
+    return failedResult(error);
   }
 }
 
-// Stop Docker Container
 export async function stopDockerContainer() {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/docker/stop`, { method: "POST" });
-    return await res.json();
-  } catch (err) {
-    return { success: false, message: String(err) };
+    return await jsonPost("/api/docker/stop");
+  } catch (error) {
+    return failedResult(error);
   }
 }
-
-// Upload PDF files for pipeline processing.
-// Uploads directly to the FastAPI backend to bypass Next.js proxy body size limits
-// which can cause HTTP 500 for large PDF files (>10MB).
-const DIRECT_API_URL = "http://127.0.0.1:8001";
 
 export async function uploadPipelineFiles(files: File[]): Promise<string[]> {
   const formData = new FormData();
-  files.forEach((f) => formData.append("files", f));
+  files.forEach((file) => formData.append("files", file));
 
-  // Try direct upload to FastAPI backend first (bypasses Next.js proxy size limits)
-  const uploadUrls = [
-    `${DIRECT_API_URL}/api/pipeline/upload`,
-    ...(API_BASE_URL ? [`${API_BASE_URL}/api/pipeline/upload`] : []),
-  ];
-
-  let lastError: Error | null = null;
-  for (const url of uploadUrls) {
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        body: formData,
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        let detail = text;
-        try {
-          const json = JSON.parse(text);
-          if (json.detail) detail = typeof json.detail === "string" ? json.detail : JSON.stringify(json.detail);
-        } catch {
-          // Use text fallback
-        }
-        lastError = new Error(`Upload failed with HTTP ${res.status}${detail ? `: ${detail}` : ""}`);
-        continue; // Try next URL
-      }
-      const data = await res.json();
-      return data.file_paths || [];
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-      // Network error — try next URL
-    }
-  }
-  throw lastError || new Error("Upload failed: no available upload endpoints");
+  const data = await requestJson<{ file_paths?: string[] }>("/api/pipeline/upload", {
+    method: "POST",
+    body: formData,
+    timeoutMs: API_TIMEOUTS.upload,
+  });
+  return data.file_paths || [];
 }
 
-// Trigger Ingestion Pipeline via SSE
 export function triggerIngestSSE(
   payload: PipelineStartPayload,
   onMessage: (data: unknown) => void,
-  onError: (err: unknown) => void,
-  onComplete: () => void
-) {
-  fetch(`${API_BASE_URL}/api/pipeline/start`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  })
-    .then(async (res) => {
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        onError(new Error(`Pipeline error HTTP ${res.status}: ${text}`));
-        return;
-      }
-      if (!res.body) {
-        onComplete();
-        return;
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      function readChunk() {
-        reader.read().then(({ done, value }) => {
-          if (done) {
-            if (buffer.trim()) {
-              processChunk(buffer);
-            }
-            onComplete();
-            return;
-          }
-          buffer += decoder.decode(value, { stream: true });
-          const parts = buffer.split("\n\n");
-          buffer = parts.pop() || "";
-
-          for (const part of parts) {
-            processChunk(part);
-          }
-          readChunk();
-        }).catch((err) => onError(err));
-      }
-
-      function processChunk(chunkText: string) {
-        const lines = chunkText.split("\n");
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const dataStr = line.replace("data: ", "").trim();
-            if (dataStr === "[DONE]") {
-              onComplete();
-              return;
-            }
-            try {
-              const parsed = JSON.parse(dataStr);
-              onMessage(parsed);
-            } catch {
-              // Ignore parse errors
-            }
-          }
-        }
-      }
-
-      readChunk();
-    })
-    .catch((err) => onError(err));
+  onError: (error: unknown) => void,
+  onComplete: () => void,
+): ApiRequestHandle {
+  return requestJsonSse(
+    "/api/pipeline/start",
+    { method: "POST", json: payload },
+    { onMessage, onError, onComplete },
+  );
 }
 
-// Stop pipeline run
 export async function stopPipelineRun(runId: string = "") {
-
   try {
-    const res = await fetch(`${API_BASE_URL}/api/pipeline/stop/${runId}`, { method: "POST" });
-    return await res.json();
-  } catch (err) {
-    return { success: false, message: String(err) };
+    return await jsonPost(`/api/pipeline/stop/${apiPathSegment(runId)}`);
+  } catch (error) {
+    return failedResult(error);
   }
 }
 
-// Trigger RAG Query via SSE
 export function triggerRagChatSSE(
   payload: RagQueryPayload,
   onChunk: (chunk: string) => void,
-  onError: (err: unknown) => void,
-  onComplete: () => void
-) {
-  fetch(`${API_BASE_URL}/api/rag/query`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...payload, stream: true }),
-  })
-    .then((res) => {
-      if (!res.body) return;
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-
-      function readChunk() {
-        reader.read().then(({ done, value }) => {
-          if (done) {
-            onComplete();
-            return;
-          }
-          const text = decoder.decode(value);
-          const lines = text.split("\n\n");
-          for (const line of lines) {
-            if (line.startsWith("data: ")) {
-              const dataStr = line.replace("data: ", "").trim();
-              if (dataStr === "[DONE]") {
-                onComplete();
-                return;
-              }
-              try {
-                const parsed = JSON.parse(dataStr);
-                if (parsed.chunk) {
-                  onChunk(parsed.chunk);
-                }
-              } catch {
-                // Ignore
-              }
-            }
-          }
-          readChunk();
-        });
-      }
-
-      readChunk();
-    })
-    .catch((err) => onError(err));
+  onError: (error: unknown) => void,
+  onComplete: () => void,
+): ApiRequestHandle {
+  return requestJsonSse<{ chunk?: string }>(
+    "/api/rag/query",
+    {
+      method: "POST",
+      json: { ...payload, stream: true },
+    },
+    {
+      onMessage: (data) => {
+        if (typeof data.chunk === "string") onChunk(data.chunk);
+      },
+      onError,
+      onComplete,
+    },
+  );
 }
 
-// Delete cases
 export async function deleteCases(runIds: string[], deleteAll: boolean = false) {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/rag/cases/delete`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ run_ids: runIds, delete_all: deleteAll }),
+    return await jsonPost("/api/rag/cases/delete", {
+      run_ids: runIds,
+      delete_all: deleteAll,
     });
-    return await res.json();
-  } catch (err) {
-    return { success: false, message: String(err) };
+  } catch (error) {
+    return failedResult(error);
   }
 }
 
-// Fetch Embedding Telemetry
 export async function fetchEmbeddingTelemetry() {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/rag/embedding/telemetry`);
-    return await res.json();
-  } catch (err) {
-    return { telemetry_html: `<div style='color:red;'>Error loading telemetry: ${String(err)}</div>` };
+    return await requestJson<ApiResult>("/api/rag/embedding/telemetry");
+  } catch (error) {
+    return {
+      telemetry_html: `<div style='color:red;'>Error loading telemetry: ${getErrorMessage(error)}</div>`,
+    };
   }
 }
 
-// Save Embedding Configuration
 export async function saveEmbeddingConfig(config: {
   embedding_model: string;
   embedding_device: string;
@@ -356,106 +225,78 @@ export async function saveEmbeddingConfig(config: {
   embedding_batch_size: number;
 }) {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/rag/embedding/config`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(config),
-    });
-    return await res.json();
-  } catch (err) {
-    return { success: false, message: String(err) };
+    return await jsonPost("/api/rag/embedding/config", config);
+  } catch (error) {
+    return failedResult(error);
   }
 }
 
-// Purge Vector Cache
 export async function purgeVectorCache() {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/rag/embedding/purge-cache`, { method: "POST" });
-    return await res.json();
-  } catch (err) {
-    return { success: false, message: String(err) };
+    return await jsonPost("/api/rag/embedding/purge-cache");
+  } catch (error) {
+    return failedResult(error);
   }
 }
 
-// Index Selected Run
 export async function indexRun(runDir: string) {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/rag/index`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ run_dir: runDir }),
-    });
-    return await res.json();
-  } catch (err) {
-    return { success: false, message: String(err) };
+    return await jsonPost("/api/rag/index", { run_dir: runDir });
+  } catch (error) {
+    return failedResult(error);
   }
 }
 
-// Index All Runs
 export async function indexAllRuns() {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/rag/index-all`, { method: "POST" });
-    return await res.json();
-  } catch (err) {
-    return { success: false, message: String(err) };
+    return await jsonPost("/api/rag/index-all");
+  } catch (error) {
+    return failedResult(error);
   }
 }
 
-// Upload & Index Markdown Files
 export async function uploadMarkdownFiles(files: File[], caseOption: string, newCaseName: string) {
-  try {
-    const formData = new FormData();
-    files.forEach((f) => formData.append("files", f));
-    formData.append("case_option", caseOption);
-    formData.append("new_case_name", newCaseName);
+  const formData = new FormData();
+  files.forEach((file) => formData.append("files", file));
+  formData.append("case_option", caseOption);
+  formData.append("new_case_name", newCaseName);
 
-    const res = await fetch(`${API_BASE_URL}/api/rag/upload-markdown`, {
+  try {
+    return await requestJson<ApiResult>("/api/rag/upload-markdown", {
       method: "POST",
       body: formData,
+      timeoutMs: API_TIMEOUTS.upload,
     });
-    return await res.json();
-  } catch (err) {
-    return { success: false, message: String(err) };
+  } catch (error) {
+    return failedResult(error);
   }
 }
 
-// Export Chat History
 export async function exportChatHistory(
   history: unknown[],
   mode: string,
   caseId: string,
-  exportFormat: string
+  exportFormat: string,
 ) {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/rag/export`, {
+    const blob = await requestBlob("/api/rag/export", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+      json: {
         history,
         mode,
         case_id: caseId,
         export_format: exportFormat,
-      }),
+      },
+      timeoutMs: API_TIMEOUTS.download,
     });
-    if (res.ok) {
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `export_${mode}_${exportFormat}.${exportFormat === "timeline_docx" ? "docx" : exportFormat}`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      return { success: true };
-    } else {
-      return { success: false, message: "Export failed" };
-    }
-  } catch (err) {
-    return { success: false, message: String(err) };
+    const extension = exportFormat === "timeline_docx" ? "docx" : exportFormat;
+    downloadBlob(blob, `export_${mode}_${exportFormat}.${extension}`);
+    return { success: true };
+  } catch (error) {
+    return failedResult(error);
   }
 }
 
-// Create/Recreate Docker Container
 export async function createDockerContainer(payload: {
   hf_token?: string;
   port?: number;
@@ -464,70 +305,55 @@ export async function createDockerContainer(payload: {
   max_model_len?: number;
 }) {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/docker/create`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    return await res.json();
-  } catch (err) {
-    return { success: false, message: String(err) };
+    return await jsonPost("/api/docker/create", payload);
+  } catch (error) {
+    return failedResult(error);
   }
 }
 
-// Shutdown Docker Container
 export async function shutdownDockerContainer() {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/docker/shutdown`, { method: "POST" });
-    return await res.json();
-  } catch (err) {
-    return { success: false, message: String(err) };
+    return await jsonPost("/api/docker/shutdown");
+  } catch (error) {
+    return failedResult(error);
   }
 }
 
-// RAG Infrastructure Start / Stop / Status
 export async function startRagInfra() {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/rag/infra/start`, { method: "POST" });
-    return await res.json();
-  } catch (err) {
-    return { success: false, message: String(err) };
+    return await jsonPost("/api/rag/infra/start");
+  } catch (error) {
+    return failedResult(error);
   }
 }
 
 export async function stopRagInfra() {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/rag/infra/stop`, { method: "POST" });
-    return await res.json();
-  } catch (err) {
-    return { success: false, message: String(err) };
+    return await jsonPost("/api/rag/infra/stop");
+  } catch (error) {
+    return failedResult(error);
   }
 }
 
 export async function fetchRagInfraStatus() {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/rag/infra/status`);
-    return await res.json();
+    return await requestJson<ApiResult>("/api/rag/infra/status");
   } catch {
     return { postgres: "offline", redis: "offline", minio: "offline", qdrant: "offline" };
   }
 }
 
-// Fetch Corpus Stats
 export async function fetchCorpusStats() {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/rag/corpus/stats`);
-    return await res.json();
+    return await requestJson<ApiResult>("/api/rag/corpus/stats");
   } catch {
     return { indexed_runs: 0, indexed_documents: 0, total_chunks: 0, unique_authors: 0 };
   }
 }
 
-// Document browsing APIs
 export async function fetchDocumentRuns() {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/documents/runs`);
-    return await res.json();
+    return await requestJson<ApiResult[]>("/api/documents/runs");
   } catch {
     return [];
   }
@@ -535,8 +361,9 @@ export async function fetchDocumentRuns() {
 
 export async function fetchRunFiles(runName: string) {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/documents/runs/${runName}/files`);
-    return await res.json();
+    return await requestJson<string[]>(
+      `/api/documents/runs/${apiPathSegment(runName)}/files`,
+    );
   } catch {
     return [];
   }
@@ -544,51 +371,48 @@ export async function fetchRunFiles(runName: string) {
 
 export async function fetchMarkdownContent(runName: string, filename: string) {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/documents/runs/${runName}/markdown/${filename}`);
-    return await res.text();
+    return await requestText(
+      `/api/documents/runs/${apiPathSegment(runName)}/markdown/${apiPathSegment(filename)}`,
+    );
   } catch {
     return "";
   }
 }
 
 export async function fetchDocumentInfo(runName: string, filename: string) {
+  const query = new URLSearchParams({ filename });
   try {
-    const res = await fetch(
-      `${API_BASE_URL}/api/documents/runs/${runName}/info?filename=${encodeURIComponent(filename)}`
+    return await requestJson<ApiResult>(
+      `/api/documents/runs/${apiPathSegment(runName)}/info?${query}`,
     );
-    if (!res.ok) return null;
-    return await res.json();
   } catch {
     return null;
   }
 }
 
-// Diagnostics Cleanup & Report APIs
 export async function executeCleanup(components: string[]) {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/diagnostics/cleanup`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ components }),
+    return await jsonPost("/api/diagnostics/cleanup", { components });
+  } catch (error) {
+    return failedResult(error);
+  }
+}
+
+export async function downloadDiagnosticReport() {
+  try {
+    const blob = await requestBlob("/api/diagnostics/report", {
+      timeoutMs: API_TIMEOUTS.download,
     });
-    if (!res.ok) {
-      const errData = await res.json().catch(() => null);
-      const msg = errData?.detail || errData?.message || `HTTP ${res.status}: ${res.statusText}`;
-      return { success: false, message: msg };
-    }
-    return await res.json();
-  } catch (err) {
-    return {
-      success: false,
-      message: `Network error connecting to API server at ${API_BASE_URL}: ${String(err)}`,
-    };
+    downloadBlob(blob, "diagnostic_report.md");
+    return { success: true };
+  } catch (error) {
+    return failedResult(error);
   }
 }
 
 export async function fetchSettings() {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/settings/`);
-    return await res.json();
+    return await requestJson<ApiResult>("/api/settings/");
   } catch {
     return {};
   }
@@ -596,14 +420,12 @@ export async function fetchSettings() {
 
 export async function updateSettings(payload: Record<string, unknown>) {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/settings/`, {
+    return await requestJson<ApiResult>("/api/settings/", {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      json: payload,
     });
-    return await res.json();
-  } catch (err) {
-    return { success: false, message: String(err) };
+  } catch (error) {
+    return failedResult(error);
   }
 }
 
@@ -630,41 +452,33 @@ export interface InstalledModelsResponse {
   total_human_size: string;
 }
 
+const EMPTY_MODELS: InstalledModelsResponse = {
+  models: [],
+  total_count: 0,
+  total_size_bytes: 0,
+  total_human_size: "0 B",
+};
+
 export async function fetchInstalledModels(): Promise<InstalledModelsResponse> {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/diagnostics/models`);
-    if (!res.ok) {
-      return { models: [], total_count: 0, total_size_bytes: 0, total_human_size: "0 B" };
-    }
-    return await res.json();
-  } catch (err) {
-    console.error("Failed to fetch installed models:", err);
-    return { models: [], total_count: 0, total_size_bytes: 0, total_human_size: "0 B" };
+    return await requestJson<InstalledModelsResponse>("/api/diagnostics/models");
+  } catch {
+    return EMPTY_MODELS;
   }
 }
 
 export async function deleteInstalledModels(modelIds: string[]) {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/diagnostics/models`, {
+    return await requestJson<ApiResult>("/api/diagnostics/models", {
       method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model_ids: modelIds }),
+      json: { model_ids: modelIds },
     });
-    if (!res.ok) {
-      const errData = await res.json().catch(() => null);
-      const msg = errData?.detail || errData?.message || `HTTP ${res.status}: ${res.statusText}`;
-      return { success: false, message: msg, deleted_models: [], reclaimed_bytes: 0, reclaimed_str: "0 B" };
-    }
-    return await res.json();
-  } catch (err) {
+  } catch (error) {
     return {
-      success: false,
-      message: `Network error connecting to API server at ${API_BASE_URL}: ${String(err)}`,
+      ...failedResult(error),
       deleted_models: [],
       reclaimed_bytes: 0,
       reclaimed_str: "0 B",
     };
   }
 }
-
-

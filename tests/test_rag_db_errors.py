@@ -75,6 +75,30 @@ class TestRAGDBErrors(unittest.TestCase):
         self.assertIsNone(rag_db.insert_chunks([]))
 
     @patch("rag.db.get_connection")
+    @patch("psycopg2.extras.execute_values")
+    def test_insert_chunks_updates_changed_metadata(self, mock_execute_values, _mock_get_conn):
+        rag_db.insert_chunks(
+            [
+                {
+                    "chunk_id": "c1",
+                    "doc_id": "d1",
+                    "run_id": "r1",
+                    "chunk_index": 0,
+                    "text": "changed source",
+                    "char_start": 0,
+                    "char_end": 14,
+                }
+            ]
+        )
+
+        statement = mock_execute_values.call_args.args[1]
+        self.assertIn("ON CONFLICT (chunk_id) DO UPDATE SET", statement)
+        self.assertIn("text = EXCLUDED.text", statement)
+        self.assertIn("source_char_start = EXCLUDED.source_char_start", statement)
+        self.assertIn("page_end = EXCLUDED.page_end", statement)
+        self.assertIn("qdrant_point_id = EXCLUDED.qdrant_point_id", statement)
+
+    @patch("rag.db.get_connection")
     def test_get_corpus_stats_exception(self, mock_get_conn):
         mock_conn = mock_get_conn.return_value.__enter__.return_value
         mock_cur = mock_conn.cursor.return_value.__enter__.return_value

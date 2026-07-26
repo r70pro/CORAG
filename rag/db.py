@@ -111,6 +111,7 @@ def init_schema():
                     olmocr_version  TEXT,
                     created_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                     indexed_at      TIMESTAMP WITH TIME ZONE,
+                    status          TEXT DEFAULT 'pending',
                     metadata_json   JSONB DEFAULT '{}'::jsonb
                 );
 
@@ -122,7 +123,12 @@ def init_schema():
                     text            TEXT NOT NULL,
                     char_start      INTEGER NOT NULL,
                     char_end        INTEGER NOT NULL,
+                    source_char_start INTEGER,
+                    source_char_end INTEGER,
                     page_number     INTEGER,
+                    page_start      INTEGER,
+                    page_end        INTEGER,
+                    provenance_type TEXT,
                     document_type   TEXT,
                     author          TEXT,
                     date_extracted  DATE,
@@ -142,6 +148,27 @@ def init_schema():
                 CREATE INDEX IF NOT EXISTS idx_chunks_author ON chunks(author);
                 CREATE INDEX IF NOT EXISTS idx_chunks_doctype ON chunks(document_type);
                 CREATE INDEX IF NOT EXISTS idx_documents_run_id ON documents(run_id);
+
+                ALTER TABLE documents
+                    ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending';
+
+                ALTER TABLE chunks
+                    ADD COLUMN IF NOT EXISTS source_char_start INTEGER,
+                    ADD COLUMN IF NOT EXISTS source_char_end INTEGER,
+                    ADD COLUMN IF NOT EXISTS page_start INTEGER,
+                    ADD COLUMN IF NOT EXISTS page_end INTEGER,
+                    ADD COLUMN IF NOT EXISTS provenance_type TEXT;
+
+                CREATE INDEX IF NOT EXISTS idx_chunks_page_range
+                    ON chunks(page_start, page_end);
+
+                UPDATE documents
+                SET status = CASE
+                    WHEN indexed_at IS NULL THEN 'pending'
+                    ELSE 'indexed'
+                END
+                WHERE status IS NULL
+                   OR (indexed_at IS NOT NULL AND status = 'pending');
             """)
 
 
@@ -159,9 +186,31 @@ def is_healthy():
 # ── Run operations ──────────────────────────────────────────────
 
 
-def register_run(run_id, run_dir, total_documents=0):
-    """Register a new OCR run in the database."""
+@contextmanager
+def indexing_transaction(run_id):
+    """Open one transaction and serialize indexing operations for a run.
+
+    The advisory lock is transaction-scoped, so concurrent uploads to the same
+    case cannot interleave PostgreSQL and Qdrant mutation journals.
+    """
     with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (run_id,))
+        yield conn
+
+
+@contextmanager
+def _connection_scope(connection=None):
+    if connection is not None:
+        yield connection
+    else:
+        with get_connection() as conn:
+            yield conn
+
+
+def register_run(run_id, run_dir, total_documents=0, connection=None):
+    """Register a new OCR run in the database."""
+    with _connection_scope(connection) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -175,18 +224,43 @@ def register_run(run_id, run_dir, total_documents=0):
             )
 
 
-def mark_run_indexed(run_id, total_chunks):
-    """Mark a run as fully indexed."""
-    with get_connection() as conn:
+def mark_run_pending(run_id, connection=None):
+    """Mark a run pending inside an indexing transaction."""
+    with _connection_scope(connection) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 UPDATE ocr_runs
-                SET indexed_at = NOW(), total_chunks = %s, status = 'indexed'
+                SET status = 'pending', indexed_at = NULL
                 WHERE run_id = %s
-            """,
-                (total_chunks, run_id),
+                """,
+                (run_id,),
             )
+
+
+def mark_run_indexed(run_id, total_chunks, total_documents=None, connection=None):
+    """Mark a run as fully indexed."""
+    with _connection_scope(connection) as conn:
+        with conn.cursor() as cur:
+            if total_documents is None:
+                cur.execute(
+                    """
+                    UPDATE ocr_runs
+                    SET indexed_at = NOW(), total_chunks = %s, status = 'indexed'
+                    WHERE run_id = %s
+                    """,
+                    (total_chunks, run_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE ocr_runs
+                    SET indexed_at = NOW(), total_chunks = %s,
+                        total_documents = %s, status = 'indexed'
+                    WHERE run_id = %s
+                    """,
+                    (total_chunks, total_documents, run_id),
+                )
 
 
 def get_indexed_runs():
@@ -278,21 +352,28 @@ def register_document(
     minio_md_key=None,
     olmocr_version=None,
     metadata=None,
+    connection=None,
 ):
     """Register a document in the registry."""
-    with get_connection() as conn:
+    with _connection_scope(connection) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO documents
                     (doc_id, run_id, original_filename, pdf_total_pages,
                      markdown_path, minio_pdf_key, minio_md_key,
-                     olmocr_version, metadata_json)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     olmocr_version, status, indexed_at, metadata_json)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending', NULL, %s)
                 ON CONFLICT (doc_id) DO UPDATE SET
+                    run_id = EXCLUDED.run_id,
+                    original_filename = EXCLUDED.original_filename,
+                    pdf_total_pages = EXCLUDED.pdf_total_pages,
                     markdown_path = EXCLUDED.markdown_path,
                     minio_pdf_key = EXCLUDED.minio_pdf_key,
                     minio_md_key = EXCLUDED.minio_md_key,
+                    olmocr_version = EXCLUDED.olmocr_version,
+                    status = 'pending',
+                    indexed_at = NULL,
                     metadata_json = EXCLUDED.metadata_json
             """,
                 (
@@ -309,11 +390,18 @@ def register_document(
             )
 
 
-def mark_document_indexed(doc_id):
+def mark_document_indexed(doc_id, connection=None):
     """Mark a document as indexed."""
-    with get_connection() as conn:
+    with _connection_scope(connection) as conn:
         with conn.cursor() as cur:
-            cur.execute("UPDATE documents SET indexed_at = NOW() WHERE doc_id = %s", (doc_id,))
+            cur.execute(
+                """
+                UPDATE documents
+                SET indexed_at = NOW(), status = 'indexed'
+                WHERE doc_id = %s
+                """,
+                (doc_id,),
+            )
 
 
 def get_documents_for_run(run_id):
@@ -353,7 +441,7 @@ def get_all_documents():
 # ── Chunk operations ───────────────────────────────────────────
 
 
-def insert_chunks(chunks_list):
+def insert_chunks(chunks_list, connection=None):
     """Bulk insert chunks into the database.
 
     Args:
@@ -362,18 +450,40 @@ def insert_chunks(chunks_list):
     if not chunks_list:
         return
 
-    with get_connection() as conn:
+    with _connection_scope(connection) as conn:
         with conn.cursor() as cur:
             psycopg2.extras.execute_values(
                 cur,
                 """
                 INSERT INTO chunks
                     (chunk_id, doc_id, run_id, chunk_index, text,
-                     char_start, char_end, page_number, document_type,
+                     char_start, char_end, source_char_start, source_char_end,
+                     page_number, page_start, page_end, provenance_type, document_type,
                      author, date_extracted, date_raw, section_type,
                      patient_name, token_count, embedding_model, qdrant_point_id)
                 VALUES %s
-                ON CONFLICT (chunk_id) DO NOTHING
+                ON CONFLICT (chunk_id) DO UPDATE SET
+                    doc_id = EXCLUDED.doc_id,
+                    run_id = EXCLUDED.run_id,
+                    chunk_index = EXCLUDED.chunk_index,
+                    text = EXCLUDED.text,
+                    char_start = EXCLUDED.char_start,
+                    char_end = EXCLUDED.char_end,
+                    source_char_start = EXCLUDED.source_char_start,
+                    source_char_end = EXCLUDED.source_char_end,
+                    page_number = EXCLUDED.page_number,
+                    page_start = EXCLUDED.page_start,
+                    page_end = EXCLUDED.page_end,
+                    provenance_type = EXCLUDED.provenance_type,
+                    document_type = EXCLUDED.document_type,
+                    author = EXCLUDED.author,
+                    date_extracted = EXCLUDED.date_extracted,
+                    date_raw = EXCLUDED.date_raw,
+                    section_type = EXCLUDED.section_type,
+                    patient_name = EXCLUDED.patient_name,
+                    token_count = EXCLUDED.token_count,
+                    embedding_model = EXCLUDED.embedding_model,
+                    qdrant_point_id = EXCLUDED.qdrant_point_id
                 """,
                 [
                     (
@@ -384,7 +494,12 @@ def insert_chunks(chunks_list):
                         c["text"],
                         c["char_start"],
                         c["char_end"],
+                        c.get("source_char_start"),
+                        c.get("source_char_end"),
                         c.get("page_number"),
+                        c.get("page_start"),
+                        c.get("page_end"),
+                        c.get("provenance_type"),
                         c.get("document_type"),
                         c.get("author"),
                         c.get("date_extracted"),
@@ -401,6 +516,80 @@ def insert_chunks(chunks_list):
             )
 
 
+def get_point_ids_for_documents(doc_ids, connection=None):
+    """Return the currently registered Qdrant IDs for selected documents."""
+    if not doc_ids:
+        return set()
+    with _connection_scope(connection) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT qdrant_point_id
+                FROM chunks
+                WHERE doc_id = ANY(%s) AND qdrant_point_id IS NOT NULL
+                """,
+                (list(doc_ids),),
+            )
+            return {str(row[0]) for row in cur.fetchall()}
+
+
+def get_point_ids_for_run(run_id, connection=None):
+    """Return all currently registered Qdrant IDs for a run."""
+    with _connection_scope(connection) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT qdrant_point_id
+                FROM chunks
+                WHERE run_id = %s AND qdrant_point_id IS NOT NULL
+                """,
+                (run_id,),
+            )
+            return {str(row[0]) for row in cur.fetchall()}
+
+
+def replace_document_chunks(doc_ids, chunks_list, connection=None):
+    """Replace complete chunk sets for documents inside the caller's transaction."""
+    if not doc_ids:
+        return
+    with _connection_scope(connection) as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM chunks WHERE doc_id = ANY(%s)", (list(doc_ids),))
+        insert_chunks(chunks_list, connection=conn)
+
+
+def delete_documents_not_in_run(run_id, retained_doc_ids, connection=None):
+    """Delete documents absent from an explicit full-reindex point set."""
+    with _connection_scope(connection) as conn:
+        with conn.cursor() as cur:
+            if retained_doc_ids:
+                cur.execute(
+                    """
+                    DELETE FROM documents
+                    WHERE run_id = %s AND NOT (doc_id = ANY(%s))
+                    """,
+                    (run_id, list(retained_doc_ids)),
+                )
+            else:
+                cur.execute("DELETE FROM documents WHERE run_id = %s", (run_id,))
+
+
+def get_run_totals(run_id, connection=None):
+    """Return authoritative document and chunk counts inside a transaction."""
+    with _connection_scope(connection) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM documents WHERE run_id = %s),
+                    (SELECT COUNT(*) FROM chunks WHERE run_id = %s)
+                """,
+                (run_id, run_id),
+            )
+            row = cur.fetchone()
+            return int(row[0]), int(row[1])
+
+
 def get_chunks_for_document(doc_id):
     """Get all chunks for a document, ordered by position."""
     with get_connection() as conn:
@@ -408,7 +597,9 @@ def get_chunks_for_document(doc_id):
             cur.execute(
                 """
                 SELECT chunk_id, chunk_index, text, char_start, char_end,
-                       page_number, document_type, author, date_extracted,
+                       source_char_start, source_char_end,
+                       page_number, page_start, page_end, provenance_type,
+                       document_type, author, date_extracted,
                        date_raw, section_type, patient_name, token_count,
                        qdrant_point_id
                 FROM chunks
@@ -427,6 +618,8 @@ def get_chunk_by_qdrant_id(qdrant_point_id):
             cur.execute(
                 """
                 SELECT c.chunk_id, c.doc_id, c.text, c.page_number,
+                       c.source_char_start, c.source_char_end,
+                       c.page_start, c.page_end, c.provenance_type,
                        c.document_type, c.author, c.date_extracted,
                        c.section_type, c.patient_name,
                        d.original_filename, d.run_id
@@ -448,6 +641,8 @@ def get_chunks_by_qdrant_ids(qdrant_point_ids):
             cur.execute(
                 """
                 SELECT c.chunk_id, c.doc_id, c.text, c.page_number,
+                       c.source_char_start, c.source_char_end,
+                       c.page_start, c.page_end, c.provenance_type,
                        c.document_type, c.author, c.date_extracted,
                        c.date_raw, c.section_type, c.patient_name,
                        d.original_filename, d.run_id, c.qdrant_point_id

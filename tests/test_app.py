@@ -10,14 +10,40 @@ import shutil
 os.environ["TESTING"] = "true"
 
 import app
+import docker_manager
 import process_state
 
 class TestOLMOCRApp(unittest.TestCase):
 
     def setUp(self):
+        self.workspace = tempfile.mkdtemp()
+        self.run_dir = os.path.join(self.workspace, "run_case")
+        self.upload_dir = os.path.join(self.workspace, "uploads")
+        os.makedirs(self.run_dir)
+        os.makedirs(self.upload_dir)
+        self.pdf_path = os.path.join(self.upload_dir, "test.pdf")
+        with open(self.pdf_path, "wb") as pdf:
+            pdf.write(b"%PDF-1.4 test")
+        self.workspace_patchers = [
+            patch("pipeline_manager.WORKSPACE_DIR", self.workspace),
+            patch("pdf_manager.WORKSPACE_DIR", self.workspace),
+        ]
+        for patcher in self.workspace_patchers:
+            patcher.start()
+        self.docker_env_patcher = patch.dict(
+            os.environ,
+            {"OLMOCR_VLLM_IMAGE": docker_manager.DEFAULT_VLLM_IMAGE},
+        )
+        self.docker_env_patcher.start()
         # Reset active runs between tests
         with process_state.active_runs_lock:
             process_state.active_runs.clear()
+
+    def tearDown(self):
+        self.docker_env_patcher.stop()
+        for patcher in reversed(self.workspace_patchers):
+            patcher.stop()
+        shutil.rmtree(self.workspace)
 
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open, read_data='{"server_url": "http://test-server:8000/v1"}')
@@ -58,7 +84,7 @@ class TestOLMOCRApp(unittest.TestCase):
     @patch("subprocess.run")
     def test_get_docker_status(self, mock_run):
         # Case 1: running
-        mock_run.return_value = MagicMock(returncode=0, stdout="running\n")
+        mock_run.return_value = MagicMock(returncode=0, stdout="running\ttrue\n")
         self.assertEqual(app.get_docker_status(), "running")
 
         # Case 2: not found
@@ -163,12 +189,21 @@ class TestOLMOCRApp(unittest.TestCase):
         self.assertTrue("✓ Done" in status_html)
 
     @patch("zipfile.ZipFile")
-    @patch("os.walk")
-    def test_make_zip(self, mock_walk, mock_zip):
-        mock_walk.return_value = [("/tmp/dir", [], ["file1.md", "file2.txt"])]
-        app.make_zip("/tmp/dir", "/tmp/out.zip")
-        mock_zip.assert_called_once_with("/tmp/out.zip", "w", unittest.mock.ANY)
-        mock_zip.return_value.__enter__().write.assert_called_once_with("/tmp/dir/file1.md", "file1.md")
+    def test_make_zip(self, mock_zip):
+        markdown_dir = os.path.join(self.workspace, "markdown")
+        os.makedirs(markdown_dir)
+        markdown_file = os.path.join(markdown_dir, "file1.md")
+        with open(markdown_file, "w", encoding="utf-8") as markdown:
+            markdown.write("# test")
+        zip_path = os.path.join(self.workspace, "out.zip")
+
+        app.make_zip(markdown_dir, zip_path)
+
+        mock_zip.assert_called_once_with(unittest.mock.ANY, "w", unittest.mock.ANY)
+        self.assertEqual(str(mock_zip.call_args.args[0]), zip_path)
+        mock_zip.return_value.__enter__().write.assert_called_once_with(
+            unittest.mock.ANY, "file1.md"
+        )
 
     def test_load_markdown_content(self):
         # Run info not found
@@ -177,12 +212,12 @@ class TestOLMOCRApp(unittest.TestCase):
 
         # File not found
         with process_state.active_runs_lock:
-            process_state.active_runs["test_run"] = {"run_dir": "/tmp/nonexistent_dir"}
+            process_state.active_runs["test_run"] = {"run_dir": self.run_dir}
         content_r, content_h, file_p = app.load_markdown_content("0_doc.md", "test_run")
         self.assertEqual(content_r, "File not found.")
 
         # File read success
-        temp_dir = tempfile.mkdtemp()
+        temp_dir = self.run_dir
         try:
             inputs_dir = os.path.join(temp_dir, "markdown", "inputs")
             os.makedirs(inputs_dir)
@@ -197,7 +232,7 @@ class TestOLMOCRApp(unittest.TestCase):
             self.assertEqual(content_r, "hello markdown")
             self.assertEqual(file_p, doc_path)
         finally:
-            shutil.rmtree(temp_dir)
+            shutil.rmtree(os.path.join(temp_dir, "markdown"))
 
     def test_stop_processing(self):
         process_state.active_runs.clear()
@@ -243,7 +278,7 @@ class TestOLMOCRApp(unittest.TestCase):
 
         # Call generator
         mock_file = MagicMock()
-        mock_file.name = "test.pdf"
+        mock_file.name = self.pdf_path
         
         gen = app.process_pdfs(
             files=[mock_file],
@@ -307,7 +342,7 @@ class TestOLMOCRApp(unittest.TestCase):
         mock_popen.return_value = mock_proc
 
         mock_file = MagicMock()
-        mock_file.name = "test.pdf"
+        mock_file.name = self.pdf_path
         
         gen = app.process_pdfs(
             files=[mock_file],
@@ -359,88 +394,33 @@ class TestOLMOCRApp(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir)
 
-    @patch("os.path.expanduser")
-    @patch("os.path.exists")
-    @patch("os.path.isdir")
-    @patch("os.listdir")
-    @patch("shutil.rmtree")
-    @patch("os.remove")
-    @patch("os.walk")
-    def test_perform_reset_cleanup(self, mock_walk, mock_remove, mock_rmtree, mock_listdir, mock_isdir, mock_exists, mock_expanduser):
-        # Save original workspace dir and assign mock path
-        orig_workspace = app.WORKSPACE_DIR
-        app.WORKSPACE_DIR = "/mock/workspace"
+    def test_perform_reset_cleanup(self):
+        active_run = os.path.join(self.workspace, "run_active")
+        obsolete_run = os.path.join(self.workspace, "run_obsolete")
+        os.makedirs(active_run)
+        os.makedirs(obsolete_run)
+        with open(os.path.join(obsolete_run, "result.md"), "w", encoding="utf-8") as result:
+            result.write("obsolete")
 
-        # Mock paths
-        mock_expanduser.return_value = "/mock/huggingface"
-        
-        # Configure os.path.exists behavior
-        repo_dir = os.path.dirname(os.path.abspath(app.__file__))
-        real_exists = os.path.exists
-        def exists_side_effect(path):
-            if path in ["/mock/workspace", "/tmp/gradio", "/mock/huggingface", "/mock/workspace/run_1", "/mock/workspace/run_2"]:
-                return True
-            if path == os.path.join(repo_dir, "__pycache__"):
-                return True
-            return real_exists(path)
-        mock_exists.side_effect = exists_side_effect
-
-        # Configure os.path.isdir behavior
-        def isdir_side_effect(path):
-            if path in ["/mock/workspace", "/mock/workspace/run_1", "/mock/workspace/run_2", "/tmp/gradio", "/tmp/gradio/gradio_upload_1", "/mock/huggingface", "/mock/huggingface/hub"]:
-                return True
-            return False
-        mock_isdir.side_effect = isdir_side_effect
-
-        # Mock listing directories
-        def listdir_side_effect(path):
-            if path == "/mock/workspace":
-                return ["run_1", "run_2", "other_file"]
-            elif path == "/tmp/gradio":
-                return ["gradio_upload_1", "gradio_upload_2"]
-            elif path == "/mock/huggingface":
-                return ["hub", "misc"]
-            return []
-        mock_listdir.side_effect = listdir_side_effect
-
-        # Mock active_runs
         with process_state.active_runs_lock:
-            process_state.active_runs.clear()
             process_state.active_runs["active_id"] = {
                 "proc": MagicMock(),
                 "completed": False,
-                "run_dir": "/mock/workspace/run_1"
+                "run_dir": active_run,
             }
             process_state.active_runs["active_id"]["proc"].poll.return_value = None
 
-        # Mock os.walk for bytecode cache test
-        mock_walk.return_value = [
-            (repo_dir, ["__pycache__", "other"], ["app.py"]),
-            (os.path.join(repo_dir, "__pycache__"), [], ["app.pyc"])
-        ]
+        res = app.perform_reset_cleanup(
+            clean_runs=True,
+            clean_gradio=False,
+            clean_pycache=False,
+            clean_hf=False,
+            workspace_dir=self.workspace,
+        )
 
-        try:
-            # Call perform_reset_cleanup with all true
-            res = app.perform_reset_cleanup(clean_runs=True, clean_gradio=True, clean_pycache=True, clean_hf=True, workspace_dir="/mock/workspace")
-        finally:
-            # Restore original workspace dir
-            app.WORKSPACE_DIR = orig_workspace
-
-        # Let's verify the calls
-        deleted_paths = [args[0] for args, kwargs in mock_rmtree.call_args_list] + [args[0] for args, kwargs in mock_remove.call_args_list]
-        self.assertIn("/mock/workspace/run_2", deleted_paths)
-        self.assertNotIn("/mock/workspace/run_1", deleted_paths)
-
-        self.assertIn("/tmp/gradio/gradio_upload_1", deleted_paths)
-        self.assertIn("/tmp/gradio/gradio_upload_2", deleted_paths)
-
-        self.assertIn(os.path.join(repo_dir, "__pycache__"), deleted_paths)
-
-        self.assertIn("/mock/huggingface/hub", deleted_paths)
-        self.assertIn("/mock/huggingface/misc", deleted_paths)
-
-        self.assertTrue("Cleanup Summary" in res)
-        self.assertTrue("Successfully cleaned" in res)
+        self.assertTrue(os.path.isdir(active_run))
+        self.assertFalse(os.path.exists(obsolete_run))
+        self.assertIn("Obsolete run directory: `run_obsolete`", res)
 
     @patch("app.process_pdfs")
     def test_process_pdfs_ui_wrapper(self, mock_process_pdfs):

@@ -14,7 +14,8 @@ import {
   fetchRunFiles,
   fetchMarkdownContent,
   fetchDocumentInfo,
-  API_BASE_URL,
+  apiPathSegment,
+  apiUrl,
 } from "@/lib/api";
 import { ResizableSplit } from "@/components/ResizableSplit";
 
@@ -23,6 +24,95 @@ interface RunItem {
   display_name?: string;
   files?: string[];
 }
+
+interface TableCell {
+  header: boolean;
+  text: string;
+  colSpan?: number;
+  rowSpan?: number;
+}
+
+const decodeHtmlEntities = (value: string): string =>
+  value.replace(
+    /&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi,
+    (entity, code: string) => {
+      const normalized = code.toLowerCase();
+      if (normalized === "amp") return "&";
+      if (normalized === "lt") return "<";
+      if (normalized === "gt") return ">";
+      if (normalized === "quot") return '"';
+      if (normalized === "apos") return "'";
+      const radix = normalized.startsWith("#x") ? 16 : 10;
+      const digits = normalized.slice(radix === 16 ? 2 : 1);
+      const point = Number.parseInt(digits, radix);
+      return Number.isFinite(point) && point >= 0 && point <= 0x10ffff
+        ? String.fromCodePoint(point)
+        : entity;
+    },
+  );
+
+const parseCellSpan = (attributes: string, name: "colspan" | "rowspan") => {
+  const match = attributes.match(
+    new RegExp(`\\b${name}\\s*=\\s*(?:["'](\\d+)["']|(\\d+))`, "i"),
+  );
+  if (!match) return undefined;
+  const value = Number.parseInt(match[1] || match[2], 10);
+  return value >= 1 && value <= 100 ? value : undefined;
+};
+
+const parseStrictHtmlTable = (source: string): TableCell[][] | null => {
+  const trimmed = source.trim();
+  if (!/^<table>\s*[\s\S]*\s*<\/table>$/i.test(trimmed)) return null;
+
+  const tags = trimmed.match(/<[^>]*>/g) || [];
+  const allowedTag =
+    /^<\/?(?:table|thead|tbody|tfoot|tr)>$/i;
+  const allowedCell =
+    /^<(?:th|td)(?:\s+(?:colspan|rowspan)\s*=\s*(?:["']\d+["']|\d+))*\s*>$|^<\/(?:th|td)>$/i;
+  if (tags.some((tag) => !allowedTag.test(tag) && !allowedCell.test(tag))) return null;
+
+  const inner = trimmed.replace(/^<table>/i, "").replace(/<\/table>$/i, "");
+  const rows: TableCell[][] = [];
+  let outsideRows = "";
+  let lastRowEnd = 0;
+  const rowPattern = /<tr>([\s\S]*?)<\/tr>/gi;
+
+  for (const rowMatch of inner.matchAll(rowPattern)) {
+    const rowIndex = rowMatch.index ?? 0;
+    outsideRows += inner.slice(lastRowEnd, rowIndex);
+    lastRowEnd = rowIndex + rowMatch[0].length;
+
+    const rowSource = rowMatch[1];
+    const cells: TableCell[] = [];
+    let outsideCells = "";
+    let lastCellEnd = 0;
+    const cellPattern = /<(th|td)((?:\s+(?:colspan|rowspan)\s*=\s*(?:["']\d+["']|\d+))*)\s*>([\s\S]*?)<\/\1>/gi;
+
+    for (const cellMatch of rowSource.matchAll(cellPattern)) {
+      const cellIndex = cellMatch.index ?? 0;
+      outsideCells += rowSource.slice(lastCellEnd, cellIndex);
+      lastCellEnd = cellIndex + cellMatch[0].length;
+      if (/<[^>]*>/.test(cellMatch[3])) return null;
+      const attributes = cellMatch[2] || "";
+      cells.push({
+        header: cellMatch[1].toLowerCase() === "th",
+        text: decodeHtmlEntities(cellMatch[3]),
+        colSpan: parseCellSpan(attributes, "colspan"),
+        rowSpan: parseCellSpan(attributes, "rowspan"),
+      });
+    }
+    outsideCells += rowSource.slice(lastCellEnd);
+    if (outsideCells.trim() || cells.length === 0) return null;
+    rows.push(cells);
+  }
+
+  outsideRows += inner.slice(lastRowEnd);
+  const structuralRemainder = outsideRows.replace(
+    /<\/?(?:thead|tbody|tfoot)>/gi,
+    "",
+  );
+  return rows.length > 0 && !structuralRemainder.trim() ? rows : null;
+};
 
 const renderFormattedText = (text: string) => {
   // Simple regex parser for bold, italic, and inline code
@@ -46,19 +136,54 @@ const MarkdownRenderer: React.FC<{ content: string }> = ({ content }) => {
     return <div className="text-slate-500 italic p-4">No markdown content loaded.</div>;
   }
 
-  // Split HTML table blocks and standard markdown text
+  // OCR output may contain basic HTML tables. Only a tiny structural subset is
+  // accepted; anything with HTML/SVG elements or event attributes stays text.
   const parts = content.split(/(<table>[\s\S]*?<\/table>)/gi);
 
   return (
     <div className="prose prose-invert max-w-none text-xs space-y-3">
       {parts.map((part, idx) => {
         if (part.toLowerCase().startsWith("<table")) {
+          const rows = parseStrictHtmlTable(part);
+          if (rows) {
+            return (
+              <div
+                key={idx}
+                className="my-3 overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/90 shadow-md p-1"
+              >
+                <table className="w-full text-xs border-collapse">
+                  <tbody>
+                    {rows.map((row, rowIndex) => (
+                      <tr key={rowIndex}>
+                        {row.map((cell, cellIndex) => {
+                          const Cell = cell.header ? "th" : "td";
+                          return (
+                            <Cell
+                              key={cellIndex}
+                              colSpan={cell.colSpan}
+                              rowSpan={cell.rowSpan}
+                              className={
+                                cell.header
+                                  ? "bg-indigo-950/80 border border-slate-800 p-2 text-left font-bold text-indigo-200"
+                                  : "border border-slate-800 p-2 text-slate-300"
+                              }
+                            >
+                              {renderFormattedText(cell.text)}
+                            </Cell>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          }
+
           return (
-            <div
-              key={idx}
-              className="my-3 overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/90 shadow-md p-1 [&_table]:w-full [&_table]:text-xs [&_table]:border-collapse [&_th]:bg-indigo-950/80 [&_th]:border [&_th]:border-slate-800 [&_th]:p-2 [&_th]:text-left [&_th]:font-bold [&_th]:text-indigo-200 [&_td]:border [&_td]:border-slate-800 [&_td]:p-2 [&_td]:text-slate-300"
-              dangerouslySetInnerHTML={{ __html: part }}
-            />
+            <p key={idx} className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap">
+              {part}
+            </p>
           );
         }
 
@@ -490,7 +615,7 @@ export const PdfInspector: React.FC = () => {
               {selectedRun ? (
                 <iframe
                   key={`${selectedRun}-${selectedFilename}`}
-                  src={`${API_BASE_URL}/api/documents/runs/${selectedRun}/pdf#page=${currentPage}`}
+                  src={`${apiUrl(`/api/documents/runs/${apiPathSegment(selectedRun)}/pdf`)}#page=${currentPage}`}
                   className="w-full h-full rounded-lg border-0 bg-slate-950"
                   title="Source PDF Viewer"
                   loading="eager"

@@ -4,8 +4,9 @@ Settings management API routes.
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 
+from api.auth import verify_admin_key
 from api.models import MessageResponse, SettingsUpdateRequest
 from settings_manager import load_settings, save_settings
 
@@ -22,13 +23,24 @@ def get_settings():
     return settings
 
 
-@router.put("/", response_model=MessageResponse, summary="Update settings")
+@router.put(
+    "/",
+    response_model=MessageResponse,
+    summary="Update settings",
+    dependencies=[Depends(verify_admin_key)],
+)
 def update_settings(req: SettingsUpdateRequest):
     """Merge provided fields into the current settings and save."""
     settings = load_settings()
     update_data = req.model_dump(exclude_none=True)
     if not update_data:
-        return MessageResponse(success=False, message="No fields provided to update.")
+        raise HTTPException(status_code=400, detail="No fields provided to update")
+    chunk_size = update_data.get("chunk_size", settings.get("chunk_size", 800))
+    chunk_overlap = update_data.get("chunk_overlap", settings.get("chunk_overlap", 100))
+    if chunk_overlap >= chunk_size:
+        raise HTTPException(status_code=422, detail="chunk_overlap must be smaller than chunk_size")
     settings.update(update_data)
     result = save_settings(settings)
-    return MessageResponse(success="Error" not in result, message=result)
+    if "Error" in result:
+        raise HTTPException(status_code=500, detail="Unable to save settings")
+    return MessageResponse(success=True, message=result)

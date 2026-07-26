@@ -6,17 +6,28 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Generator
+from pathlib import Path
 from typing import Any
 
 import httpx
 from pypdf import PdfReader
 
 import process_state
+from gradio_security import register_gradio_input_dir
 from html_utils import make_file_status_html, make_progress_bar_html, make_upload_manifest_html
+from path_security import (
+    PathSecurityError,
+    require_approved_file,
+    resolve_file_under,
+    resolve_run_under,
+    resolve_under,
+    validate_filename,
+)
 from pdf_manager import make_zip
 from settings_manager import WORKSPACE_DIR
 
@@ -169,7 +180,11 @@ def process_pdfs(
         yield _make_empty_yield("No files uploaded.", "<span class='badge-idle'>Idle</span>", "")
         return
 
-    pdf_paths = []
+    upload_dir = resolve_under(WORKSPACE_DIR, "uploads")
+    gradio_temp_dir = Path(
+        os.environ.get("GRADIO_TEMP_DIR", os.path.join(tempfile.gettempdir(), "gradio"))
+    ).resolve()
+    pdf_paths: list[str] = []
     for f in files:
         raw_p = None
         if isinstance(f, str):
@@ -180,23 +195,12 @@ def process_pdfs(
             raw_p = f["path"]
 
         if raw_p:
-            if os.path.isfile(raw_p):
-                pdf_paths.append(raw_p)
-            else:
-                candidates = [
-                    os.path.join(WORKSPACE_DIR, os.path.basename(raw_p)),
-                    os.path.join("/home/owner/Downloads", os.path.basename(raw_p)),
-                    os.path.expanduser(f"~/Downloads/{os.path.basename(raw_p)}"),
-                    os.path.join(WORKSPACE_DIR, "souki_enclosures.pdf"),
-                ]
-                found = False
-                for cand in candidates:
-                    if os.path.isfile(cand):
-                        pdf_paths.append(cand)
-                        found = True
-                        break
-                if not found:
-                    pdf_paths.append(raw_p)
+            try:
+                safe_path = require_approved_file(raw_p, {upload_dir, gradio_temp_dir}, {".pdf"})
+            except PathSecurityError:
+                continue
+            if safe_path.is_file():
+                pdf_paths.append(str(safe_path))
 
     if not pdf_paths:
         yield _make_empty_yield("Invalid file uploads.", "<span class='badge-idle'>Idle</span>", "")
@@ -291,15 +295,18 @@ def process_pdfs(
 
     run_id = str(uuid.uuid4())
     run_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = os.path.join(workspace_dir, f"run_{run_timestamp}_{run_id[:8]}")
-    inputs_dir = os.path.join(run_dir, "inputs")
-    os.makedirs(inputs_dir, exist_ok=True)
+    run_name = f"run_{run_timestamp}_{run_id[:8]}"
+    run_dir = resolve_run_under(workspace_dir, run_name)
+    inputs_dir = resolve_under(run_dir, "inputs")
+    inputs_dir.mkdir(parents=True, exist_ok=True)
+    register_gradio_input_dir(workspace_dir, run_dir)
 
     copied_relative_paths = []
     for idx, path in enumerate(pdf_paths):
         orig_name = os.path.basename(path)
+        validate_filename(orig_name, {".pdf"})
         safe_name = f"{idx}_{orig_name}"
-        dest = os.path.join(inputs_dir, safe_name)
+        dest = resolve_file_under(inputs_dir, safe_name, {".pdf"})
         shutil.copy(path, dest)
         copied_relative_paths.append(os.path.join("inputs", safe_name))
 
@@ -307,7 +314,7 @@ def process_pdfs(
         process_state.active_runs[run_id] = {
             "stop": False,
             "proc": None,
-            "run_dir": run_dir,
+            "run_dir": str(run_dir),
             "file_mapping": file_mapping,
         }
 
@@ -337,7 +344,12 @@ def process_pdfs(
 
     try:
         proc = subprocess.Popen(
-            cmd, cwd=run_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+            cmd,
+            cwd=str(run_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
         )
         with process_state.active_runs_lock:
             if run_id in process_state.active_runs:
@@ -532,9 +544,16 @@ def process_pdfs(
             if total_pages > 0:
                 completed_pages = min(completed_pages, total_pages)
 
-            md_inputs_dir = os.path.join(run_dir, "markdown", "inputs")
-            if os.path.exists(md_inputs_dir):
-                completed_mds = [f for f in os.listdir(md_inputs_dir) if f.endswith(".md")]
+            md_inputs_dir = resolve_under(run_dir, "markdown", "inputs")
+            if md_inputs_dir.is_dir():
+                completed_mds = []
+                for entry in md_inputs_dir.iterdir():
+                    try:
+                        safe_md = resolve_file_under(md_inputs_dir, entry.name, {".md"})
+                    except PathSecurityError:
+                        continue
+                    if safe_md.is_file():
+                        completed_mds.append(entry.name)
                 for md_file in completed_mds:
                     match = re.match(r"^(\d+)_", md_file)
                     if match:
@@ -583,13 +602,21 @@ def process_pdfs(
         proc.wait()
         exit_code = proc.returncode
 
-        md_inputs_dir = os.path.join(run_dir, "markdown", "inputs")
+        md_inputs_dir = resolve_under(run_dir, "markdown", "inputs")
         choices = []
         dropdown_value = None
         zip_file_path = None
 
-        if os.path.exists(md_inputs_dir):
-            completed_mds = sorted([f for f in os.listdir(md_inputs_dir) if f.endswith(".md")])
+        if md_inputs_dir.is_dir():
+            completed_mds = []
+            for entry in md_inputs_dir.iterdir():
+                try:
+                    safe_md = resolve_file_under(md_inputs_dir, entry.name, {".md"})
+                except PathSecurityError:
+                    continue
+                if safe_md.is_file():
+                    completed_mds.append(entry.name)
+            completed_mds.sort()
             for md_file in completed_mds:
                 match = re.match(r"^(\d+)_", md_file)
                 if match:
@@ -601,7 +628,7 @@ def process_pdfs(
             if choices:
                 dropdown_value = choices[0][1]
 
-            zip_file_path = os.path.join(run_dir, "all_markdown_results.zip")
+            zip_file_path = resolve_file_under(run_dir, "all_markdown_results.zip", {".zip"})
             try:
                 make_zip(md_inputs_dir, zip_file_path)
             except Exception as e:
@@ -638,7 +665,7 @@ def process_pdfs(
                 "value": f"<div class='stat-card'><div class='stat-value'>{failed_pages}</div><div class='stat-label'>Failed Pages</div></div>"
             },
             dropdown_val_update,
-            zip_file_path,
+            str(zip_file_path) if zip_file_path else None,
             None,
             {"interactive": True},
             run_id,

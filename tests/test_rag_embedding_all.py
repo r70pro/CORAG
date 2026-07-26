@@ -14,6 +14,28 @@ import rag.embedding as rag_emb
 
 class TestRAGEmbeddingAll(unittest.TestCase):
 
+    @patch("rag.embedding.get_qdrant_client")
+    @patch("rag.embedding.delete_points")
+    def test_rollback_point_mutations_deletes_only_new_and_restores_existing(
+        self, mock_delete_points, mock_get_client
+    ):
+        existing = MagicMock()
+
+        rag_emb.rollback_point_mutations(
+            {"existing-point", "new-point"},
+            {"existing-point": existing},
+            model_name="test-model",
+        )
+
+        mock_delete_points.assert_called_once_with(
+            {"new-point"}, model_name="test-model"
+        )
+        mock_get_client.return_value.upsert.assert_called_once()
+        self.assertEqual(
+            mock_get_client.return_value.upsert.call_args.kwargs["points"],
+            [existing],
+        )
+
     def test_get_collection_name_branches(self):
         # 1. Over 40 characters limit
         name = rag_emb.get_collection_name("a" * 50)
@@ -82,7 +104,8 @@ class TestRAGEmbeddingAll(unittest.TestCase):
         mock_client.create_collection.assert_called_once()
 
     @patch("rag.embedding.get_qdrant_client")
-    def test_init_collection_already_exists(self, mock_get_client):
+    @patch("rag.embedding.get_embedding_dimension", return_value=384)
+    def test_init_collection_already_exists(self, _mock_dimension, mock_get_client):
         mock_client = mock_get_client.return_value
         mock_col = MagicMock()
         mock_col.name = "olmocr_documents_sentence-transformers_all-minilm-l6-v2"
@@ -126,7 +149,8 @@ class TestRAGEmbeddingAll(unittest.TestCase):
         # 2. Exception
         mock_client = mock_get_client.return_value
         mock_client.delete.side_effect = Exception("Qdrant error")
-        rag_emb.delete_run_vectors("run1", "model")
+        with self.assertRaisesRegex(Exception, "Qdrant error"):
+            rag_emb.delete_run_vectors("run1", "model")
 
     @patch("rag.embedding.get_qdrant_client")
     def test_delete_collection_success_and_exception(self, mock_get_client):
@@ -167,6 +191,12 @@ class TestRAGEmbeddingAll(unittest.TestCase):
             "chunk_index": 0,
             "text": "text",
             "page_number": 1,
+            "source_char_start": 10,
+            "source_char_end": 14,
+            "page_start": 1,
+            "page_end": 2,
+            "provenance_type": "original_pdf",
+            "original_filename": "record.pdf",
             "document_type": "type",
             "author": "author",
             "date_extracted": "2026-07-11",
@@ -187,6 +217,11 @@ class TestRAGEmbeddingAll(unittest.TestCase):
         self.assertIsNotNone(points)
         self.assertEqual(len(points), 1)
         self.assertEqual(points[0].payload["date_int"], 20260711)
+        self.assertEqual(points[0].payload["source_char_start"], 10)
+        self.assertEqual(points[0].payload["source_char_end"], 14)
+        self.assertEqual(points[0].payload["page_start"], 1)
+        self.assertEqual(points[0].payload["page_end"], 2)
+        self.assertEqual(points[0].payload["original_filename"], "record.pdf")
 
         # 2. None model with settings load exception
         with patch("rag.embedding.load_settings", side_effect=Exception("Disk error")):
@@ -442,7 +477,7 @@ class TestRAGEmbeddingAll(unittest.TestCase):
     @patch("rag.embedding.get_embedding_dimension")
     @patch("sentence_transformers.SentenceTransformer")
     @patch("rag.embedding.delete_run_vectors")
-    def test_upsert_chunks_generator_pre_delete_exception(self, mock_delete, mock_transformer, mock_dim, mock_get_client):
+    def test_upsert_chunks_generator_pre_delete_requires_explicit_full_reindex(self, mock_delete, mock_transformer, mock_dim, mock_get_client):
         mock_dim.return_value = 4
         mock_client = mock_get_client.return_value
         
@@ -471,14 +506,30 @@ class TestRAGEmbeddingAll(unittest.TestCase):
             "token_count": 5
         }]
 
-        # Trigger exception in pre-delete (lines 402-403)
+        # Incremental callers may never authorise a run-wide delete.
+        with self.assertRaisesRegex(ValueError, "explicit full-reindex"):
+            list(
+                rag_emb.upsert_chunks_generator(
+                    chunks,
+                    model_name="sentence-transformers/all-MiniLM-L6-v2",
+                    pre_delete_run_ids=["r1"],
+                )
+            )
+        mock_delete.assert_not_called()
+
+        # An explicitly authorised full reindex propagates delete failures and
+        # must not proceed to an unsafe partial upsert.
         mock_delete.side_effect = Exception("delete vectors failed")
-        
         rag_emb._embedding_model = None
-        gen = rag_emb.upsert_chunks_generator(chunks, model_name="sentence-transformers/all-MiniLM-L6-v2", pre_delete_run_ids=["r1"])
-        res = list(gen)
-        # Should complete successfully despite pre_delete failure
-        self.assertEqual(len(res), 2)
+        with self.assertRaisesRegex(Exception, "delete vectors failed"):
+            list(
+                rag_emb.upsert_chunks_generator(
+                    chunks,
+                    model_name="sentence-transformers/all-MiniLM-L6-v2",
+                    pre_delete_run_ids=["r1"],
+                    full_reindex=True,
+                )
+            )
         mock_delete.assert_called_once_with("r1", model_name="sentence-transformers/all-MiniLM-L6-v2")
 
     @patch("sentence_transformers.SentenceTransformer")
@@ -499,4 +550,3 @@ class TestRAGEmbeddingAll(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

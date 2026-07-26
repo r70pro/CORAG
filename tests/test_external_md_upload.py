@@ -61,24 +61,24 @@ class TestExternalMDUpload(unittest.TestCase):
         mock_cursor.fetchone.return_value = [1]  # 1 chunk in run
         mock_conn.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = mock_cursor
 
-        with patch("rag_ui.WORKSPACE_DIR", self.tmp_dir):
+        delegated_updates = [
+            "📁 Creating new case: **My Custom Case**...\n",
+            "📄 Staged **test_file.md** for case storage.\n",
+            "✅ Successfully uploaded and indexed.\n",
+        ]
+        with patch(
+            "indexing_service.CorpusIndexingService.add_markdown_to_case",
+            return_value=delegated_updates,
+        ) as mock_service:
             updates = list(upload_and_index_markdown([mock_file], "new", "My Custom Case"))
             full_status = "".join(updates)
 
             self.assertIn("Creating new case", full_status)
-            self.assertIn("Copied **test_file.md**", full_status)
-            self.assertIn("Registering case metadata", full_status)
+            self.assertIn("Staged **test_file.md**", full_status)
             self.assertIn("Successfully uploaded and indexed", full_status)
-
-            mock_register_run.assert_called_once()
-            mock_register_doc.assert_called_once()
-            mock_upload_md.assert_called_once()
-            mock_chunk.assert_called_once()
-            mock_upsert.assert_called_once()
-            mock_insert_chunks.assert_called_once()
-            mock_mark_doc.assert_called_once()
-            mock_mark_run.assert_called_once()
-            mock_invalidate.assert_called_once()
+            mock_service.assert_called_once_with(
+                [mock_file], "new", "My Custom Case"
+            )
 
     @patch("rag_ui.load_settings", return_value={"chunk_size": 800, "chunk_overlap": 100})
     @patch("rag.db.get_runs_with_stats")
@@ -120,23 +120,22 @@ class TestExternalMDUpload(unittest.TestCase):
         mock_cursor.fetchone.side_effect = [[0], [1]]  # First SELECT COUNT(*) for docs (0), second for chunks (1)
         mock_conn.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = mock_cursor
 
-        with patch("rag_ui.WORKSPACE_DIR", self.tmp_dir):
+        delegated_updates = [
+            "📁 Adding to existing case: **r123**...\n",
+            "📄 Staged **another.md** for case storage.\n",
+            "✅ Successfully uploaded and indexed.\n",
+        ]
+        with patch(
+            "indexing_service.CorpusIndexingService.add_markdown_to_case",
+            return_value=delegated_updates,
+        ) as mock_service:
             updates = list(upload_and_index_markdown([mock_file], "r123", ""))
             full_status = "".join(updates)
 
             self.assertIn("Adding to existing case", full_status)
-            self.assertIn("Copied **another.md**", full_status)
+            self.assertIn("Staged **another.md**", full_status)
             self.assertIn("Successfully uploaded and indexed", full_status)
-
-            mock_register_run.assert_called_once()
-            mock_register_doc.assert_called_once()
-            mock_upload_md.assert_called_once()
-            mock_chunk.assert_called_once()
-            mock_upsert.assert_called_once()
-            mock_insert_chunks.assert_called_once()
-            mock_mark_doc.assert_called_once()
-            mock_mark_run.assert_called_once()
-            mock_invalidate.assert_called_once()
+            mock_service.assert_called_once_with([mock_file], "r123", "")
 
     @patch("rag_ui.upload_and_index_markdown")
     @patch("rag_ui.log_to_rag")
@@ -169,9 +168,8 @@ class TestExternalMDUpload(unittest.TestCase):
         mock_cursor.fetchone.return_value = ["/mock/existing/dir"]
         mock_conn.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = mock_cursor
         
-        with patch("os.makedirs", side_effect=Exception("Perm error")):
-            updates = list(upload_and_index_markdown([MagicMock()], "r123", ""))
-            self.assertIn("Failed to create directories", "".join(updates))
+        updates = list(upload_and_index_markdown([MagicMock()], "r123", ""))
+        self.assertIn("Could not locate existing case directory", "".join(updates))
 
     @patch("rag.db.get_runs_with_stats", return_value=[])
     @patch("rag.db.get_connection")

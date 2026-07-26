@@ -7,5 +7,14 @@ venv/
 .pytest_cache/
 .ruff_cache/
 *.log
+logs/audit*.jsonl
 .env
+.env.*
+!.env.example
+!**/.env.example
+!**/.env.*.example
 analysis_*.md
+backups/
+build/
+dist/
+*.egg-info/

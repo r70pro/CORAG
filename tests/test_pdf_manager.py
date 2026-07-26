@@ -4,6 +4,8 @@ Unit tests for pdf_manager.py.
 
 import os
 import io
+import shutil
+import tempfile
 import unittest
 from unittest.mock import patch, MagicMock, mock_open
 from PIL import Image
@@ -17,6 +19,19 @@ import process_state
 
 class TestPdfManager(unittest.TestCase):
 
+    def setUp(self):
+        self.workspace = tempfile.mkdtemp()
+        self.run_dir = os.path.join(self.workspace, "run_case")
+        os.makedirs(self.run_dir)
+        self.workspace_patcher = patch("pdf_manager.WORKSPACE_DIR", self.workspace)
+        self.workspace_patcher.start()
+        process_state.active_runs.clear()
+
+    def tearDown(self):
+        self.workspace_patcher.stop()
+        process_state.active_runs.clear()
+        shutil.rmtree(self.workspace)
+
     def test_pil_to_base64(self):
         # Create a tiny mock image
         img = Image.new("RGB", (10, 10), color="red")
@@ -29,6 +44,9 @@ class TestPdfManager(unittest.TestCase):
     @patch("pypdfium2.PdfDocument")
     def test_render_pdf_page(self, mock_pdf_doc, mock_exists):
         mock_exists.return_value = True
+        pdf_path = os.path.join(self.workspace, "document.pdf")
+        with open(pdf_path, "wb") as pdf:
+            pdf.write(b"%PDF")
         
         # Mock document render page
         mock_doc = mock_pdf_doc.return_value
@@ -38,11 +56,11 @@ class TestPdfManager(unittest.TestCase):
         mock_bitmap = mock_page.render.return_value
         mock_pil = mock_bitmap.to_pil.return_value
         
-        res = pdf_manager.render_pdf_page("/mock/path.pdf", 1)
+        res = pdf_manager.render_pdf_page(pdf_path, 1)
         self.assertEqual(res, mock_pil)
 
         # Out of bounds page check
-        self.assertIsNone(pdf_manager.render_pdf_page("/mock/path.pdf", 10))
+        self.assertIsNone(pdf_manager.render_pdf_page(pdf_path, 10))
 
     @patch("os.path.exists")
     def test_get_page_mapping_and_pdf_path_no_run(self, mock_exists):
@@ -64,22 +82,27 @@ class TestPdfManager(unittest.TestCase):
         mock_reader_instance = mock_reader.return_value
         mock_reader_instance.pages = [1, 2] # 2 pages
         
-        # Mock active_runs
-        process_state.active_runs["run1"] = {"run_dir": "/tmp/run"}
-        
-        # Path-aware open mock
-        def open_mock(filename, mode="r", *args, **kwargs):
-            if "jsonl" in filename:
-                return io.StringIO(
-                    '{"metadata": {"Source-File": "inputs/doc.pdf"}, "attributes": {"pdf_page_numbers": [[0, 100, 1]]}}\n'
-                )
-            return io.BytesIO(b"%PDF-1.4 dummy contents")
+        inputs_dir = os.path.join(self.run_dir, "inputs")
+        results_dir = os.path.join(self.run_dir, "results")
+        os.makedirs(inputs_dir)
+        os.makedirs(results_dir)
+        with open(os.path.join(inputs_dir, "doc.pdf"), "wb") as pdf:
+            pdf.write(b"%PDF")
+        with open(
+            os.path.join(results_dir, "output_123.jsonl"), "w", encoding="utf-8"
+        ) as mapping:
+            mapping.write(
+                '{"metadata": {"Source-File": "inputs/doc.pdf"}, '
+                '"attributes": {"pdf_page_numbers": [[0, 100, 1]]}}\n'
+            )
+        process_state.active_runs["run1"] = {"run_dir": self.run_dir}
 
-        with patch("builtins.open", side_effect=open_mock):
-            path, total_pages, page_ranges = pdf_manager.get_page_mapping_and_pdf_path("doc.md", "run1")
-            self.assertEqual(path, "/tmp/run/inputs/doc.pdf")
-            self.assertEqual(total_pages, 2)
-            self.assertEqual(page_ranges, [[0, 100, 1]])
+        path, total_pages, page_ranges = pdf_manager.get_page_mapping_and_pdf_path(
+            "doc.md", "run1"
+        )
+        self.assertEqual(path, os.path.join(inputs_dir, "doc.pdf"))
+        self.assertEqual(total_pages, 2)
+        self.assertEqual(page_ranges, [[0, 100, 1]])
         
         process_state.active_runs.clear()
 
@@ -98,13 +121,13 @@ class TestPdfManager(unittest.TestCase):
         self.assertEqual(pdf_manager.get_markdown_for_page(full_md, ranges, 3), "")
 
     @patch("pdf_manager.get_page_mapping_and_pdf_path")
-    @patch("os.path.exists")
-    @patch("builtins.open", new_callable=mock_open, read_data="hello markdown text")
-    def test_on_file_selected(self, mock_file, mock_exists, mock_mapping):
+    def test_on_file_selected(self, mock_mapping):
         mock_mapping.return_value = ("/tmp/doc.pdf", 2, [[0, 10, 1]])
-        mock_exists.return_value = True
-        
-        process_state.active_runs["run1"] = {"run_dir": "/tmp/run"}
+        markdown_dir = os.path.join(self.run_dir, "markdown", "inputs")
+        os.makedirs(markdown_dir)
+        with open(os.path.join(markdown_dir, "doc.md"), "w", encoding="utf-8") as markdown:
+            markdown.write("hello markdown text")
+        process_state.active_runs["run1"] = {"run_dir": self.run_dir}
         
         res = pdf_manager.on_file_selected("doc.md", "run1")
         # Returns (pdf_path, total_pages, page_ranges, full_markdown, gr.update(...), file_path)
@@ -112,7 +135,7 @@ class TestPdfManager(unittest.TestCase):
         self.assertEqual(res[1], 2)
         self.assertEqual(res[2], [[0, 10, 1]])
         self.assertEqual(res[3], "hello markdown text")
-        self.assertEqual(res[5], "/tmp/run/markdown/inputs/doc.md")
+        self.assertEqual(res[5], os.path.join(markdown_dir, "doc.md"))
         
         process_state.active_runs.clear()
 
@@ -123,24 +146,27 @@ class TestPdfManager(unittest.TestCase):
         mock_exists.return_value = True
         mock_render.return_value = MagicMock()
         mock_b64.return_value = "data:image/png;base64,123"
+        pdf_path = os.path.join(self.workspace, "document.pdf")
+        with open(pdf_path, "wb") as pdf:
+            pdf.write(b"%PDF")
 
         # Case 1: no selected file
         res = pdf_manager.update_view("", "Page-by-Page", 1, "/tmp/doc.pdf", 2, [[0, 10, 1]], "markdown text")
         self.assertTrue("Select a processed document" in res[0])
 
         # Case 2: Page-by-Page with rendering
-        res = pdf_manager.update_view("doc.md", "Page-by-Page", 1, "/tmp/doc.pdf", 2, [[0, 10, 1]], "markdown text")
+        res = pdf_manager.update_view("doc.md", "Page-by-Page", 1, pdf_path, 2, [[0, 10, 1]], "markdown text")
         self.assertTrue("data:image/png;base64,123" in res[0])
         self.assertTrue("markdown" in res[2])
 
         # Case 3: Full Document
-        res = pdf_manager.update_view("doc.md", "Full Document", 1, "/tmp/doc.pdf", 2, [[0, 10, 1]], "markdown text")
+        res = pdf_manager.update_view("doc.md", "Full Document", 1, pdf_path, 2, [[0, 10, 1]], "markdown text")
         self.assertTrue("iframe" in res[0])
         self.assertEqual(res[2], "markdown text")
 
     def test_is_safe_filename(self):
         self.assertTrue(pdf_manager.is_safe_filename("document.md"))
-        self.assertTrue(pdf_manager.is_safe_filename("0_doc.pdf"))
+        self.assertFalse(pdf_manager.is_safe_filename("0_doc.pdf"))
         self.assertFalse(pdf_manager.is_safe_filename(""))
         self.assertFalse(pdf_manager.is_safe_filename("../etc/passwd"))
         self.assertFalse(pdf_manager.is_safe_filename("inputs/../../etc/passwd"))

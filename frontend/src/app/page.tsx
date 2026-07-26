@@ -13,7 +13,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 export default function Home() {
   const [currentView, setCurrentView] = useState<ViewType>("ingestion");
-  const [activeCaseId, setActiveCaseId] = useState<string>("souki_enclosures");
+  const [activeCaseId, setActiveCaseId] = useState<string>("");
   const [activeRole, setActiveRole] = useState<string>("Admin");
   const [density, setDensity] = useState<"comfortable" | "compact">("comfortable");
 

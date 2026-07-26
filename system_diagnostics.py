@@ -8,6 +8,8 @@ from typing import Any
 
 import requests
 
+from audit_log import audit_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -575,7 +577,8 @@ def get_gpu_metrics_data() -> dict[str, Any]:
 
 
 def generate_diagnostic_report_file(port_val: int = 8000) -> str:
-    from settings_manager import load_settings
+    from path_security import resolve_file_under, resolve_under
+    from settings_manager import WORKSPACE_DIR, load_settings
 
     settings = load_settings()
     backing_data = check_backing_services_data({}, port_val)
@@ -617,19 +620,18 @@ def generate_diagnostic_report_file(port_val: int = 8000) -> str:
 
     report.append("\n## 4. Application Configuration Settings")
     for k, v in settings.items():
-        if k == "hf_token" and v:
+        if any(token in k.lower() for token in ("token", "key", "password", "secret")) and v:
             v = "********"
         report.append(f"- **{k}**: {v}")
 
-    workspace_dir = os.path.dirname(os.path.abspath(__file__))
-    target_dir = os.path.join(workspace_dir, "workspace")
-    os.makedirs(target_dir, exist_ok=True)
-    report_path = os.path.join(target_dir, "diagnostic_report.md")
+    target_dir = resolve_under(WORKSPACE_DIR, "exports")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    report_path = resolve_file_under(target_dir, "diagnostic_report.md", {".md"})
 
-    with open(report_path, "w", encoding="utf-8") as f:
+    with report_path.open("w", encoding="utf-8") as f:
         f.write("\n".join(report))
 
-    return report_path
+    return str(report_path)
 
 
 def format_bytes_human(num_bytes: int) -> str:
@@ -834,8 +836,10 @@ def delete_installed_models(model_ids: list[str]) -> tuple[bool, str, list[str],
     import shutil
 
     if not model_ids:
+        audit_event("model_delete", "denied", reason="no_models_specified")
         return False, "No models specified for deletion.", [], 0
 
+    audit_event("model_delete", "attempt", requested_models=list(model_ids))
     data = get_installed_models_data()
 
     deleted_models = []
@@ -843,10 +847,19 @@ def delete_installed_models(model_ids: list[str]) -> tuple[bool, str, list[str],
     reclaimed_bytes = 0
 
     for m_id in model_ids:
+        if (
+            not isinstance(m_id, str)
+            or not m_id
+            or "\x00" in m_id
+            or os.path.isabs(m_id)
+            or ".." in m_id.split("/")
+            or "\\" in m_id
+        ):
+            continue
         target_info = None
-        # Match by exact path first, then folder, ID, or partial name
+        # Match only logical identifiers; callers may not submit filesystem paths.
         for m in data["models"]:
-            if m["path"] == m_id or m["folder"] == m_id or m["id"] == m_id or m["name"] == m_id:
+            if m["folder"] == m_id or m["id"] == m_id or m["name"] == m_id:
                 target_info = m
                 break
 
@@ -856,6 +869,7 @@ def delete_installed_models(model_ids: list[str]) -> tuple[bool, str, list[str],
         model_key = target_info["id"]
         if target_info.get("is_active"):
             skipped_active.append(model_key)
+            audit_event("model_delete", "skipped", model=model_key, reason="active_model")
             continue
 
         m_path = target_info["path"]
@@ -867,8 +881,15 @@ def delete_installed_models(model_ids: list[str]) -> tuple[bool, str, list[str],
                     shutil.rmtree(m_path)
                 deleted_models.append(model_key)
                 reclaimed_bytes += target_info["size_bytes"]
+                audit_event(
+                    "model_delete",
+                    "success",
+                    model=model_key,
+                    reclaimed_bytes=target_info["size_bytes"],
+                )
                 logger.info(f"Successfully deleted cached model path: {m_path}")
             except Exception as e:
+                audit_event("model_delete", "failure", model=model_key, error=str(e))
                 logger.error(f"Error removing model path {m_path}: {e}")
 
     reclaimed_str = format_bytes_human(reclaimed_bytes)
@@ -884,6 +905,9 @@ def delete_installed_models(model_ids: list[str]) -> tuple[bool, str, list[str],
 
     if not deleted_models and skipped_active:
         return False, " ".join(msg_parts), [], 0
+
+    if not deleted_models and not skipped_active:
+        audit_event("model_delete", "no_change", requested_count=len(model_ids))
 
     return (
         True,

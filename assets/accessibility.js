@@ -155,28 +155,16 @@
         }, 100);
     }, true);
 
-    window.toggleCaseSelection = function(cardOrCheckbox, event, runId) {
-        let card = cardOrCheckbox;
-        if (!card.classList.contains('case-card')) {
-            card = card.closest('.case-card');
-        }
-        if (!card) return;
+    function updateCaseSelection(card, toggleCheckbox) {
         const cb = card.querySelector('.case-select-checkbox');
         if (!cb) return;
 
-        // If clicked on the card itself (not directly on the checkbox), toggle the checkbox
-        if (cardOrCheckbox !== cb) {
+        if (toggleCheckbox) {
             cb.checked = !cb.checked;
         }
 
-        // Update selected class based on checkbox checked state
-        if (cb.checked) {
-            card.classList.add('selected');
-        } else {
-            card.classList.remove('selected');
-        }
+        card.classList.toggle('selected', cb.checked);
 
-        // Collect all currently checked run_ids
         const selectedIds = [];
         document.querySelectorAll('.case-select-checkbox').forEach(input => {
             if (input.checked) {
@@ -185,12 +173,20 @@
             }
         });
 
-        // Find hidden Gradio input/textarea and dispatch event
         const txtEl = document.querySelector('#selected-cases-input textarea, #selected-cases-input input');
         if (txtEl) {
             txtEl.value = selectedIds.join(',');
             txtEl.dispatchEvent(new Event('input', { bubbles: true }));
         }
-    };
-}
+    }
 
+    // Dashboard cards are replaced dynamically by Gradio, so delegated
+    // listeners bind behavior without executable attributes in generated HTML.
+    document.addEventListener('click', event => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const card = target.closest('.case-card');
+        if (!card) return;
+        updateCaseSelection(card, !target.closest('.case-select-checkbox'));
+    });
+}

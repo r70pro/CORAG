@@ -15,6 +15,7 @@ import re
 import sys
 import threading
 from collections.abc import Generator
+from datetime import date
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -23,6 +24,7 @@ from qdrant_client.models import (
     Filter,
     MatchValue,
     PayloadSchemaType,
+    PointIdsList,
     PointStruct,
     VectorParams,
 )
@@ -397,25 +399,124 @@ def _deterministic_point_id(chunk_id: str) -> str:
     return f"{digest[0:8]}-{digest[8:12]}-{digest[12:16]}-{digest[16:20]}-{digest[20:32]}"
 
 
+def prepare_chunk_point_ids(chunks: list[dict], model_name=None) -> str:
+    """Populate deterministic point IDs before any external mutation occurs."""
+    if model_name is None:
+        try:
+            model_name = load_settings().get("embedding_model", DEFAULT_EMBEDDING_MODEL)
+        except Exception:
+            model_name = DEFAULT_EMBEDDING_MODEL
+    for chunk in chunks:
+        chunk["qdrant_point_id"] = _deterministic_point_id(chunk["chunk_id"])
+        chunk["embedding_model"] = model_name
+    return model_name
+
+
+def snapshot_points(point_ids, model_name=None) -> dict[str, PointStruct]:
+    """Read point payloads and vectors so an operation can restore overwrites."""
+    ids = list(dict.fromkeys(str(point_id) for point_id in point_ids if point_id is not None))
+    if not ids:
+        return {}
+    client = get_qdrant_client()
+    collection_name = get_collection_name(model_name)
+    snapshots: dict[str, PointStruct] = {}
+    for start in range(0, len(ids), 256):
+        records = client.retrieve(
+            collection_name=collection_name,
+            ids=ids[start : start + 256],
+            with_payload=True,
+            with_vectors=True,
+        )
+        for record in records:
+            snapshots[str(record.id)] = PointStruct(
+                id=record.id,
+                vector=record.vector,
+                payload=record.payload or {},
+            )
+    return snapshots
+
+
+def delete_points(point_ids, model_name=None):
+    """Delete an exact point-ID set; never broadens the selector to a run."""
+    ids = list(dict.fromkeys(str(point_id) for point_id in point_ids if point_id is not None))
+    if not ids:
+        return
+    client = get_qdrant_client()
+    client.delete(
+        collection_name=get_collection_name(model_name),
+        points_selector=PointIdsList(points=ids),
+        wait=True,
+    )
+
+
+def get_qdrant_point_ids_for_run(run_id, model_name=None) -> set[str]:
+    """Return every point ID for a run in the selected collection."""
+    client = get_qdrant_client()
+    collection_name = get_collection_name(model_name)
+    point_ids = set()
+    offset = None
+    while True:
+        points, offset = client.scroll(
+            collection_name=collection_name,
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(
+                        key="run_id",
+                        match=MatchValue(value=run_id),
+                    )
+                ]
+            ),
+            limit=256,
+            offset=offset,
+            with_payload=False,
+            with_vectors=False,
+        )
+        point_ids.update(str(point.id) for point in points)
+        if offset is None:
+            break
+    return point_ids
+
+
+def rollback_point_mutations(touched_point_ids, snapshots, model_name=None):
+    """Restore the exact Qdrant state captured before a failed operation.
+
+    Only IDs absent from the snapshot were created by this operation, so only
+    those IDs are deleted. Existing IDs are restored from their saved vectors
+    and payloads instead of being deleted.
+    """
+    touched = {str(point_id) for point_id in touched_point_ids if point_id is not None}
+    existing = set(snapshots)
+    delete_points(touched - existing, model_name=model_name)
+    if snapshots:
+        get_qdrant_client().upsert(
+            collection_name=get_collection_name(model_name),
+            points=list(snapshots.values()),
+            wait=True,
+        )
+
+
 def upsert_chunks_generator(
     chunks: list[dict],
     model_name=None,
     batch_size=32,
     pre_delete_run_ids: list[str] | None = None,
+    full_reindex=False,
 ) -> Generator[dict, None, None]:
     """Embed and upsert chunks into Qdrant, yielding progress status dicts.
 
     Point IDs are derived deterministically from each chunk's ``chunk_id`` so
-    that re-indexing a run upserts in place rather than creating duplicate
-    vectors. Pass ``pre_delete_run_ids`` to first drop any pre-existing points
-    for those runs (used when re-indexing after a partial failure).
+    that re-indexing upserts in place rather than creating duplicate vectors.
+    Run-wide pre-deletion is available only to an explicitly authorised full
+    reindex; retries and incremental uploads must use exact point-ID rollback.
 
     Args:
         chunks: List of chunk dicts from the chunker.
         model_name: Embedding model name.
         batch_size: Batch size for embedding.
-        pre_delete_run_ids: Optional list of run IDs whose existing points
-            should be removed before upserting (idempotent re-index).
+        pre_delete_run_ids: Optional run IDs to clear. This is rejected unless
+            ``full_reindex`` is explicitly true.
+        full_reindex: Authorise destructive full-run deletion. Incremental
+            uploads must leave this false.
 
     Yields:
         Dict progress update: {"stage": "embedding"|"indexing", "current": int, "total": int}
@@ -428,22 +529,17 @@ def upsert_chunks_generator(
     # Ensure collection exists
     init_collection(model_name=model_name)
 
-    if model_name is None:
-        try:
-            model_name = load_settings().get("embedding_model", DEFAULT_EMBEDDING_MODEL)
-        except Exception:
-            model_name = DEFAULT_EMBEDDING_MODEL
+    model_name = prepare_chunk_point_ids(chunks, model_name=model_name)
 
     collection_name = get_collection_name(model_name)
 
-    # Idempotent re-index: clear any pre-existing points for the given runs so
-    # a retry after a partial failure cannot leave stale/duplicate vectors.
+    # Legacy broad deletion is gated behind an explicit full-reindex signal.
+    # CorpusIndexingService uses its safer snapshot/exact-ID replacement path.
     if pre_delete_run_ids:
+        if not full_reindex:
+            raise ValueError("pre_delete_run_ids is reserved for an explicit full-reindex workflow")
         for run_id in pre_delete_run_ids:
-            try:
-                delete_run_vectors(run_id, model_name=model_name)
-            except Exception as e:
-                logger.warning(f"Warning: could not pre-delete vectors for run {run_id}: {e}")
+            delete_run_vectors(run_id, model_name=model_name)
 
     # Process in batches to support streaming progress
     total = len(chunks)
@@ -461,17 +557,19 @@ def upsert_chunks_generator(
     # 2. Build Qdrant points (deterministic IDs for idempotent upsert)
     points = []
     for chunk, embedding in zip(chunks, embeddings, strict=False):
-        point_id = _deterministic_point_id(chunk["chunk_id"])
-        chunk["qdrant_point_id"] = point_id
-        chunk["embedding_model"] = model_name
+        point_id = chunk["qdrant_point_id"]
 
         date_extracted = chunk.get("date_extracted")
         date_int = None
         if date_extracted:
             try:
-                date_int = int(str(date_extracted).replace("-", ""))
-            except Exception:
-                pass
+                if isinstance(date_extracted, date):
+                    date_extracted = date_extracted.isoformat()
+                else:
+                    date_extracted = date.fromisoformat(str(date_extracted)).isoformat()
+                date_int = int(date_extracted.replace("-", ""))
+            except (TypeError, ValueError):
+                date_extracted = None
 
         payload = {
             "chunk_id": chunk["chunk_id"],
@@ -479,9 +577,16 @@ def upsert_chunks_generator(
             "run_id": chunk["run_id"],
             "chunk_index": chunk["chunk_index"],
             "page_number": chunk.get("page_number"),
+            "source_char_start": chunk.get("source_char_start"),
+            "source_char_end": chunk.get("source_char_end"),
+            "page_start": chunk.get("page_start"),
+            "page_end": chunk.get("page_end"),
+            "provenance_type": chunk.get("provenance_type"),
+            "original_filename": chunk.get("original_filename"),
             "document_type": chunk.get("document_type", "unknown"),
             "author": chunk.get("author"),
             "date_extracted": date_extracted,
+            "date_raw": chunk.get("date_raw"),
             "date_int": date_int,
             "section_type": chunk.get("section_type", "general"),
             "patient_name": chunk.get("patient_name"),
@@ -563,6 +668,7 @@ def delete_run_vectors(run_id: str, model_name=None):
         logger.info(f"Deleted vectors for run {run_id} from Qdrant.")
     except Exception as e:
         logger.error(f"Error deleting run vectors: {e}")
+        raise
 
 
 def load_reranker_model(model_name=None, device=None):

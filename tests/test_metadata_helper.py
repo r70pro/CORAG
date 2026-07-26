@@ -31,7 +31,7 @@ class TestMetadataHelper(unittest.TestCase):
 
         meta = get_case_metadata("run123")
         self.assertEqual(meta["names"], [])
-        self.assertEqual(meta["dob"], "—")
+        self.assertEqual(meta["dob"], "Not present in source")
         self.assertIn("Error loading metadata: Database connection failed", meta["injuries"][0])
 
     @patch("rag.metadata_helper.get_connection")
@@ -68,7 +68,7 @@ class TestMetadataHelper(unittest.TestCase):
         res = get_all_cases_metadata(["run1"])
         self.assertIn("run1", res)
         self.assertEqual(res["run1"]["names"], [])
-        self.assertEqual(res["run1"]["dob"], "—")
+        self.assertEqual(res["run1"]["dob"], "Not present in source")
         self.assertIn("Error loading metadata: DB error", res["run1"]["injuries"][0])
 
     @patch("rag.metadata_helper.get_connection")
@@ -100,7 +100,7 @@ class TestMetadataHelper(unittest.TestCase):
 
         meta = get_case_metadata("run123")
         self.assertEqual(meta["names"], ["John Doe"])
-        self.assertEqual(meta["dob"], "—")
+        self.assertEqual(meta["dob"], "Not present in source")
         self.assertEqual(meta["injuries"], ["Supraspinatus tear"])
 
         # Test bulk metadata loader fallback (lines 152-153) where _build_metadata throws TypeError
@@ -112,7 +112,7 @@ class TestMetadataHelper(unittest.TestCase):
             res = get_all_cases_metadata(["run1"])
             self.assertIn("run1", res)
             self.assertEqual(res["run1"]["names"], [])
-            self.assertEqual(res["run1"]["dob"], "—")
+            self.assertEqual(res["run1"]["dob"], "Not present in source")
             self.assertEqual(res["run1"]["injuries"], [])
 
     @patch("rag.metadata_helper.get_connection")
@@ -176,4 +176,3 @@ class TestMetadataHelper(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

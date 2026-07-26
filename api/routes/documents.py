@@ -1,36 +1,73 @@
-"""
-Document and run browsing API routes.
-"""
+"""Document and run browsing API routes."""
 
 from __future__ import annotations
 
-import os
+import json
+import logging
+import re
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
+from pypdf import PdfReader
 
+from path_security import (
+    PathSecurityError,
+    resolve_file_under,
+    resolve_run_under,
+    validate_filename,
+)
 from settings_manager import WORKSPACE_DIR
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _bad_path() -> HTTPException:
+    return HTTPException(status_code=400, detail="Invalid path")
+
+
+def _run_dir(run_name: str) -> Path:
+    try:
+        return resolve_run_under(WORKSPACE_DIR, run_name)
+    except PathSecurityError as exc:
+        raise _bad_path() from exc
+
+
+def _safe_files(directory: Path, extension: str) -> list[Path]:
+    if not directory.is_dir():
+        return []
+    result: list[Path] = []
+    for entry in directory.iterdir():
+        try:
+            safe_entry = resolve_file_under(directory, entry.name, {extension})
+        except PathSecurityError:
+            continue
+        if safe_entry.is_file():
+            result.append(safe_entry)
+    return sorted(result, key=lambda path: path.name)
 
 
 @router.get("/runs", summary="List completed runs")
 def list_runs():
-    """Return all completed OCR runs with their markdown file listings."""
+    """Return completed OCR runs without disclosing absolute filesystem paths."""
     from settings_manager import get_available_runs
 
-    runs = get_available_runs()
     result = []
-    for display_name, run_dir in runs:
-        md_dir = os.path.join(run_dir, "markdown", "inputs")
-        files = []
-        if os.path.exists(md_dir):
-            files = sorted(f for f in os.listdir(md_dir) if f.endswith(".md"))
+    for display_name, candidate_dir in get_available_runs():
+        run_name = Path(candidate_dir).name
+        try:
+            run_dir = resolve_run_under(WORKSPACE_DIR, run_name)
+        except PathSecurityError:
+            continue
+        if Path(candidate_dir).resolve() != run_dir:
+            continue
+        md_dir = run_dir / "markdown" / "inputs"
+        files = [path.name for path in _safe_files(md_dir, ".md")]
         result.append(
             {
                 "display_name": display_name,
-                "run_dir": run_dir,
-                "run_name": os.path.basename(run_dir),
+                "run_name": run_name,
                 "file_count": len(files),
                 "files": files,
             }
@@ -40,172 +77,143 @@ def list_runs():
 
 @router.get("/runs/{run_name}/files", summary="List files in a run")
 def list_run_files(run_name: str):
-    """Return all markdown files in a specific run."""
-    run_dir = os.path.join(WORKSPACE_DIR, run_name)
-    if not os.path.isdir(run_dir) or ".." in run_name:
+    """Return all Markdown files in a specific run."""
+    run_dir = _run_dir(run_name)
+    if not run_dir.is_dir():
         raise HTTPException(status_code=404, detail="Run not found")
-
-    md_dir = os.path.join(run_dir, "markdown", "inputs")
-    if not os.path.exists(md_dir):
-        return []
-    return sorted(f for f in os.listdir(md_dir) if f.endswith(".md"))
+    return [path.name for path in _safe_files(run_dir / "markdown" / "inputs", ".md")]
 
 
 @router.get("/runs/{run_name}/markdown/{filename}", summary="Get markdown content")
 def get_markdown(run_name: str, filename: str):
-    """Return the markdown content of a specific file in a run."""
-    if ".." in run_name or ".." in filename or "/" in filename or "\\" in filename:
-        raise HTTPException(status_code=400, detail="Invalid path")
-
-    file_path = os.path.join(WORKSPACE_DIR, run_name, "markdown", "inputs", filename)
-    if not os.path.isfile(file_path):
+    """Return Markdown content from a file inside the selected run."""
+    run_dir = _run_dir(run_name)
+    try:
+        file_path = resolve_file_under(run_dir / "markdown" / "inputs", filename, {".md"})
+    except PathSecurityError as exc:
+        raise _bad_path() from exc
+    if not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-
-    with open(file_path, encoding="utf-8") as f:
-        content = f.read()
-    return PlainTextResponse(content)
+    return PlainTextResponse(file_path.read_text(encoding="utf-8"))
 
 
 @router.get("/runs/{run_name}/pdf", summary="Get source PDF file")
 def get_run_pdf(run_name: str):
-    """Return the source PDF file of a specific run if available."""
-    from fastapi.responses import FileResponse
+    """Return the first source PDF stored inside a selected run."""
+    run_dir = _run_dir(run_name)
+    if not run_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Run not found")
 
-    if ".." in run_name:
-        raise HTTPException(status_code=400, detail="Invalid run name")
+    pdf_files = _safe_files(run_dir / "inputs", ".pdf")
+    if not pdf_files:
+        raise HTTPException(status_code=404, detail="No PDF found")
 
     headers = {
         "Content-Disposition": "inline; filename=document.pdf",
         "Cross-Origin-Resource-Policy": "same-origin",
         "Cross-Origin-Embedder-Policy": "unsafe-none",
         "X-Content-Type-Options": "nosniff",
-        "Cache-Control": "public, max-age=3600",
+        "Cache-Control": "private, max-age=3600",
     }
-
-    inputs_dir = os.path.join(WORKSPACE_DIR, run_name, "inputs")
-    if not os.path.exists(inputs_dir):
-        # Fallback check for Downloads or WORKSPACE_DIR
-        fallback = os.path.join("/home/owner/Downloads", "Docling_test_file.pdf")
-        if os.path.isfile(fallback):
-            return FileResponse(fallback, media_type="application/pdf", headers=headers)
-        raise HTTPException(status_code=404, detail="Inputs directory not found")
-
-    pdf_files = [f for f in os.listdir(inputs_dir) if f.endswith(".pdf")]
-    if not pdf_files:
-        fallback = os.path.join("/home/owner/Downloads", "Docling_test_file.pdf")
-        if os.path.isfile(fallback):
-            return FileResponse(fallback, media_type="application/pdf", headers=headers)
-        raise HTTPException(status_code=404, detail="No PDF found in run inputs")
-
-    pdf_path = os.path.join(inputs_dir, pdf_files[0])
-    return FileResponse(pdf_path, media_type="application/pdf", headers=headers)
+    return FileResponse(pdf_files[0], media_type="application/pdf", headers=headers)
 
 
 @router.get("/runs/{run_name}/info", summary="Get detailed page mapping and info for a document")
 def get_run_doc_info(run_name: str, filename: str = ""):
-    """Return document page count, character page ranges, and per-page markdown content."""
-    import json
-    import logging
-
-    from pypdf import PdfReader
-
-    logger = logging.getLogger(__name__)
-
-    if ".." in run_name or ".." in filename:
-        raise HTTPException(status_code=400, detail="Invalid path")
-
-    run_dir = os.path.join(WORKSPACE_DIR, run_name)
-    if not os.path.isdir(run_dir):
+    """Return page count, character ranges, and per-page Markdown content."""
+    run_dir = _run_dir(run_name)
+    if not run_dir.is_dir():
         raise HTTPException(status_code=404, detail="Run not found")
 
-    inputs_dir = os.path.join(run_dir, "inputs")
-    pdf_path = None
-    if os.path.exists(inputs_dir):
-        if filename:
-            pdf_name = filename.rsplit(".", 1)[0] + ".pdf"
-            candidate = os.path.join(inputs_dir, pdf_name)
-            if os.path.isfile(candidate):
-                pdf_path = candidate
-        if not pdf_path:
-            pdf_files = [f for f in os.listdir(inputs_dir) if f.endswith(".pdf")]
-            if pdf_files:
-                pdf_path = os.path.join(inputs_dir, pdf_files[0])
+    if filename:
+        try:
+            validate_filename(filename, {".md"})
+        except PathSecurityError as exc:
+            raise _bad_path() from exc
 
-    if not pdf_path or not os.path.isfile(pdf_path):
-        fallback = os.path.join("/home/owner/Downloads", "Docling_test_file.pdf")
-        if os.path.isfile(fallback):
-            pdf_path = fallback
+    inputs_dir = run_dir / "inputs"
+    pdf_path: Path | None = None
+    pdf_filename = ""
+    if filename:
+        pdf_filename = f"{Path(filename).stem}.pdf"
+        try:
+            candidate = resolve_file_under(inputs_dir, pdf_filename, {".pdf"})
+        except PathSecurityError as exc:
+            raise _bad_path() from exc
+        if candidate.is_file():
+            pdf_path = candidate
+    if pdf_path is None:
+        pdf_files = _safe_files(inputs_dir, ".pdf")
+        if pdf_files:
+            pdf_path = pdf_files[0]
 
     total_pages = 1
-    if pdf_path and os.path.isfile(pdf_path):
+    if pdf_path is not None:
         try:
-            reader = PdfReader(pdf_path)
-            total_pages = len(reader.pages)
-        except Exception as e:
-            logger.error(f"Error reading PDF page count: {e}")
+            total_pages = len(PdfReader(str(pdf_path)).pages)
+        except Exception:
+            logger.warning("Unable to read a run PDF page count")
 
     page_ranges = []
-    results_dir = os.path.join(run_dir, "results")
-    pdf_filename = filename.rsplit(".", 1)[0] + ".pdf" if filename else ""
-    if os.path.exists(results_dir):
-        for f in os.listdir(results_dir):
-            if f.endswith(".jsonl"):
-                jsonl_path = os.path.join(results_dir, f)
-                try:
-                    with open(jsonl_path, encoding="utf-8") as file:
-                        for line in file:
-                            if not line.strip():
-                                continue
-                            data = json.loads(line)
-                            source_file = data.get("metadata", {}).get("Source-File", "")
-                            if (
-                                not pdf_filename
-                                or source_file == f"inputs/{pdf_filename}"
-                                or os.path.basename(source_file) == pdf_filename
-                            ):
-                                attributes = data.get("attributes", {})
-                                pdf_page_numbers = attributes.get("pdf_page_numbers", [])
-                                if pdf_page_numbers:
-                                    page_ranges = pdf_page_numbers
-                                    break
-                except Exception as e:
-                    logger.error(f"Error reading jsonl {jsonl_path}: {e}")
-                if page_ranges:
-                    break
+    for jsonl_path in _safe_files(run_dir / "results", ".jsonl"):
+        try:
+            with jsonl_path.open(encoding="utf-8") as jsonl_file:
+                for line in jsonl_file:
+                    if not line.strip():
+                        continue
+                    data = json.loads(line)
+                    source_file = data.get("metadata", {}).get("Source-File", "")
+                    source_name = Path(str(source_file).replace("\\", "/")).name
+                    if not pdf_filename or source_name == pdf_filename:
+                        ranges = data.get("attributes", {}).get("pdf_page_numbers", [])
+                        if ranges:
+                            page_ranges = ranges
+                            break
+        except (OSError, ValueError, json.JSONDecodeError):
+            logger.warning("Unable to read run page mapping metadata")
+        if page_ranges:
+            break
 
     full_markdown = ""
     if filename:
-        md_path = os.path.join(run_dir, "markdown", "inputs", filename)
-        if os.path.isfile(md_path):
+        try:
+            md_path = resolve_file_under(run_dir / "markdown" / "inputs", filename, {".md"})
+        except PathSecurityError as exc:
+            raise _bad_path() from exc
+        if md_path.is_file():
             try:
-                with open(md_path, encoding="utf-8") as f:
-                    full_markdown = f.read()
-            except Exception:
-                pass
+                full_markdown = md_path.read_text(encoding="utf-8")
+            except OSError:
+                logger.warning("Unable to read run Markdown")
 
     pages_markdown = {}
     if full_markdown:
         valid_ranges = False
-        if page_ranges:
-            for r in page_ranges:
-                if len(r) >= 3:
-                    s_idx, e_idx, p_num = r[0], r[1], r[2]
-                    if 0 <= s_idx < e_idx <= len(full_markdown):
-                        pages_markdown[str(p_num)] = full_markdown[s_idx:e_idx]
-                        valid_ranges = True
+        for page_range in page_ranges:
+            if len(page_range) >= 3:
+                start, end, page_number = page_range[:3]
+                if (
+                    isinstance(start, int)
+                    and isinstance(end, int)
+                    and 0 <= start < end <= len(full_markdown)
+                ):
+                    pages_markdown[str(page_number)] = full_markdown[start:end]
+                    valid_ranges = True
 
         if not valid_ranges:
-            import re
-
             splits = re.split(
-                r"\n\s*(?:---|<!--\s*page\s*\d+\s*-->)\s*\n", full_markdown, flags=re.IGNORECASE
+                r"\n\s*(?:---|<!--\s*page\s*\d+\s*-->)\s*\n",
+                full_markdown,
+                flags=re.IGNORECASE,
             )
             if len(splits) > 1:
-                for idx, text in enumerate(splits, start=1):
-                    pages_markdown[str(idx)] = text.strip()
+                pages_markdown = {
+                    str(index): text.strip() for index, text in enumerate(splits, start=1)
+                }
             else:
-                for p in range(1, max(1, total_pages) + 1):
-                    pages_markdown[str(p)] = full_markdown
+                pages_markdown = {
+                    str(page): full_markdown for page in range(1, max(1, total_pages) + 1)
+                }
 
     return {
         "run_name": run_name,

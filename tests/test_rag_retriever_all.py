@@ -364,6 +364,9 @@ class TestRAGRetrieverAll(unittest.TestCase):
             "text": "sample text",
             "original_filename": "doc.pdf",
             "page_number": 3,
+            "page_start": 3,
+            "page_end": 3,
+            "provenance_type": "original_pdf",
             "author": "Dr Ek",
             "date_extracted": "2026-07-11",
             "document_type": "specialist_letter"
@@ -385,7 +388,8 @@ class TestRAGRetrieverAll(unittest.TestCase):
             "document_type": "unknown"
         }]
         res_none = rag_ret.format_context_for_llm(results_none)
-        self.assertEqual(res_none.strip(), "[Source 1]\nsample text")
+        self.assertIn("PDF page provenance: not present in source metadata", res_none)
+        self.assertTrue(res_none.strip().endswith("sample text"))
 
     @patch("rag.retriever.encode_query")
     @patch("rag.retriever.get_qdrant_client")

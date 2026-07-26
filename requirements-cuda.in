@@ -1,0 +1,3 @@
+# CUDA is a distinct Linux x86_64 environment. PyTorch 2.9.1's official
+# metadata pins its CUDA 12.8 libraries with matching platform markers.
+torch==2.13.0 ; sys_platform == "linux" and platform_machine == "x86_64"

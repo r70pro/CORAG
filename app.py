@@ -1,10 +1,13 @@
 import atexit
 import logging
+import os
 from collections.abc import Generator
+from pathlib import Path
 from typing import Any
 
 import gradio as gr
 
+from api.auth import require_safe_bind
 from app_handlers import (
     check_backing_services,  # noqa: F401
     get_gpu_metrics,  # noqa: F401
@@ -39,6 +42,7 @@ from docker_manager import (  # noqa: F401
     stop_docker_container,
 )
 from embedding_pipeline_ui import build_embedding_pipeline_ui
+from gradio_security import get_gradio_path_config as build_gradio_path_config
 
 # HTML templates
 from html_utils import (  # noqa: F401
@@ -92,6 +96,12 @@ logger = logging.getLogger(__name__)
 # Register exit hooks
 atexit.register(cleanup_docker)
 atexit.register(cleanup_active_runs)
+
+
+def get_gradio_path_config() -> tuple[list[str], list[str]]:
+    """Return this application's Gradio file-serving configuration."""
+
+    return build_gradio_path_config(WORKSPACE_DIR, Path(__file__).resolve().parent)
 
 
 def process_pdfs_ui_wrapper(*args: Any, **kwargs: Any) -> Generator[tuple[Any, ...], None, None]:
@@ -883,8 +893,6 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
         outputs=[installed_models_df, delete_model_dropdown],
     )
 
-    import os
-
     js_path = os.path.join(os.path.dirname(__file__), "assets", "accessibility.js")
     with open(js_path, encoding="utf-8") as f:
         accessibility_js = f.read()
@@ -892,11 +900,26 @@ with gr.Blocks(title="OLMOCR PDF Suite") as demo:
     demo.load(None, js=accessibility_js)
 
 if __name__ == "__main__":  # pragma: no cover
+    gradio_host = require_safe_bind(
+        os.environ.get("KIRAG_GRADIO_HOST", "127.0.0.1"),
+        authenticated=bool(
+            os.environ.get("KIRAG_GRADIO_USERNAME") and os.environ.get("KIRAG_GRADIO_PASSWORD")
+        ),
+    )
+    gradio_auth = None
+    if os.environ.get("KIRAG_GRADIO_USERNAME") and os.environ.get("KIRAG_GRADIO_PASSWORD"):
+        gradio_auth = (
+            os.environ["KIRAG_GRADIO_USERNAME"],
+            os.environ["KIRAG_GRADIO_PASSWORD"],
+        )
+    allowed_paths, blocked_paths = get_gradio_path_config()
     demo.queue()
     demo.launch(
-        server_name="127.0.0.1",
+        server_name=gradio_host,
         server_port=7860,
         css=custom_css,
         theme=dark_theme,
-        allowed_paths=["/home/owner"],
+        auth=gradio_auth,
+        allowed_paths=allowed_paths,
+        blocked_paths=blocked_paths,
     )

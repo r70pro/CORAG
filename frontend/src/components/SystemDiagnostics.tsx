@@ -22,10 +22,10 @@ import {
   stopDockerContainer,
   createDockerContainer,
   executeCleanup,
+  downloadDiagnosticReport,
   fetchInstalledModels,
   deleteInstalledModels,
   InstalledModelItem,
-  API_BASE_URL,
 } from "@/lib/api";
 import { ResizableSplit } from "@/components/ResizableSplit";
 import { ResizableBlock } from "@/components/ResizableBlock";
@@ -364,15 +364,13 @@ export const SystemDiagnostics: React.FC = () => {
     await loadContainerLogs();
   };
 
-  const handleDownloadReport = () => {
+  const handleDownloadReport = async () => {
     const timeStr = new Date().toLocaleTimeString();
-    addLogMessage(`[${timeStr}] [Report] Downloading diagnostic report from ${API_BASE_URL}/api/diagnostics/report...`);
-    const link = document.createElement("a");
-    link.href = `${API_BASE_URL}/api/diagnostics/report`;
-    link.download = "diagnostic_report.md";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    addLogMessage(`[${timeStr}] [Report] Downloading diagnostic report...`);
+    const result = await downloadDiagnosticReport();
+    if (!result.success) {
+      addLogMessage(`[${timeStr}] [Report Error] ${result.message}`);
+    }
   };
 
   const handleCopyLogs = () => {

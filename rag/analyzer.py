@@ -37,6 +37,40 @@ _MODEL_EQUIVALENTS = {
 # RAG analysis retrieval constants
 STRUCTURED_MODE_MIN_TOP_K = 50
 STRUCTURED_MODE_SCORE_THRESHOLD = 0.05
+DEFAULT_MAX_OUTPUT_TOKENS = 4096
+CONSERVATIVE_ANALYSIS_CONTEXT_LENGTH = 32768
+
+
+class ContextWindowError(ValueError):
+    """Raised when a requested generation cannot fit in the analysis context window."""
+
+
+def _analysis_context_length(
+    resolved_model: str,
+    configured_analysis_model: object,
+    model_lengths: dict[str, int],
+) -> int:
+    """Resolve context length without consulting OCR/container settings."""
+    exact_length = model_lengths.get(resolved_model)
+    if exact_length is not None:
+        return int(exact_length)
+
+    if isinstance(configured_analysis_model, str):
+        configured_length = model_lengths.get(configured_analysis_model)
+        if configured_length is not None:
+            return int(configured_length)
+
+    return CONSERVATIVE_ANALYSIS_CONTEXT_LENGTH
+
+
+def _validate_output_token_request(max_tokens: int, max_model_len: int) -> None:
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1:
+        raise ContextWindowError("max_tokens must be a positive integer")
+    if max_tokens >= max_model_len:
+        raise ContextWindowError(
+            f"Requested output tokens ({max_tokens}) must be smaller than the "
+            f"analysis model context window ({max_model_len})"
+        )
 
 
 def invalidate_model_cache():
@@ -125,12 +159,12 @@ SYSTEM_PROMPTS = {
 
 INSTRUCTIONS:
 - Answer based ONLY on the provided document excerpts — do not hallucinate or assume facts not present in the sources
-- Never use raw system source tags (like [Source 26] or [Source 52]) in final outputs
-- Always cite the exact page number range of the original PDF document where the information is located
+- Use the supplied [Source N] tag for each factual claim; the application replaces it with verified metadata before display
+- Cite an exact PDF page range only when both page endpoints are supplied
 - Include robust verification details for every factual claim so that users can instantly verify the source when scrolling through the original file, including:
-  * The exact document type and title (e.g., Operation Record, Specialist Correspondence)
-  * The exact authoring physician or clinic (e.g., Dr. Gavin Weekes, Capital Radiology)
-  * Identifying report details (e.g., Ref No: 2024AL0008570-1, Accession Number: 77.50382801)
+  * The source-supported document type and original filename
+  * The source-supported authoring physician or explicitly labeled clinic
+  * Identifying report details only when present in the excerpt
 - If multiple sources discuss the same event, synthesise the information and note any differences
 - Use ISO date format (YYYY-MM-DD) when referencing dates
 - If the answer cannot be determined from the provided excerpts, say so explicitly and suggest what additional documents might help
@@ -143,12 +177,12 @@ INSTRUCTIONS:
 - Use ISO date format (YYYY-MM-DD) for all dates
 - If a date is ambiguous (e.g., "early 2018"), note the ambiguity but place it approximately
 - For the "Source" column:
-  * Never use raw system source tags (like [Source 26] or [Source 52]) in final outputs
-  * Always cite the exact page number range of the original PDF document where the information is located
+  * Use the supplied [Source N] tag; the application replaces it with verified metadata before display
+  * Cite an exact PDF page range only when both page endpoints are supplied
   * Include robust verification details for each entry so that users can instantly verify the source when scrolling through the original file, including:
-    - The exact document type and title (e.g., Operation Record, Specialist Correspondence)
-    - The exact authoring physician or clinic (e.g., Dr. Gavin Weekes, Capital Radiology)
-    - Identifying report details (e.g., Ref No: 2024AL0008570-1, Accession Number: 77.50382801)
+    - The source-supported document type and original filename
+    - The source-supported authoring physician or explicitly labeled clinic
+    - Identifying report details only when present in the excerpt
 - Flag any inconsistencies in dates between different sources
 - Order strictly by date, oldest first""",
     "injury_summary": """You are a medicolegal injury analyst. Your task is to produce a structured summary of the patient's injury, treatment, and outcomes from the provided document excerpts.
@@ -165,12 +199,12 @@ Generate a structured report with these sections:
 8. **Outstanding Issues** — Unresolved symptoms, pending treatments, or recommendations
 
 For every factual claim or timeline entry in this summary:
-- Never use raw system source tags (like [Source 26] or [Source 52]) in final outputs
-- Always cite the exact page number range of the original PDF document where the information is located
+- Use the supplied [Source N] tag; the application replaces it with verified metadata before display
+- Cite an exact PDF page range only when both page endpoints are supplied
 - Include robust verification details so that users can instantly verify the source when scrolling through the original file, including:
-  * The exact document type and title (e.g., Operation Record, Specialist Correspondence)
-  * The exact authoring physician or clinic (e.g., Dr. Gavin Weekes, Capital Radiology)
-  * Identifying report details (e.g., Ref No: 2024AL0008570-1, Accession Number: 77.50382801)
+  * The source-supported document type and original filename
+  * The source-supported authoring physician or explicitly labeled clinic
+  * Identifying report details only when present in the excerpt
 Flag any contradictions between providers.""",
     "inconsistency_finder": """You are a medicolegal document auditor specialising in identifying inconsistencies, contradictions, and discrepancies across clinical records.
 
@@ -178,9 +212,9 @@ INSTRUCTIONS:
 - Compare accounts of the same events across different sources
 - Identify discrepancies in: dates, injury descriptions, examination findings, treatment recommendations, patient-reported symptoms
 - For each inconsistency, cite both sources with:
-  * The exact page number range of the original PDF document where the information is located
-  * Robust verification details (e.g., exact document type and title, authoring physician/clinic, Ref/Accession numbers)
-  * Never use raw system source tags (like [Source 26] or [Source 52])
+  * The exact original-PDF page range only when both endpoints are supplied
+  * Source-supported document type, filename, author/clinic, and reference details
+  * The supplied [Source N] tag, which the application replaces before display
 - Rate severity: MINOR (date formatting differences), MODERATE (differing clinical findings), MAJOR (contradictory diagnoses or recommendations)
 - Present findings in a structured table: Issue | Source A Says | Source B Says | Severity
 - Also note any gaps — events referenced but not documented""",
@@ -192,15 +226,25 @@ INSTRUCTIONS:
 - Track changes: new prescriptions, dose changes, cessations
 - Present as a markdown table: Medication | Dose/Frequency | Date Started | Date Stopped | Prescriber | Source (PDF Page & Verifying Details)
 - For the "Source" column:
-  * Never use raw system source tags (like [Source 26] or [Source 52]) in final outputs
-  * Always cite the exact page number range of the original PDF document where the information is located
+  * Use the supplied [Source N] tag; the application replaces it with verified metadata before display
+  * Cite an exact PDF page range only when both page endpoints are supplied
   * Include robust verification details for each entry so that users can instantly verify the source when scrolling through the original file, including:
-    - The exact document type and title (e.g., Operation Record, Specialist Correspondence)
-    - The exact authoring physician or clinic (e.g., Dr. Gavin Weekes, Capital Radiology)
-    - Identifying report details (e.g., Ref No: 2024AL0008570-1, Accession Number: 77.50382801)
+    - The source-supported document type and original filename
+    - The source-supported authoring physician or explicitly labeled clinic
+    - Identifying report details only when present in the excerpt
 - Flag any potential interactions or contraindications
 - Note any allergies mentioned in the records""",
 }
+
+PROVENANCE_INSTRUCTIONS = """
+
+NON-NEGOTIABLE PROVENANCE RULES:
+- Treat the provenance fields in each excerpt header as the complete source of citation metadata.
+- Never infer or invent a PDF page, page range, provider, author, clinic, filename, document type, claim/reference number, or accession number.
+- If a field is unavailable, omit it or write "Not present in source".
+- If an excerpt says it is external Markdown, state that it has no original-PDF page provenance; do not assign it a page.
+- Retain the source's original date expression. Only present a normalized ISO date when it is a valid calendar date.
+"""
 
 
 ANALYSIS_MODE_MAP = {
@@ -249,7 +293,7 @@ def build_prompt(
     Returns:
         List of message dicts for OpenAI Chat Completions API.
     """
-    system_prompt = SYSTEM_PROMPTS.get(mode, SYSTEM_PROMPTS["free_qa"])
+    system_prompt = SYSTEM_PROMPTS.get(mode, SYSTEM_PROMPTS["free_qa"]) + PROVENANCE_INSTRUCTIONS
 
     messages = [{"role": "system", "content": system_prompt}]
 
@@ -417,31 +461,46 @@ def replace_source_tags_in_string(text: str, results: list[dict]) -> str:
             result = results[idx - 1]
             parts = []
 
-            # 1. Author
+            filename = result.get("original_filename")
+            if filename:
+                parts.append(str(filename))
+
+            # Only cite author and document type when source extraction supplied them.
             author = result.get("author") or ""
             if author:
                 parts.append(author)
 
-            # 2. Document type
             doc_type = result.get("document_type") or ""
             if doc_type and doc_type != "unknown":
                 doc_type = doc_type.replace("_", " ").title()
                 parts.append(doc_type)
 
-            # 3. Date
             date = result.get("date_extracted") or ""
             if date:
                 parts.append(date)
 
-            # 4. Page number
-            page = result.get("page_number")
-            if page:
-                parts.append(f"p. {page}")
+            provenance_type = result.get("provenance_type")
+            page_start = result.get("page_start")
+            page_end = result.get("page_end")
+            if provenance_type == "external_markdown":
+                parts.append("external Markdown; no original-PDF page provenance")
+            elif page_start is not None and page_end is not None:
+                if page_start == page_end:
+                    parts.append(f"p. {page_start}")
+                else:
+                    parts.append(f"pp. {page_start}-{page_end}")
+            elif page_start is not None:
+                parts.append(
+                    f"p. {page_start} (start page only; end page not present in source metadata)"
+                )
+            else:
+                parts.append("original-PDF page provenance not present")
 
-            # 5. Identifying report details if present in chunk text
             chunk_text = result.get("text", "")
             ref_match = re.search(
-                r"\b(?:Ref(?:\s*No)?\.?\s*:\s*|Accession(?:\s*Number)?\.?\s*:\s*)([A-Z0-9_\-]+(?:\.[A-Z0-9_\-]+)*)",
+                r"\b(?:(?:Ref|Claim)(?:erence)?(?:\s*(?:No|Number))?\.?\s*:\s*|"
+                r"Accession(?:\s*(?:No|Number))?\.?\s*:\s*)"
+                r"([A-Z0-9_\-]+(?:\.[A-Z0-9_\-]+)*)",
                 chunk_text,
                 re.IGNORECASE,
             )
@@ -450,15 +509,10 @@ def replace_source_tags_in_string(text: str, results: list[dict]) -> str:
                 ref_val = ref_val.rstrip(",.;:")
                 parts.append(ref_val)
 
-            # Check if original filename is present, and append if details are minimal
-            filename = result.get("original_filename") or ""
-            if filename and len(parts) < 2 and filename not in parts:
-                parts.append(filename)
-
             if parts:
                 return ", ".join(parts)
             else:
-                return f"Source {idx}"
+                return f"Source {idx}; provenance metadata not present"
         return None
 
     def replacer(match):
@@ -549,6 +603,7 @@ def analyze(
     date_from: str | None = None,
     date_to: str | None = None,
     stream: bool = True,
+    max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     progress_callback: Any | None = None,
     **search_kwargs,
 ) -> Generator[str, None, None]:
@@ -569,6 +624,7 @@ def analyze(
         date_from: Optional date range start.
         date_to: Optional date range end.
         stream: Whether to stream the response.
+        max_tokens: Maximum number of response tokens to request from the analysis model.
         progress_callback: Callback to report retrieval/rerank progress.
         **search_kwargs: Additional kwargs for search_similar().
 
@@ -602,22 +658,32 @@ def analyze(
         yield "Please ensure documents have been indexed using the 'Build Index' button."
         return
 
-    # Truncate context to fit the *analysis* model's max context window.
-    # NOTE: we must use the analysis model's limit, not the OCR container's
-    # (docker_max_model_len), which can differ on a shared vLLM server.
+    # Resolve the model used for analysis before calculating its prompt budget.
+    resolved_model = model_name
+    model_fallback_warning = None
+    if os.environ.get("TESTING") != "true":
+        try:
+            resolved_model, fell_back = _resolve_loaded_model(server_url, model_name)
+            if fell_back:
+                model_fallback_warning = (
+                    f"⚠️ **Note**: Model `{model_name}` is not loaded in vLLM. "
+                    f"Falling back to `{resolved_model}`.\n\n"
+                )
+        except Exception:
+            pass
+
+    # Truncate context to fit the analysis model. OCR container configuration
+    # is deliberately excluded because it may describe a different model.
     from settings_manager import MODEL_MAX_CONTENT_LENGTHS, load_settings
 
     settings = load_settings()
-    # 1) Best: a known limit for the exact analysis model name.
-    # 2) Fallback: the configured OCR container limit.
-    # 3) Last resort: a conservative default.
-    max_model_len = (
-        settings.get("docker_max_model_len")
-        or MODEL_MAX_CONTENT_LENGTHS.get(model_name)
-        or MODEL_MAX_CONTENT_LENGTHS.get(settings.get("analysis_model_name"))
-        or 131072
+    max_model_len = _analysis_context_length(
+        resolved_model,
+        settings.get("analysis_model_name"),
+        MODEL_MAX_CONTENT_LENGTHS,
     )
-    max_prompt_tokens = max(int(max_model_len) - 5120, 2048)
+    _validate_output_token_request(max_tokens, max_model_len)
+    max_prompt_tokens = max_model_len - max_tokens
 
     # Estimate base prompt and overall tokens
     def estimate_tokens(msgs: list[dict]) -> int:
@@ -693,27 +759,27 @@ def analyze(
 
     # Step 3: Build prompt (using final resolved context)
     messages = build_prompt(query, context, mode, chat_history)
+    final_prompt_tokens = estimate_tokens(messages)
+    remaining_context = max_model_len - final_prompt_tokens
+    if remaining_context < max_tokens:
+        raise ContextWindowError(
+            f"Requested output tokens ({max_tokens}) exceed the remaining analysis "
+            f"context ({max(remaining_context, 0)} tokens after the prompt)"
+        )
 
     # Step 4: Query LLM
-    resolved_model = model_name
-    if os.environ.get("TESTING") != "true":
-        try:
-            resolved_model, fell_back = _resolve_loaded_model(server_url, model_name)
-            if fell_back:
-                yield (
-                    f"⚠️ **Note**: Model `{model_name}` is not loaded in vLLM. "
-                    f"Falling back to `{resolved_model}`.\n\n"
-                )
-        except Exception:
-            pass
+    if model_fallback_warning:
+        yield model_fallback_warning
 
     if stream:
         if warning_msg:
             yield warning_msg
-        raw_stream = query_llm_streaming(messages, server_url, resolved_model)
+        raw_stream = query_llm_streaming(
+            messages, server_url, resolved_model, max_tokens=max_tokens
+        )
         yield from replace_source_tags_streaming(raw_stream, results)
     else:
-        response_text = query_llm(messages, server_url, resolved_model)
+        response_text = query_llm(messages, server_url, resolved_model, max_tokens=max_tokens)
         processed_text = replace_source_tags_in_string(response_text, results)
         if warning_msg:
             yield warning_msg + processed_text

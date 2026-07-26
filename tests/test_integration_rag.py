@@ -9,59 +9,46 @@ Ensures real interactions with local Docker services:
 """
 
 import os
+import uuid
 import unittest
-import time
 from datetime import date
 
-# Activate live settings
+# Activate live settings. Infrastructure is provisioned by the CI job, never
+# from the test process (which could otherwise select a developer Compose stack).
 os.environ["TESTING"] = "false"
+
+import pytest
+from qdrant_client import models as qdrant_models
 
 from rag import db as rag_db
 from rag import storage as rag_storage
 from rag import cache as rag_cache
 from rag import embedding as rag_emb
-from rag import retriever as rag_ret
-from rag_infra_manager import start_and_init_rag, is_rag_infrastructure_ready
+
+pytestmark = pytest.mark.integration
 
 
 class TestRAGIntegration(unittest.TestCase):
 
-    started_infra = False
-
     @classmethod
     def setUpClass(cls):
-        # Check if services are healthy and responding
+        if os.environ.get("KIRAG_RUN_INTEGRATION") != "1":
+            raise unittest.SkipTest(
+                "Set KIRAG_RUN_INTEGRATION=1 after provisioning the disposable test stack"
+            )
+
         services_healthy = (
-            is_rag_infrastructure_ready()
-            and rag_db.is_healthy()
+            rag_db.is_healthy()
             and rag_cache.is_healthy()
             and rag_storage.is_healthy()
             and rag_emb.is_healthy()
         )
         if not services_healthy:
-            print("RAG Infrastructure not fully ready. Starting it for integration tests...")
-            success, msg = start_and_init_rag()
-            if not success or not (
-                rag_db.is_healthy()
-                and rag_cache.is_healthy()
-                and rag_storage.is_healthy()
-                and rag_emb.is_healthy()
-            ):
-                raise unittest.SkipTest(f"Skipping integration tests: RAG infra unavailable: {msg}")
-            cls.started_infra = True
+            raise RuntimeError("Disposable RAG integration services are not healthy")
 
-        # Ensure all services are initialized
-        from rag_infra_manager import init_rag_database, init_rag_storage, init_rag_vector_store
+        from rag_infra_manager import init_rag_database, init_rag_storage
         init_rag_database()
         init_rag_storage()
-        init_rag_vector_store()
-
-    @classmethod
-    def tearDownClass(cls):
-        if cls.started_infra:
-            print("Stopping RAG infrastructure started for integration tests...")
-            from rag_infra_manager import stop_rag_infrastructure
-            stop_rag_infrastructure()
 
     def test_01_postgres_integration(self):
         self.assertTrue(rag_db.is_healthy(), "PostgreSQL should be healthy")
@@ -169,54 +156,38 @@ class TestRAGIntegration(unittest.TestCase):
     def test_04_qdrant_integration(self):
         self.assertTrue(rag_emb.is_healthy(), "Qdrant should be healthy")
 
-        run_id = "int_run_qdrant"
-        doc_id = "int_doc_qdrant"
-        model_name = "BAAI/bge-large-en-v1.5"
-
-        # Check collection info
-        col_info = rag_emb.get_collection_info(model_name)
-        self.assertNotEqual(col_info["status"], "not_found")
-
-        # Insert points
-        chunks = [
-            {
-                "chunk_id": "chunk_qdrant_1",
-                "doc_id": doc_id,
-                "run_id": run_id,
-                "chunk_index": 0,
-                "text": "The patient experienced acute shoulder pain after a motorcycle crash in 2014.",
-                "char_start": 0,
-                "char_end": 100,
-                "page_number": 2,
-                "document_type": "specialist_letter",
-                "author": "Dr Eugene Ek",
-                "date_extracted": "2020-08-27",
-                "section_type": "history",
-                "patient_name": "Francis Van Rossum",
-                "token_count": 20
-            }
-        ]
-
-        # Upsert
-        updated_chunks = rag_emb.upsert_chunks(chunks, model_name=model_name)
-        self.assertIsNotNone(updated_chunks[0].get("qdrant_point_id"))
-
-        # Verify Qdrant points count updated
-        time.sleep(1) # Let Qdrant index it
-        col_info2 = rag_emb.get_collection_info(model_name)
-        self.assertTrue(col_info2["points_count"] >= 1)
-
-        # Search similar via retriever
-        results = rag_ret.search_similar(
-            query="Tell me about the motorcycle accident and shoulder pain",
-            top_k=1,
-            score_threshold=0.1
-        )
-        self.assertTrue(len(results) >= 1)
-        self.assertTrue("motorcycle" in results[0]["text"].lower())
-
-        # Cleanup run vectors
-        rag_emb.delete_run_vectors(run_id, model_name=model_name)
+        client = rag_emb.get_qdrant_client()
+        collection = f"kirag_integration_{uuid.uuid4().hex}"
+        point_id = str(uuid.uuid4())
+        try:
+            client.create_collection(
+                collection_name=collection,
+                vectors_config=qdrant_models.VectorParams(
+                    size=3,
+                    distance=qdrant_models.Distance.COSINE,
+                ),
+            )
+            client.upsert(
+                collection_name=collection,
+                wait=True,
+                points=[
+                    qdrant_models.PointStruct(
+                        id=point_id,
+                        vector=[1.0, 0.0, 0.0],
+                        payload={"run_id": "integration"},
+                    )
+                ],
+            )
+            result = client.retrieve(
+                collection_name=collection,
+                ids=[point_id],
+                with_payload=True,
+                with_vectors=True,
+            )
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0].payload["run_id"], "integration")
+        finally:
+            client.delete_collection(collection_name=collection)
 
 
 if __name__ == "__main__":

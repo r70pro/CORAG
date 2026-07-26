@@ -2,6 +2,14 @@ import json
 import logging
 import os
 import sys
+from pathlib import Path
+
+from path_security import (
+    PathSecurityError,
+    resolve_file_under,
+    resolve_run_under,
+    validate_run_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -196,54 +204,40 @@ def save_settings(settings):
 
 
 def delete_run_directory(run_id_or_path: str) -> bool:
-    """Delete run directory from workspace(s) matching run_id or folder path."""
-    if not run_id_or_path:
+    """Delete a matching run directory from the configured workspace only."""
+    if (
+        not run_id_or_path
+        or "\x00" in run_id_or_path
+        or Path(run_id_or_path).is_absolute()
+        or "/" in run_id_or_path
+        or "\\" in run_id_or_path
+    ):
         return False
     import hashlib
     import shutil
 
-    # Direct path provided
-    if os.path.exists(run_id_or_path) and os.path.isdir(run_id_or_path):
-        try:
-            shutil.rmtree(run_id_or_path, ignore_errors=True)
-            return True
-        except Exception as e:
-            logger.warning(f"Error removing run directory {run_id_or_path}: {e}")
-
-    # Check via DB first for registered run_dir
-    try:
-        from rag.db import get_connection
-
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT run_dir FROM ocr_runs WHERE run_id = %s", (run_id_or_path,))
-                row = cur.fetchone()
-                if row and row[0] and os.path.exists(row[0]):
-                    shutil.rmtree(row[0], ignore_errors=True)
-                    return True
-    except Exception:
-        pass
-
-    # Search candidate workspace directories
-    candidate_ws = [
-        WORKSPACE_DIR,
-        os.path.join(os.path.expanduser("~"), ".local", "share", "kirag", "workspace"),
-    ]
     deleted_any = False
-    for ws in candidate_ws:
-        if not os.path.exists(ws):
-            continue
+    workspace = Path(WORKSPACE_DIR).resolve()
+    if not workspace.is_dir():
+        return False
+    try:
+        entries = list(workspace.iterdir())
+    except OSError:
+        return False
+
+    requested_name = run_id_or_path
+    for entry in entries:
         try:
-            for item in os.listdir(ws):
-                item_path = os.path.join(ws, item)
-                if not os.path.isdir(item_path):
-                    continue
-                item_id = hashlib.sha256(item_path.encode()).hexdigest()[:16]
-                if item_id == run_id_or_path or item == run_id_or_path:
-                    shutil.rmtree(item_path, ignore_errors=True)
-                    deleted_any = True
-        except Exception:
-            pass
+            validate_run_name(entry.name)
+            target = resolve_run_under(workspace, entry.name)
+        except PathSecurityError:
+            continue
+        if not target.is_dir():
+            continue
+        item_id = hashlib.sha256(str(target).encode()).hexdigest()[:16]
+        if entry.name == requested_name or item_id == run_id_or_path:
+            shutil.rmtree(target)
+            deleted_any = True
     return deleted_any
 
 
@@ -275,21 +269,32 @@ def get_available_runs(workspace_dir: str | None = None):
         is_run_indexed = None
 
     for ws in candidate_dirs:
-        if not os.path.exists(ws):
+        workspace = Path(ws).resolve()
+        if not workspace.is_dir():
             continue
         try:
-            dir_names = sorted(os.listdir(ws), reverse=True)
-        except Exception:
+            dir_names = sorted((entry.name for entry in workspace.iterdir()), reverse=True)
+        except OSError:
             continue
         for name in dir_names:
-            if name in seen_names or not name.startswith("run_"):
+            if name in seen_names:
                 continue
-            run_dir = os.path.join(ws, name)
-            if not os.path.isdir(run_dir):
+            try:
+                run_dir = resolve_run_under(workspace, name)
+            except PathSecurityError:
                 continue
-            md_dir = os.path.join(run_dir, "markdown", "inputs")
-            if os.path.exists(md_dir):
-                md_files = [f for f in os.listdir(md_dir) if f.endswith(".md")]
+            if not run_dir.is_dir():
+                continue
+            md_dir = run_dir / "markdown" / "inputs"
+            if md_dir.is_dir():
+                md_files = []
+                for entry in md_dir.iterdir():
+                    try:
+                        candidate = resolve_file_under(md_dir, entry.name, {".md"})
+                    except PathSecurityError:
+                        continue
+                    if candidate.is_file():
+                        md_files.append(entry.name)
                 if md_files:
                     seen_names.add(name)
                     is_indexed = False
@@ -297,11 +302,11 @@ def get_available_runs(workspace_dir: str | None = None):
                         try:
                             import hashlib
 
-                            hashed_id = hashlib.sha256(run_dir.encode()).hexdigest()[:16]
+                            hashed_id = hashlib.sha256(str(run_dir).encode()).hexdigest()[:16]
                             is_indexed = (
                                 is_run_indexed(name, check_vector_store=False)
                                 or is_run_indexed(hashed_id, check_vector_store=False)
-                                or is_run_indexed(run_dir, check_vector_store=False)
+                                or is_run_indexed(str(run_dir), check_vector_store=False)
                             )
                         except Exception:
                             is_indexed = False
@@ -309,7 +314,7 @@ def get_available_runs(workspace_dir: str | None = None):
                     badge = "✅ " if is_indexed else "📄 "
                     suffix = " [INDEXED]" if is_indexed else ""
                     display = f"{badge}{name} ({len(md_files)} file{'s' if len(md_files) != 1 else ''}){suffix}"
-                    runs.append((display, run_dir))
+                    runs.append((display, str(run_dir)))
 
     # Sort runs by name descending
     runs.sort(key=lambda r: os.path.basename(r[1]), reverse=True)

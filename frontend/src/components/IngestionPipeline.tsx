@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   FileSpreadsheet,
   Upload,
@@ -51,6 +51,7 @@ function parseManifestHtml(htmlStr: string): string[] {
 }
 
 export const IngestionPipeline: React.FC = () => {
+  const ingestRequestRef = useRef<ReturnType<typeof triggerIngestSSE> | null>(null);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [activeRunId, setActiveRunId] = useState<string>("");
   const [statusBadge, setStatusBadge] = useState<string>("Idle");
@@ -86,6 +87,10 @@ export const IngestionPipeline: React.FC = () => {
         if (settings?.guided_decoding !== undefined) setGuidedDecoding(Boolean(settings.guided_decoding));
       })
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    return () => ingestRequestRef.current?.cancel("Ingestion view closed");
   }, []);
 
   // Source Files
@@ -148,7 +153,8 @@ export const IngestionPipeline: React.FC = () => {
       return;
     }
 
-    triggerIngestSSE(
+    ingestRequestRef.current?.cancel("A new ingestion request started");
+    ingestRequestRef.current = triggerIngestSSE(
       {
         file_paths: targetPaths,
         server_url: serverUrl,
@@ -231,6 +237,7 @@ export const IngestionPipeline: React.FC = () => {
         }
       },
       (err) => {
+        ingestRequestRef.current = null;
         setLogMessages((prev) => [...prev, `[Error] ${String(err)}`]);
         setStatusBadge("Error");
         setIsProcessing(false);
@@ -239,6 +246,7 @@ export const IngestionPipeline: React.FC = () => {
         );
       },
       () => {
+        ingestRequestRef.current = null;
         setStatusBadge((prev) => (prev.includes("Error") || prev.includes("Failed") ? prev : "Completed"));
         setIsProcessing(false);
         setFileStatuses((prev) =>
@@ -253,9 +261,17 @@ export const IngestionPipeline: React.FC = () => {
   };
 
   const handleStopPipeline = async () => {
-    if (!activeRunId) return;
+    if (!activeRunId) {
+      ingestRequestRef.current?.cancel("Ingestion stopped by user");
+      ingestRequestRef.current = null;
+      setStatusBadge("Stopped");
+      setIsProcessing(false);
+      return;
+    }
     setLogMessages((prev) => [...prev, "[Stop] Sending stop signal to active run..."]);
     const res = await stopPipelineRun(activeRunId);
+    ingestRequestRef.current?.cancel("Ingestion stopped by user");
+    ingestRequestRef.current = null;
     setLogMessages((prev) => [...prev, `[Stop Result] ${res.message}`]);
     setStatusBadge("Stopped");
     setIsProcessing(false);

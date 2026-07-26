@@ -3,7 +3,10 @@ Unit tests for cleanup_manager.py.
 """
 
 import os
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 # Prevent system operations during import
@@ -14,6 +17,14 @@ import process_state
 
 
 class TestCleanupManager(unittest.TestCase):
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        process_state.active_runs.clear()
+
+    def tearDown(self):
+        process_state.active_runs.clear()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_get_dir_size_nonexistent(self):
         self.assertEqual(cleanup_manager.get_dir_size("/mock/nonexistent/path"), 0)
@@ -40,18 +51,19 @@ class TestCleanupManager(unittest.TestCase):
         res = cleanup_manager.perform_reset_cleanup(False, False, False, False)
         self.assertEqual(res, "### No files selected or found to clean up.")
 
-    @patch("os.path.exists")
-    @patch("os.path.isdir")
-    @patch("os.listdir")
     @patch("shutil.rmtree")
-    def test_perform_reset_cleanup_rmtree_exception(self, mock_rmtree, mock_listdir, mock_isdir, mock_exists):
-        mock_exists.return_value = True
-        mock_isdir.return_value = True
-        mock_listdir.return_value = ["run_123"]
+    def test_perform_reset_cleanup_rmtree_exception(self, mock_rmtree):
+        workspace = os.path.join(self.temp_dir, "workspace")
+        os.makedirs(os.path.join(workspace, "run_123"))
         mock_rmtree.side_effect = Exception("Rmtree failed")
-        
-        # Test runs clean up error
-        res = cleanup_manager.perform_reset_cleanup(clean_runs=True, clean_gradio=False, clean_pycache=False, clean_hf=False)
+
+        res = cleanup_manager.perform_reset_cleanup(
+            clean_runs=True,
+            clean_gradio=False,
+            clean_pycache=False,
+            clean_hf=False,
+            workspace_dir=workspace,
+        )
         self.assertTrue("Failed to delete run directory" in res)
 
     @patch("os.path.exists")
@@ -104,7 +116,7 @@ class TestCleanupManager(unittest.TestCase):
     @patch("os.walk")
     @patch("shutil.rmtree")
     def test_perform_reset_cleanup_pycache_error(self, mock_rmtree, mock_walk):
-        # Configure walk to yield a __pycache__ directory
+        # An os.walk result outside the repository is ignored by the boundary.
         mock_walk.return_value = [
             ("/tmp/repo", ["__pycache__"], []),
             ("/tmp/repo/__pycache__", [], [])
@@ -112,46 +124,52 @@ class TestCleanupManager(unittest.TestCase):
         mock_rmtree.side_effect = Exception("Pycache delete failed")
 
         res = cleanup_manager.perform_reset_cleanup(clean_runs=False, clean_gradio=False, clean_pycache=True, clean_hf=False)
-        self.assertTrue("Failed to delete" in res)
+        self.assertEqual(res, "### No files selected or found to clean up.")
+        mock_rmtree.assert_not_called()
 
-    @patch("os.path.exists")
-    @patch("os.listdir")
-    @patch("os.remove")
-    def test_perform_reset_cleanup_hf_error(self, mock_remove, mock_listdir, mock_exists):
-        # Configure exists for HF cache
-        def exists_side_effect(path):
-            return "huggingface" in path
-        mock_exists.side_effect = exists_side_effect
-        mock_listdir.return_value = ["file1.bin"]
-        mock_remove.side_effect = Exception("HF delete failed")
+    def test_perform_reset_cleanup_hf_error(self):
+        home = Path(self.temp_dir) / "home"
+        hf_cache = home / ".cache" / "huggingface"
+        hf_cache.mkdir(parents=True)
+        (hf_cache / "file1.bin").write_bytes(b"model")
 
-        res = cleanup_manager.perform_reset_cleanup(clean_runs=False, clean_gradio=False, clean_pycache=False, clean_hf=True)
+        with (
+            patch("pathlib.Path.home", return_value=home),
+            patch("pathlib.Path.unlink", side_effect=OSError("HF delete failed")),
+        ):
+            res = cleanup_manager.perform_reset_cleanup(
+                clean_runs=False,
+                clean_gradio=False,
+                clean_pycache=False,
+                clean_hf=True,
+            )
         self.assertTrue("Failed to clean Hugging Face cache" in res)
 
-    @patch("os.path.exists", return_value=False)
-    def test_perform_reset_cleanup_missing_dirs(self, mock_exists):
-        # Trigger missing workspace_dir, gradio_temp_dir, and hf_cache_dir (42->68, 70->85, 103->118 branches)
-        res = cleanup_manager.perform_reset_cleanup(clean_runs=True, clean_gradio=True, clean_pycache=False, clean_hf=True)
+    def test_perform_reset_cleanup_missing_dirs(self):
+        missing_workspace = os.path.join(self.temp_dir, "missing")
+        missing_home = Path(self.temp_dir) / "missing-home"
+        with patch("pathlib.Path.home", return_value=missing_home):
+            res = cleanup_manager.perform_reset_cleanup(
+                clean_runs=True,
+                clean_gradio=False,
+                clean_pycache=False,
+                clean_hf=True,
+                workspace_dir=missing_workspace,
+            )
         self.assertEqual(res, "### No files selected or found to clean up.")
 
-    @patch("os.path.exists", return_value=True)
-    @patch("os.path.isdir", return_value=True)
-    @patch("os.listdir")
-    @patch("shutil.rmtree")
-    def test_perform_reset_cleanup_completed_runs(self, mock_rmtree, mock_listdir, mock_isdir, mock_exists):
-        # Normal runs cleanup where run is completed = True, so loop continues (line 55->49 branch)
-        mock_listdir.return_value = ["run_completed"]
-        from settings_manager import WORKSPACE_DIR
-        workspace_dir = WORKSPACE_DIR
+    def test_perform_reset_cleanup_completed_runs(self):
+        workspace_dir = os.path.join(self.temp_dir, "workspace")
+        completed_dir = os.path.join(workspace_dir, "run_completed")
+        os.makedirs(completed_dir)
         process_state.active_runs["run_completed"] = {
-            "run_dir": os.path.join(workspace_dir, "run_completed"),
+            "run_dir": completed_dir,
             "proc": None,
             "completed": True
         }
         res = cleanup_manager.perform_reset_cleanup(clean_runs=True, clean_gradio=False, clean_pycache=False, clean_hf=False, workspace_dir=workspace_dir)
         self.assertTrue("Obsolete run directory: `run_completed`" in res)
-        mock_rmtree.assert_called_once()
-        process_state.active_runs.clear()
+        self.assertFalse(os.path.exists(completed_dir))
 
 
 if __name__ == "__main__":

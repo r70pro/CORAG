@@ -59,6 +59,41 @@ class TestHTMLUtilsAll(unittest.TestCase):
         self.assertIn("4.8 MB", res)
         self.assertIn("Total (3 files)", res)
 
+    def test_all_html_generators_escape_untrusted_text_and_attributes(self):
+        payload = "\"><svg onload=alert(1)>"
+
+        file_status = hu.make_file_status_html(
+            {0: payload}, {0: payload}, completed_files_set=set()
+        )
+        manifest = hu.make_upload_manifest_html(
+            {0: payload}, {0: payload}, {0: 1}
+        )
+        banner = hu.make_case_banner_html(payload)
+        dashboard = hu.make_case_dashboard_html(
+            [
+                {
+                    "run_id": payload,
+                    "run_dir": payload,
+                    "total_documents": payload,
+                    "total_chunks": payload,
+                    "unique_authors": payload,
+                    "earliest_date": payload,
+                }
+            ],
+            {
+                payload: {
+                    "names": [payload],
+                    "dob": payload,
+                    "injuries": [payload],
+                }
+            },
+        )
+
+        for generated in (file_status, manifest, banner, dashboard):
+            self.assertNotIn("<svg", generated.lower())
+            self.assertIn("&lt;svg", generated.lower())
+        self.assertNotIn("onclick=", dashboard.lower())
+
     def test_structured_data_helpers(self):
         # get_progress_data
         prog = hu.get_progress_data(completed=5, total=10, elapsed_secs=10)
@@ -97,5 +132,3 @@ class TestHTMLUtilsAll(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

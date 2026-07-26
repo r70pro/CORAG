@@ -1,4 +1,11 @@
+from html import escape
 from typing import Any
+
+
+def _html(value: Any) -> str:
+    """Escape an untrusted value for HTML text or quoted attributes."""
+
+    return escape(str(value), quote=True)
 
 
 def get_progress_data(completed: int, total: int, elapsed_secs: float = 0) -> dict[str, Any]:
@@ -83,14 +90,13 @@ def get_case_dashboard_data(
     for run in runs:
         run_dir = run.get("run_dir", "")
         run_name = os.path.basename(run_dir) if run_dir else run.get("run_id", "unknown")
-        run_id = run.get("run_id", "")
+        run_id = str(run.get("run_id", ""))
         meta = cases_metadata.get(run_id) or {"names": [], "dob": "—", "injuries": []}
 
         result.append(
             {
                 "run_id": run_id,
                 "run_name": run_name,
-                "run_dir": run_dir,
                 "client_name": ", ".join(meta["names"]) if meta["names"] else "Unknown Client",
                 "dob": meta["dob"],
                 "injuries": meta["injuries"],
@@ -134,19 +140,17 @@ def make_progress_bar_html(completed: int, total: int, elapsed_secs: float = 0) 
 
     time_info = ""
     if elapsed_str and eta_str:
-        time_info = f"<div style='display:flex; justify-content:space-between; font-size:0.8rem; color:#94a3b8; margin-top:4px;'><span>{elapsed_str}</span><span>{eta_str}</span></div>"
+        time_info = f"<div style='display:flex; justify-content:space-between; font-size:0.8rem; color:#94a3b8; margin-top:4px;'><span>{_html(elapsed_str)}</span><span>{_html(eta_str)}</span></div>"
     elif elapsed_str:
-        time_info = (
-            f"<div style='font-size:0.8rem; color:#94a3b8; margin-top:4px;'>{elapsed_str}</div>"
-        )
+        time_info = f"<div style='font-size:0.8rem; color:#94a3b8; margin-top:4px;'>{_html(elapsed_str)}</div>"
 
     return f"""<div style='width:100%;'>
         <div style='display:flex; justify-content:space-between; margin-bottom:4px;'>
-            <span style='font-size:0.9rem; color:#e2e8f0; font-weight:600;'>{completed}/{total} Pages</span>
-            <span style='font-size:0.9rem; color:#818cf8; font-weight:600;'>{pct}%</span>
+            <span style='font-size:0.9rem; color:#e2e8f0; font-weight:600;'>{_html(completed)}/{_html(total)} Pages</span>
+            <span style='font-size:0.9rem; color:#818cf8; font-weight:600;'>{_html(pct)}%</span>
         </div>
         <div style='width:100%; background:#1e293b; border-radius:8px; height:12px; overflow:hidden;'>
-            <div style='width:{pct}%; height:100%; background:linear-gradient(90deg, #6366f1, #3b82f6); border-radius:8px; transition:width 0.4s ease;'></div>
+            <div style='width:{_html(pct)}%; height:100%; background:linear-gradient(90deg, #6366f1, #3b82f6); border-radius:8px; transition:width 0.4s ease;'></div>
         </div>
         {time_info}
     </div>"""
@@ -171,7 +175,7 @@ def make_file_status_html(
             status = "<span style='color:#34d399;'>✓ Done</span>"
         else:
             status = "<span style='color:#94a3b8;'>⏳ Pending</span>"
-        rows += f"<tr style='border-bottom:1px solid rgba(255,255,255,0.05);'><td style='padding:6px 10px; color:#e2e8f0; font-size:0.85rem;'>{name}</td><td style='padding:6px 10px; color:#94a3b8; text-align:center; font-size:0.85rem;'>{pages}</td><td style='padding:6px 10px; text-align:center; font-size:0.85rem;'>{status}</td></tr>"
+        rows += f"<tr style='border-bottom:1px solid rgba(255,255,255,0.05);'><td style='padding:6px 10px; color:#e2e8f0; font-size:0.85rem;'>{_html(name)}</td><td style='padding:6px 10px; color:#94a3b8; text-align:center; font-size:0.85rem;'>{_html(pages)}</td><td style='padding:6px 10px; text-align:center; font-size:0.85rem;'>{status}</td></tr>"
 
     return f"""<table style='width:100%; border-collapse:collapse;'>
         <thead><tr style='border-bottom:1px solid rgba(255,255,255,0.1);'>
@@ -204,14 +208,14 @@ def make_upload_manifest_html(
         else:
             size_str = f"{size_bytes / (1024 * 1024):.1f} MB"
 
-        rows += f"<tr style='border-bottom:1px solid rgba(255,255,255,0.05);'><td style='padding:5px 10px; color:#e2e8f0; font-size:0.85rem;'>{name}</td><td style='padding:5px 10px; color:#94a3b8; text-align:center; font-size:0.85rem;'>{pages}</td><td style='padding:5px 10px; color:#94a3b8; text-align:center; font-size:0.85rem;'>{size_str}</td></tr>"
+        rows += f"<tr style='border-bottom:1px solid rgba(255,255,255,0.05);'><td style='padding:5px 10px; color:#e2e8f0; font-size:0.85rem;'>{_html(name)}</td><td style='padding:5px 10px; color:#94a3b8; text-align:center; font-size:0.85rem;'>{_html(pages)}</td><td style='padding:5px 10px; color:#94a3b8; text-align:center; font-size:0.85rem;'>{_html(size_str)}</td></tr>"
 
     if total_size < 1024 * 1024:
         total_size_str = f"{total_size / 1024:.1f} KB"
     else:
         total_size_str = f"{total_size / (1024 * 1024):.1f} MB"
 
-    rows += f"<tr style='border-top:1px solid rgba(255,255,255,0.1);'><td style='padding:5px 10px; color:#818cf8; font-size:0.85rem; font-weight:600;'>Total ({len(file_mapping)} files)</td><td style='padding:5px 10px; color:#818cf8; text-align:center; font-size:0.85rem; font-weight:600;'>{total_pages}</td><td style='padding:5px 10px; color:#818cf8; text-align:center; font-size:0.85rem; font-weight:600;'>{total_size_str}</td></tr>"
+    rows += f"<tr style='border-top:1px solid rgba(255,255,255,0.1);'><td style='padding:5px 10px; color:#818cf8; font-size:0.85rem; font-weight:600;'>Total ({_html(len(file_mapping))} files)</td><td style='padding:5px 10px; color:#818cf8; text-align:center; font-size:0.85rem; font-weight:600;'>{_html(total_pages)}</td><td style='padding:5px 10px; color:#818cf8; text-align:center; font-size:0.85rem; font-weight:600;'>{_html(total_size_str)}</td></tr>"
 
     return f"""<table style='width:100%; border-collapse:collapse;'>
         <thead><tr style='border-bottom:1px solid rgba(255,255,255,0.1);'>
@@ -237,8 +241,8 @@ def get_simulated_sparkline(is_up: bool = True, latency_history: list[float] | N
         val_range = max_val - min_val if max_val != min_val else 1
         points = [20 - int((v - min_val) / val_range * 15 + 2) for v in latency_history]
 
-    points_str = " ".join(f"{i*8},{v}" for i, v in enumerate(points))
-    return f"""<svg class='sparkline-svg' viewBox='0 0 60 20'><polyline points='{points_str}'/></svg>"""
+    points_str = " ".join(f"{i * 8},{v}" for i, v in enumerate(points))
+    return f"""<svg class='sparkline-svg' viewBox='0 0 60 20'><polyline points='{_html(points_str)}'/></svg>"""
 
 
 def make_backing_services_html(data: dict[str, Any]) -> str:
@@ -303,11 +307,11 @@ def make_backing_services_html(data: dict[str, Any]) -> str:
                 </div>
                 <span class='diag-card-badge {badge_class}'>{badge_text}</span>
             </div>
-            <div class='diag-card-desc'>{desc}</div>
+            <div class='diag-card-desc'>{_html(desc)}</div>
             <div class='diag-card-chart'>{sparkline}</div>
             <div class='diag-card-footer'>
                 <span class='latency-label'>Latency</span>
-                <span class='latency-value'>{latency_str}</span>
+                <span class='latency-value'>{_html(latency_str)}</span>
             </div>
         </div>
         """)
@@ -341,10 +345,10 @@ def make_backing_services_html(data: dict[str, Any]) -> str:
     if not vllm_model_name:
         vllm_model_name = "None Loaded"
 
-    metadata_desc = f"""Redis memory: {redis_mem_used} / {redis_max_mem}<br>
+    metadata_desc = f"""Redis memory: {_html(redis_mem_used)} / {_html(redis_max_mem)}<br>
 Redis query cache TTL: 3600 s<br>
-Multi-modal: {vllm_model_name}<br>
-Environment: {env_str}"""
+Multi-modal: {_html(vllm_model_name)}<br>
+Environment: {_html(env_str)}"""
 
     html_parts.append(f"""
     <div class='diag-service-card'>
@@ -406,8 +410,8 @@ def make_system_health_badge_html(data: dict[str, Any]) -> str:
         <div style='display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;'>
             <span class='badge-success' style='padding: 6px 12px; font-weight: 700;'>✓ System Healthy</span>
             <div style='font-size: 0.75rem; color: #94a3b8; line-height: 1.2;'>
-                Model: <span style='font-family: monospace; color: #e2e8f0; font-weight: 600;'>{display_model}</span><br>
-                <span style='color: {suit_color}; font-weight: 600;'>● {suitability}</span>
+                Model: <span style='font-family: monospace; color: #e2e8f0; font-weight: 600;'>{_html(display_model)}</span><br>
+                <span style='color: {_html(suit_color)}; font-weight: 600;'>● {_html(suitability)}</span>
             </div>
         </div>
         """
@@ -426,7 +430,7 @@ def make_system_health_badge_html(data: dict[str, Any]) -> str:
                 <div style='display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;'>
                     <span class='badge-failed' style='padding: 6px 12px; font-weight: 700;'>✗ Model Load Failed</span>
                     <div style='font-size: 0.75rem; color: #fca5a5; line-height: 1.2;'>
-                        <span style='font-weight: 600;'>{error_label}</span><br>
+                        <span style='font-weight: 600;'>{_html(error_label)}</span><br>
                         <span style='color: #e2e8f0;'>Check container logs for details.</span>
                     </div>
                 </div>
@@ -435,8 +439,8 @@ def make_system_health_badge_html(data: dict[str, Any]) -> str:
             <div style='display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;'>
                 <span class='badge-running' style='padding: 6px 12px; font-weight: 700; animation: pulse 2s infinite;'>⚡ Model Loading</span>
                 <div style='font-size: 0.75rem; color: #93c5fd; line-height: 1.2;'>
-                    Progress: <span style='font-weight:600; color:#e2e8f0;'>{progress['pct']}%</span> ({progress['shards_loaded']}/{progress['shards_total']})<br>
-                    <span style='color: #93c5fd;'>ETA: {progress['eta']}</span>
+                    Progress: <span style='font-weight:600; color:#e2e8f0;'>{_html(progress["pct"])}%</span> ({_html(progress["shards_loaded"])}/{_html(progress["shards_total"])})<br>
+                    <span style='color: #93c5fd;'>ETA: {_html(progress["eta"])}</span>
                 </div>
             </div>
             """
@@ -445,8 +449,8 @@ def make_system_health_badge_html(data: dict[str, Any]) -> str:
             <div style='display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;'>
                 <span class='badge-failed' style='padding: 6px 12px; font-weight: 700;'>✗ System Degraded</span>
                 <div style='font-size: 0.75rem; color: #fca5a5; line-height: 1.2;'>
-                    <span style='font-weight: 600;'>Offline:</span> {degraded_str}<br>
-                    <span style='color: #e2e8f0;'>Fix: {fix_str}</span>
+                    <span style='font-weight: 600;'>Offline:</span> {_html(degraded_str)}<br>
+                    <span style='color: #e2e8f0;'>Fix: {_html(fix_str)}</span>
                 </div>
             </div>
             """
@@ -482,6 +486,13 @@ def make_gpu_metrics_html(data: dict[str, Any]) -> str:
     vram_reclaimable = data["vram_reclaimable"]
     vram_potential_free = data["vram_potential_free"]
     processes = data["processes"]
+    safe_vram_pct = min(100.0, max(0.0, float(vram_pct)))
+    allowed_badge_styles = {
+        "background: rgba(245, 158, 11, 0.15); color: #f59e0b;",
+        "background: rgba(148, 163, 184, 0.15); color: #94a3b8;",
+        "background: rgba(59, 130, 246, 0.15); color: #60a5fa;",
+    }
+    allowed_action_colors = {"#f59e0b", "#94a3b8", "#60a5fa"}
 
     rows_html = ""
     if not processes:
@@ -492,20 +503,30 @@ def make_gpu_metrics_html(data: dict[str, Any]) -> str:
         """
     else:
         for rp in processes:
+            badge_style = (
+                rp.get("type_badge_style", "")
+                if rp.get("type_badge_style", "") in allowed_badge_styles
+                else ""
+            )
+            action_color = (
+                rp.get("action_color", "")
+                if rp.get("action_color", "") in allowed_action_colors
+                else "#94a3b8"
+            )
             rows_html += f"""
             <tr style='border-bottom: 1px solid rgba(255,255,255,0.05);'>
                 <td style='padding: 8px 10px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;'>
-                    <span style='color: #e2e8f0; font-weight: 600;' title="{rp['cmdline']}">{rp['display_name']}</span><br>
-                    <span style='color: #64748b; font-size: 0.7rem;'>PID: {rp['pid']}</span>
+                    <span style='color: #e2e8f0; font-weight: 600;' title="{_html(rp.get("cmdline", ""))}">{_html(rp.get("display_name", ""))}</span><br>
+                    <span style='color: #64748b; font-size: 0.7rem;'>PID: {_html(rp.get("pid", ""))}</span>
                 </td>
                 <td style='padding: 8px 10px; font-family: "JetBrains Mono", monospace; color: #e2e8f0;'>
-                    {rp['vram']:,.0f} MB
+                    {_html(f"{float(rp.get('vram', 0)):,.0f}")} MB
                 </td>
                 <td style='padding: 8px 10px;'>
-                    <span style='padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; display: inline-block; {rp['type_badge_style']}'>
-                        {rp['type_text']}
+                    <span style='padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; display: inline-block; {_html(badge_style)}'>
+                        {_html(rp.get("type_text", ""))}
                     </span>
-                    <div style='font-size: 0.65rem; color: {rp['action_color']}; margin-top: 2px;'>{rp['action_text']}</div>
+                    <div style='font-size: 0.65rem; color: {_html(action_color)}; margin-top: 2px;'>{_html(rp.get("action_text", ""))}</div>
                 </td>
             </tr>
             """
@@ -516,7 +537,7 @@ def make_gpu_metrics_html(data: dict[str, Any]) -> str:
         <div class='gpu-spec-card'>
             <div class='gpu-card-title'>
                 <span class='status-dot up'></span>
-                <span>GPU 0: {gpu_name}</span>
+                <span>GPU 0: {_html(gpu_name)}</span>
             </div>
 
             <div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;'>
@@ -526,26 +547,26 @@ def make_gpu_metrics_html(data: dict[str, Any]) -> str:
             <div style='color:#94a3b8; font-size:0.85rem; margin-top:12px; margin-bottom:4px;'>Overall VRAM Usage</div>
             <div class='vram-progress-container'>
                 <div style='display:flex; justify-content:space-between; font-size:0.85rem; font-family:"JetBrains Mono", monospace; color:#34d399; margin-bottom:4px;'>
-                    <span>{vram_pct:.1f}%</span>
-                    <span>{vram_used:,.0f} MB / {vram_total:,.0f} MB</span>
+                    <span>{_html(f"{safe_vram_pct:.1f}")}%</span>
+                    <span>{_html(f"{float(vram_used):,.0f}")} MB / {_html(f"{float(vram_total):,.0f}")} MB</span>
                 </div>
                 <div class='vram-bar-outer'>
-                    <div class='vram-bar-inner' style='width: {vram_pct:.1f}%; background: linear-gradient(90deg, #ec4899, #3b82f6);'></div>
+                    <div class='vram-bar-inner' style='width: {_html(f"{safe_vram_pct:.1f}")}%; background: linear-gradient(90deg, #ec4899, #3b82f6);'></div>
                 </div>
             </div>
 
             <div class='gpu-stats-grid'>
                 <div class='gpu-stat-box'>
                     <div class='gpu-stat-label'>Free VRAM</div>
-                    <div class='gpu-stat-value success'>{vram_free:,.0f} MB</div>
+                    <div class='gpu-stat-value success'>{_html(f"{float(vram_free):,.0f}")} MB</div>
                 </div>
                 <div class='gpu-stat-box'>
                     <div class='gpu-stat-label'>Reclaimable</div>
-                    <div class='gpu-stat-value warning'>{vram_reclaimable:,.0f} MB</div>
+                    <div class='gpu-stat-value warning'>{_html(f"{float(vram_reclaimable):,.0f}")} MB</div>
                 </div>
                 <div class='gpu-stat-box highlight'>
                     <div class='gpu-stat-label' style='color: #a7f3d0;'>Max Potential Free VRAM</div>
-                    <div class='gpu-stat-value success' style='font-size: 1.25rem;'>{vram_potential_free:,.0f} MB</div>
+                    <div class='gpu-stat-value success' style='font-size: 1.25rem;'>{_html(f"{float(vram_potential_free):,.0f}")} MB</div>
                     <div style='font-size: 0.7rem; color: #6ee7b7; margin-top: 2px;'>If non-essential apps & containers are stopped</div>
                 </div>
             </div>
@@ -619,13 +640,13 @@ def make_case_dashboard_html(
             except Exception:
                 indexed_str = str(indexed_at)[:16]
 
-        run_id = run.get("run_id", "")
+        run_id = str(run.get("run_id", ""))
 
         # Use pre-fetched metadata (batch-loaded by the caller to avoid N+1 queries)
         meta = cases_metadata.get(run_id) or {"names": [], "dob": "—", "injuries": []}
 
         client_display = (
-            ", ".join(meta["names"])
+            ", ".join(str(name) for name in meta["names"])
             if meta["names"]
             else (f"Case {run_id[:8]}" if run_id else "Unknown Client")
         )
@@ -636,7 +657,10 @@ def make_case_dashboard_html(
             injury_display = (
                 "<ul style='margin: 0; padding-left: 14px; font-size: 0.8rem;'>"
                 + "".join(
-                    [f"<li style='margin-bottom: 2px;'>{inj}</li>" for inj in meta["injuries"]]
+                    [
+                        f"<li style='margin-bottom: 2px;'>{_html(injury)}</li>"
+                        for injury in meta["injuries"]
+                    ]
                 )
                 + "</ul>"
             )
@@ -644,19 +668,19 @@ def make_case_dashboard_html(
             injury_display = "<span style='color: #9ca3af; font-style: italic; font-size: 0.8rem;'>No specific injury or diagnosis found.</span>"
 
         card = f"""
-        <div class="case-card" onclick="window.toggleCaseSelection(this, event, '{run_id}')" style="cursor: pointer;">
+        <div class="case-card" data-run-id="{_html(run_id)}" style="cursor: pointer;">
             <div class="case-card-header" style="margin-bottom: 8px;">
                 <div style="display: flex; flex-direction: column; gap: 4px; width: 100%;">
-                    <div style="font-size: 0.75rem; color: #9ca3af; font-family: monospace; word-break: break-all; opacity: 0.85;">📁 {run_name}</div>
+                    <div style="font-size: 0.75rem; color: #9ca3af; font-family: monospace; word-break: break-all; opacity: 0.85;">📁 {_html(run_name)}</div>
                     <div class="case-card-title" style="margin: 4px 0 0 0; font-size: 1.15rem; color: #f3f4f6; font-weight: 700; display: flex; align-items: center; gap: 6px;">
-                        <span>👤</span> {client_display}
+                        <span>👤</span> {_html(client_display)}
                     </div>
                 </div>
-                <input type="checkbox" class="case-select-checkbox" data-run-id="{run_id}" onclick="event.stopPropagation(); window.toggleCaseSelection(this, event, '{run_id}');" />
+                <input type="checkbox" class="case-select-checkbox" data-run-id="{_html(run_id)}" aria-label="Select case" />
             </div>
 
             <div style="margin: 6px 0; font-size: 0.85rem; color: #d1d5db; display: flex; align-items: center; gap: 6px;">
-                <span style="color: #818cf8; font-weight: 600;">📅 DOB:</span> <span>{dob_display}</span>
+                <span style="color: #818cf8; font-weight: 600;">📅 DOB:</span> <span>{_html(dob_display)}</span>
             </div>
 
             <div style="margin: 10px 0; padding: 8px 12px; background: rgba(99, 102, 241, 0.05); border: 1px solid rgba(99, 102, 241, 0.15); border-radius: 8px;">
@@ -669,15 +693,15 @@ def make_case_dashboard_html(
             </div>
 
             <div class="case-card-stats" style="margin-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.06); padding-top: 10px; opacity: 0.9;">
-                <span>Documents: <span class="stat-val">{docs}</span></span>
-                <span>Chunks: <span class="stat-val">{chunks}</span></span>
-                <span>Authors: <span class="stat-val">{authors}</span></span>
-                <span>Date Range: <span class="stat-val" style="font-size: 0.75rem;">{date_range}</span></span>
+                <span>Documents: <span class="stat-val">{_html(docs)}</span></span>
+                <span>Chunks: <span class="stat-val">{_html(chunks)}</span></span>
+                <span>Authors: <span class="stat-val">{_html(authors)}</span></span>
+                <span>Date Range: <span class="stat-val" style="font-size: 0.75rem;">{_html(date_range)}</span></span>
             </div>
 
             <div style="font-size:0.75rem; color:#6b7280; margin-top:10px; display: flex; justify-content: space-between; align-items: center;">
                 <span class="badge-success" style="font-size:0.7rem; padding: 2px 6px; border-radius: 4px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.15); color: #34d399;">✓ Indexed</span>
-                <span>{indexed_str}</span>
+                <span>{_html(indexed_str)}</span>
             </div>
         </div>
         """
@@ -695,7 +719,7 @@ def make_case_banner_html(active_case_label: str | None) -> str:
             "<span class='banner-value'>All Cases — querying entire corpus</span></span>"
             "</div>"
         )
-    name = str(active_case_label)
+    name = _html(active_case_label)
     return (
         "<div class='active-case-banner'>"
         "<span class='banner-icon'>📂</span>"

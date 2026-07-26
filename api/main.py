@@ -2,7 +2,7 @@
 KIRAG REST API — FastAPI application entry point.
 
 Run with:
-    uvicorn api.main:app --host 0.0.0.0 --port 8001 --reload
+    uvicorn api.main:app --host 127.0.0.1 --port 8001 --reload
 
 OpenAPI docs:
     http://localhost:8001/docs
@@ -14,44 +14,27 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Security, status
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import HTTPAuthorizationCredentials
+from starlette.datastructures import MutableHeaders
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from api.models import PipelineStartRequest, RAGQueryRequest
+from api.auth import requested_api_bind_host, require_safe_bind, verify_api_key
+from api.errors import default_error_code, error_response
+from api.models import ErrorEnvelope, PipelineStartRequest, RAGQueryRequest
+from api.upload_security import UploadRequestLimitMiddleware
 from settings_manager import VERSION
 
 logger = logging.getLogger(__name__)
-
-# API Key security schemes
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
-bearer_scheme = HTTPBearer(auto_error=False)
-
-
-def verify_api_key(
-    key_from_header: str | None = Security(api_key_header),
-    bearer: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
-) -> str | None:
-    """Verify API authentication key if KIRAG_API_KEY environment variable is configured."""
-    expected_key = os.environ.get("KIRAG_API_KEY", "").strip()
-    if not expected_key:
-        return None
-
-    provided_key = key_from_header or (bearer.credentials if bearer else None)
-    if not provided_key or provided_key != expected_key:
-        logger.warning("Unauthorized API access attempt: invalid or missing API key")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing API Key",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return provided_key
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """Application lifespan — startup and shutdown hooks."""
+    require_safe_bind(requested_api_bind_host())
     logger.info(f"Starting KIRAG API v{VERSION}...")
     yield
     logger.info("Shutting down KIRAG API...")
@@ -74,7 +57,24 @@ app = FastAPI(
         "system diagnostics, and configuration management."
     ),
     lifespan=lifespan,
-    dependencies=[Depends(verify_api_key)],
+    responses={
+        status_code: {
+            "model": ErrorEnvelope,
+            "description": description,
+        }
+        for status_code, description in {
+            400: "Bad request",
+            401: "Authentication required",
+            403: "Insufficient authorization",
+            404: "Resource not found",
+            413: "Payload too large",
+            415: "Unsupported media type",
+            422: "Request validation failed",
+            500: "Internal server error",
+            502: "Upstream service error",
+            503: "Service unavailable",
+        }.items()
+    },
 )
 
 # CORS — specific allowed origins to tighten cross-origin access control
@@ -99,15 +99,142 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(UploadRequestLimitMiddleware)
+
+
+def _authentication_error(request: Request):
+    """Return a typed authentication error, or ``None`` when access is allowed."""
+
+    if request.url.path == "/health" or request.method == "OPTIONS":
+        return None
+
+    auth_header = request.headers.get("authorization", "")
+    bearer = None
+    if auth_header.lower().startswith("bearer "):
+        bearer = HTTPAuthorizationCredentials(
+            scheme="Bearer", credentials=auth_header.split(" ", 1)[1]
+        )
+    try:
+        verify_api_key(
+            key_from_header=(
+                request.headers.get("x-api-key") or request.headers.get("x-admin-api-key")
+            ),
+            bearer=bearer,
+        )
+    except Exception as exc:
+        if isinstance(exc, HTTPException):
+            detail = exc.detail
+            message = detail if isinstance(detail, str) else "Authentication failed"
+            return error_response(
+                exc.status_code,
+                default_error_code(exc.status_code),
+                message,
+                headers=exc.headers,
+            )
+        raise
+    return None
+
+
+async def require_authentication(request: Request, call_next):
+    """Leave only the minimal liveness endpoint unauthenticated."""
+
+    rejection = _authentication_error(request)
+    if rejection is not None:
+        return rejection
+    return await call_next(request)
+
+
+class AuthenticationMiddleware:
+    """Pure ASGI authentication middleware.
+
+    Avoiding ``BaseHTTPMiddleware`` keeps early authentication responses from
+    waiting on a request-body task that was never started.
+    """
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            rejection = _authentication_error(Request(scope))
+            if rejection is not None:
+                await rejection(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+class SecurityHeadersMiddleware:
+    """Apply browser hardening to successful and error responses."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        async def send_with_security_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers["Content-Security-Policy"] = (
+                    "default-src 'none'; frame-ancestors 'none'; "
+                    "base-uri 'none'; form-action 'none'"
+                )
+                headers["X-Frame-Options"] = "DENY"
+                headers["X-Content-Type-Options"] = "nosniff"
+                headers["Referrer-Policy"] = "no-referrer"
+                headers["Permissions-Policy"] = (
+                    "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+                )
+                headers["Cross-Origin-Opener-Policy"] = "same-origin"
+                headers["Cross-Origin-Resource-Policy"] = "same-origin"
+            await send(message)
+
+        await self.app(scope, receive, send_with_security_headers)
+
+
+app.add_middleware(AuthenticationMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    detail = exc.detail
+    code = default_error_code(exc.status_code)
+    message = detail if isinstance(detail, str) else "Request failed"
+    details = None
+    if isinstance(detail, dict):
+        code = str(detail.get("code") or code)
+        message = str(detail.get("message") or message)
+        details = detail.get("details")
+    return error_response(
+        exc.status_code,
+        code,
+        message,
+        details=details,
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    details = [
+        {
+            "location": [str(item) for item in error.get("loc", ())],
+            "message": error.get("msg", "Invalid value"),
+            "type": error.get("type", "value_error"),
+        }
+        for error in exc.errors()
+    ]
+    return error_response(
+        422,
+        "validation_error",
+        "Request validation failed",
+        details=details,
+    )
 
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled server error processing request {request.url}: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={"detail": f"Internal Server Error: {str(exc)}"},
-    )
+    logger.error("Unhandled server error processing request", exc_info=True)
+    return error_response(500, "internal_error", "Internal Server Error")
 
 
 # ── Mount route modules ──────────────────────────────────────────────────────
@@ -149,7 +276,7 @@ def api_chat(req: RAGQueryRequest):
 )
 def health_check():
     """Simple, lightweight health check endpoint returning HTTP 200 for load balancers."""
-    return {"status": "ok", "service": "KIRAG API", "version": VERSION}
+    return {"status": "ok"}
 
 
 @app.get(
@@ -215,7 +342,7 @@ def api_health():
         }
     except Exception as e:
         logger.error(f"Error in api_health check: {e}")
-        return {"status": "error", "message": str(e), "services": []}
+        raise HTTPException(status_code=503, detail="System health is unavailable") from e
 
 
 @app.get(
@@ -241,13 +368,13 @@ def api_case_summary():
             rid = r.get("run_id", "")
             meta = cases_metadata.get(rid, {})
             names = meta.get("names", [])
-            client_name = ", ".join(names) if names else f"Case {rid[:8]}"
-            dob = meta.get("dob", "—")
+            client_name = ", ".join(names) if names else "Patient name not present in source"
+            dob = meta.get("dob", "Not present in source")
             injuries = meta.get("injuries", [])
 
             earliest = r.get("earliest_date")
             latest = r.get("latest_date")
-            date_range = "—"
+            date_range = "Not present in source"
             if earliest and latest:
                 date_range = f"{earliest} → {latest}"
             elif earliest:
@@ -261,8 +388,9 @@ def api_case_summary():
                     "display_name": client_name,
                     "client_name": client_name,
                     "dob": dob,
-                    "injuries": injuries if injuries else ["No specific injury/diagnosis found"],
-                    "documents_count": r.get("total_documents", 1),
+                    "dob_unparsed_raw": meta.get("dob_unparsed_raw", []),
+                    "injuries": injuries if injuries else ["Not present in source"],
+                    "documents_count": r.get("total_documents", 0),
                     "chunks_count": r.get("total_chunks", 0),
                     "authors_count": r.get("unique_authors", 0),
                     "date_range": date_range,
@@ -282,7 +410,7 @@ def api_case_summary():
         }
     except Exception as e:
         logger.error(f"Error in api_case_summary: {e}")
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail="Unable to retrieve case summary") from e
 
 
 @app.get("/api/cases/{run_id}/timeline", tags=["Phase 1 Core Endpoints"])
@@ -295,7 +423,7 @@ def api_case_timeline(run_id: str):
         return {"run_id": run_id, "events": events}
     except Exception as e:
         logger.error(f"Error in api_case_timeline: {e}")
-        return {"run_id": run_id, "events": [], "error": str(e)}
+        raise HTTPException(status_code=500, detail="Unable to retrieve timeline") from e
 
 
 @app.get("/", tags=["Root"])
@@ -318,3 +446,10 @@ def root():
             "case_summary": "/api/case-summary",
         },
     }
+
+
+if __name__ == "__main__":  # pragma: no cover
+    import uvicorn
+
+    api_host = require_safe_bind(requested_api_bind_host())
+    uvicorn.run("api.main:app", host=api_host, port=8001)

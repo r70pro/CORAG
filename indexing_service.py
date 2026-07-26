@@ -3,7 +3,17 @@ import hashlib
 import os
 import re
 import shutil
+import tempfile
+from pathlib import Path
 
+from path_security import (
+    PathSecurityError,
+    require_approved_file,
+    resolve_file_under,
+    resolve_run_under,
+    resolve_under,
+    validate_filename,
+)
 from settings_manager import WORKSPACE_DIR, load_settings
 
 
@@ -11,23 +21,36 @@ class CorpusIndexingService:
     last_created_run_id = None
 
     @staticmethod
-    def index_run(run_dir, force=False):
+    def index_run(run_dir, force=False, full_reindex=False):
         """Index a single OCR run into the RAG system.
 
         Chunks all markdown files, embeds them, and stores in Qdrant + PostgreSQL.
 
         Args:
             run_dir: Path to the OCR run directory.
-            force: If True, bypass the early is_run_indexed check for manual re-indexing.
+            force: If True, bypass the early is_run_indexed check.
+            full_reindex: Explicitly replace the complete run point set. This
+                is the only workflow allowed to remove points absent from the
+                newly generated run.
 
         Yields:
             Status update strings.
         """
-        if not run_dir or not os.path.exists(run_dir):
+        if not run_dir:
             yield "⚠️ Invalid run directory."
             return
 
-        run_name = os.path.basename(run_dir)
+        candidate_run = Path(run_dir)
+        try:
+            run_name = candidate_run.name
+            safe_run_dir = resolve_run_under(WORKSPACE_DIR, run_name)
+        except PathSecurityError:
+            yield "⚠️ Invalid run directory."
+            return
+        if candidate_run.resolve() != safe_run_dir or not safe_run_dir.is_dir():
+            yield "⚠️ Invalid run directory."
+            return
+        run_dir = str(safe_run_dir)
 
         # Extract a stable run_id from the directory name
         run_id = hashlib.sha256(run_dir.encode()).hexdigest()[:16]
@@ -35,7 +58,7 @@ class CorpusIndexingService:
         yield f"🔄 Starting indexing for **{run_name}**...\n"
 
         # Check if already indexed (unless force=True)
-        if not force:
+        if not force and not full_reindex:
             try:
                 from rag.db import is_run_indexed
 
@@ -69,113 +92,156 @@ class CorpusIndexingService:
         total_chunks = sum(len(info["chunks"]) for info in chunk_results.values())
         total_docs = len(chunk_results)
         yield f"  Found **{total_docs}** document(s), **{total_chunks}** chunk(s).\n"
-
-        # Step 2: Register run in PostgreSQL
-        yield "💾 Registering run in database...\n"
-        try:
-            from rag.db import (
-                insert_chunks,
-                mark_document_indexed,
-                mark_run_indexed,
-                register_document,
-                register_run,
-            )
-
-            register_run(run_id, run_dir, total_documents=total_docs)
-
-            for doc_id, info in chunk_results.items():
-                md_file = info["md_file"]
-                # Extract original filename (strip numeric prefix)
-                orig_match = re.match(r"^\d+_(.*)", md_file)
-                orig_name = orig_match.group(1) if orig_match else md_file
-
-                pdf_pages = 0
-                # Count pages from page ranges if available
-                if info.get("page_ranges"):
-                    pdf_pages = len(info["page_ranges"])
-
-                register_document(
-                    doc_id=doc_id,
-                    run_id=run_id,
-                    original_filename=orig_name,
-                    pdf_total_pages=pdf_pages,
-                    markdown_path=info["md_path"],
-                )
-        except Exception as e:
-            yield f"❌ Database registration failed: {e}\n"
+        if total_chunks == 0:
+            yield "⚠️ No chunks were generated; the run was not marked indexed.\n"
             return
 
-        # Step 3: Upload to MinIO
-        yield "☁️ Uploading to object storage...\n"
+        # Step 2: Stage a complete point set for the affected documents. The
+        # PostgreSQL writes remain in one transaction from pending through
+        # indexed. Qdrant mutations are journalled by exact point ID so failure
+        # can restore overwritten vectors and remove only newly created points.
+        yield "💾 Registering run in database...\n"
+        rollback_snapshots = {}
+        touched_point_ids = set()
+        qdrant_mutation_started = False
+        phase = "database registration"
         try:
-            from rag.storage import upload_markdown, upload_pdf
-
-            for doc_id, info in chunk_results.items():
-                # Upload markdown
-                if os.path.exists(info["md_path"]):
-                    upload_markdown(run_id, doc_id, info["md_path"])
-
-                # Upload corresponding PDF if exists
-                pdf_filename = info["md_file"].replace(".md", ".pdf")
-                pdf_path = os.path.join(run_dir, "inputs", pdf_filename)
-                if os.path.exists(pdf_path):
-                    upload_pdf(run_id, doc_id, pdf_path)
-
-        except Exception as e:
-            yield f"⚠️ Storage upload warning: {e}\n"
-            # Non-fatal — indexing can continue without MinIO
-
-        # Step 4: Embed and upsert into Qdrant.
-        #
-        # Ordering for crash-safety: the PostgreSQL chunk rows are the source of
-        # truth and are written BEFORE the Qdrant vectors. If the process dies
-        # between the two, the run is NOT marked indexed, so a retry will
-        # re-upsert (idempotently — point IDs are derived from chunk_id) and then
-        # persist the chunk rows. Conversely we never end up with vectors that
-        # have no DB row. We also pre-delete any existing points for this run so
-        # a retry after a partial Qdrant write cannot leave stale duplicates.
-        try:
-            from rag.embedding import upsert_chunks_generator
+            from rag.db import (
+                delete_documents_not_in_run,
+                get_point_ids_for_documents,
+                get_point_ids_for_run,
+                get_run_totals,
+                indexing_transaction,
+                mark_document_indexed,
+                mark_run_indexed,
+                mark_run_pending,
+                register_document,
+                register_run,
+                replace_document_chunks,
+            )
+            from rag.embedding import (
+                delete_points,
+                get_qdrant_point_ids_for_run,
+                init_collection,
+                prepare_chunk_point_ids,
+                rollback_point_mutations,
+                snapshot_points,
+                upsert_chunks_generator,
+            )
 
             all_chunks = []
             for info in chunk_results.values():
                 all_chunks.extend(info["chunks"])
 
+            model_name = prepare_chunk_point_ids(all_chunks)
+            new_point_ids = {chunk["qdrant_point_id"] for chunk in all_chunks}
+            doc_ids = set(chunk_results)
             total_chunks_count = len(all_chunks)
-            yield f"🧠 Embedding and indexing {total_chunks_count} chunks...\n"
+            init_collection(model_name=model_name)
 
-            for progress_info in upsert_chunks_generator(
-                all_chunks, batch_size=32, pre_delete_run_ids=[run_id]
-            ):
-                stage = progress_info["stage"]
-                current = progress_info["current"]
-                total = progress_info["total"]
-                pct = int((current / total) * 100) if total > 0 else 0
-                if stage == "embedding":
-                    yield f"[PROGRESS:embedding:{current}/{total}] 🧠 Embedding chunks ({pct}%)...\n"
+            with indexing_transaction(run_id) as connection:
+                register_run(run_id, run_dir, total_documents=total_docs, connection=connection)
+                mark_run_pending(run_id, connection=connection)
+
+                if full_reindex:
+                    old_point_ids = get_point_ids_for_run(
+                        run_id, connection=connection
+                    ) | get_qdrant_point_ids_for_run(run_id, model_name=model_name)
                 else:
-                    yield f"[PROGRESS:indexing:{current}/{total}] ⚡ Indexing chunks in vector store ({pct}%)...\n"
+                    old_point_ids = get_point_ids_for_documents(doc_ids, connection=connection)
+                touched_point_ids = old_point_ids | new_point_ids
+                rollback_snapshots = snapshot_points(touched_point_ids, model_name=model_name)
 
-            # Persist chunk metadata in PostgreSQL (idempotent via chunk_id PK).
-            insert_chunks(all_chunks)
+                for doc_id, info in chunk_results.items():
+                    register_document(
+                        doc_id=doc_id,
+                        run_id=run_id,
+                        original_filename=info.get("original_filename") or info["md_file"],
+                        pdf_total_pages=len(info.get("page_ranges") or []),
+                        markdown_path=info["md_path"],
+                        connection=connection,
+                    )
 
-            # Mark documents and run as indexed
-            for doc_id in chunk_results:
-                mark_document_indexed(doc_id)
-            mark_run_indexed(run_id, total_chunks=total_chunks_count)
+                replace_document_chunks(doc_ids, all_chunks, connection=connection)
+                if full_reindex:
+                    delete_documents_not_in_run(run_id, doc_ids, connection=connection)
+
+                phase = "embedding/indexing"
+                yield f"🧠 Embedding and indexing {total_chunks_count} chunks...\n"
+                qdrant_mutation_started = True
+                for progress_info in upsert_chunks_generator(
+                    all_chunks, model_name=model_name, batch_size=32
+                ):
+                    stage = progress_info["stage"]
+                    current = progress_info["current"]
+                    total = progress_info["total"]
+                    pct = int((current / total) * 100) if total > 0 else 0
+                    if stage == "embedding":
+                        yield f"[PROGRESS:embedding:{current}/{total}] 🧠 Embedding chunks ({pct}%)...\n"
+                    else:
+                        yield f"[PROGRESS:indexing:{current}/{total}] ⚡ Indexing chunks in vector store ({pct}%)...\n"
+
+                stale_point_ids = old_point_ids - new_point_ids
+                delete_points(stale_point_ids, model_name=model_name)
+
+                phase = "database finalisation"
+                for doc_id in doc_ids:
+                    mark_document_indexed(doc_id, connection=connection)
+                authoritative_docs, authoritative_chunks = get_run_totals(
+                    run_id, connection=connection
+                )
+                mark_run_indexed(
+                    run_id,
+                    total_chunks=authoritative_chunks,
+                    total_documents=authoritative_docs,
+                    connection=connection,
+                )
 
         except Exception as e:
-            yield f"❌ Embedding/indexing failed: {e}\n"
-            yield "⏪ Rolling back any vectors written for this run...\n"
-            try:
-                from rag.embedding import delete_run_vectors
-
-                delete_run_vectors(run_id)
-            except Exception as rollback_err:
-                yield f"⚠️ Rollback warning: {rollback_err}\n"
+            label = (
+                "Database registration"
+                if phase == "database registration"
+                else "Embedding/indexing"
+            )
+            yield f"❌ {label} failed: {e}\n"
+            if qdrant_mutation_started:
+                yield "⏪ Restoring the pre-operation vector point set...\n"
+                try:
+                    rollback_point_mutations(
+                        touched_point_ids,
+                        rollback_snapshots,
+                        model_name=model_name,
+                    )
+                except Exception as rollback_err:
+                    yield f"⚠️ Rollback warning: {rollback_err}\n"
             return
 
-        # Step 5: Invalidate query cache
+        # Step 3: Upload source objects only after the searchable index commits.
+        yield "☁️ Uploading to object storage...\n"
+        try:
+            from rag.storage import upload_markdown, upload_pdf
+
+            for doc_id, info in chunk_results.items():
+                try:
+                    md_path = require_approved_file(info["md_path"], {safe_run_dir}, {".md"})
+                except PathSecurityError:
+                    continue
+                if md_path.is_file():
+                    upload_markdown(run_id, doc_id, str(md_path))
+
+                pdf_filename = info["md_file"].replace(".md", ".pdf")
+                try:
+                    pdf_path = resolve_file_under(
+                        resolve_under(safe_run_dir, "inputs"), pdf_filename, {".pdf"}
+                    )
+                except PathSecurityError:
+                    continue
+                if pdf_path.is_file():
+                    upload_pdf(run_id, doc_id, str(pdf_path))
+        except Exception as e:
+            yield f"⚠️ Storage upload warning: {e}\n"
+
+        # Step 4: Invalidate query cache
         try:
             from rag.cache import invalidate_query_cache
 
@@ -225,12 +291,16 @@ class CorpusIndexingService:
         from rag.chunker import chunk_document
         from rag.db import (
             get_connection,
+            get_point_ids_for_documents,
+            get_run_totals,
             get_runs_with_stats,
-            insert_chunks,
+            indexing_transaction,
             mark_document_indexed,
             mark_run_indexed,
+            mark_run_pending,
             register_document,
             register_run,
+            replace_document_chunks,
         )
         from rag.storage import upload_markdown
 
@@ -243,7 +313,11 @@ class CorpusIndexingService:
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             clean_name = re.sub(r"[^a-zA-Z0-9_-]", "_", new_case_name.strip())
             run_name = f"run_{clean_name}_{timestamp}"
-            run_dir = os.path.join(WORKSPACE_DIR, run_name)
+            try:
+                run_dir = str(resolve_run_under(WORKSPACE_DIR, run_name))
+            except PathSecurityError:
+                yield "❌ Error: Invalid case name.\n"
+                return
             run_id = hashlib.sha256(run_dir.encode()).hexdigest()[:16]
             CorpusIndexingService.last_created_run_id = run_id
 
@@ -281,95 +355,89 @@ class CorpusIndexingService:
                 yield "❌ Error: Could not locate existing case directory.\n"
                 return
 
-            run_name = os.path.basename(run_dir)
+            candidate_run = Path(run_dir)
+            try:
+                run_name = candidate_run.name
+                safe_run_dir = resolve_run_under(WORKSPACE_DIR, run_name)
+            except PathSecurityError:
+                yield "❌ Error: Could not locate existing case directory.\n"
+                return
+            if candidate_run.resolve() != safe_run_dir:
+                yield "❌ Error: Could not locate existing case directory.\n"
+                return
+            run_dir = str(safe_run_dir)
             yield f"📁 Adding to existing case: **{run_name}**...\n"
 
         # Set up directory paths
-        markdown_inputs_dir = os.path.join(run_dir, "markdown", "inputs")
+        markdown_inputs_dir = resolve_under(run_dir, "markdown", "inputs")
         try:
-            os.makedirs(markdown_inputs_dir, exist_ok=True)
+            markdown_inputs_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             yield f"❌ Failed to create directories: {e}\n"
             return
 
-        # Step 1: Copy uploaded files to the case directory
+        # Step 1: Copy uploads into an operation-specific staging directory.
+        # Destination files are not replaced until vectors and database rows
+        # have both been prepared successfully.
+        try:
+            staging_dir = Path(tempfile.mkdtemp(prefix=".indexing-", dir=str(markdown_inputs_dir)))
+        except Exception as e:
+            yield f"❌ Failed to create staging directory: {e}\n"
+            return
+
         copied_files = []
+        seen_filenames = set()
         for file_info in files:
             file_path = file_info.name if hasattr(file_info, "name") else str(file_info)
             if not os.path.exists(file_path):
                 continue
-            filename = os.path.basename(file_path)
-            dest_path = os.path.join(markdown_inputs_dir, filename)
+            filename = Path(file_path).name
+            original_name_value = getattr(file_info, "original_filename", None)
+            original_filename = (
+                original_name_value if isinstance(original_name_value, str) else filename
+            )
             try:
-                shutil.copy(file_path, dest_path)
-                copied_files.append((filename, dest_path))
-                yield f"📄 Copied **{filename}** to case storage.\n"
+                validate_filename(filename, {".md"})
+                if filename in seen_filenames:
+                    yield f"⚠️ Warning: Duplicate upload name {filename}; skipping duplicate.\n"
+                    continue
+                seen_filenames.add(filename)
+                staged_path = resolve_file_under(staging_dir, filename, {".md"})
+                destination_path = resolve_file_under(markdown_inputs_dir, filename, {".md"})
+                shutil.copy(file_path, staged_path)
+                copied_files.append(
+                    (filename, str(original_filename), staged_path, destination_path)
+                )
+                yield f"📄 Staged **{original_filename}** for case storage.\n"
             except Exception as e:
                 yield f"⚠️ Warning: Could not copy {filename}: {e}\n"
 
         if not copied_files:
+            shutil.rmtree(staging_dir, ignore_errors=True)
             yield "❌ Error: No files were successfully copied.\n"
             return
 
-        # Step 2: Register/update run in PostgreSQL
-        yield "💾 Registering case metadata in database...\n"
-        try:
-            # Determine total documents currently in DB for this run_id
-            current_docs_count = 0
-            if case_option != "new":
-                with get_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT COUNT(*) FROM documents WHERE run_id = %s", (run_id,))
-                        current_docs_count = cur.fetchone()[0]
-
-            new_total_docs = current_docs_count + len(copied_files)
-            register_run(run_id, run_dir, total_documents=new_total_docs)
-        except Exception as e:
-            yield f"❌ Database run registration failed: {e}\n"
-            return
-
-        # Step 3: Process each file (chunk, register document, embed, upsert)
+        # Step 2: Parse and chunk every staged file before mutating either data
+        # store. A filename maps deterministically to one document replacement.
         settings = load_settings()
         max_chunk_size = settings.get("chunk_size", 800)
         chunk_overlap = settings.get("chunk_overlap", 100)
 
         all_new_chunks = []
+        processed_documents = []
 
-        for filename, md_path in copied_files:
-            yield f"⚙️ Processing **{filename}**...\n"
+        for filename, original_filename, staged_path, destination_path in copied_files:
+            yield f"⚙️ Processing **{original_filename}**...\n"
 
-            # Read contents
             try:
-                with open(md_path, encoding="utf-8") as f:
+                with open(staged_path, encoding="utf-8") as f:
                     markdown_text = f.read()
             except Exception as e:
-                yield f"⚠️ Error reading {filename}: {e}. Skipping.\n"
+                yield f"⚠️ Error reading {original_filename}: {e}. Skipping.\n"
                 continue
 
-            # Generate doc_id
             doc_id = hashlib.sha256(f"{run_id}:{filename}".encode()).hexdigest()[:24]
 
-            # Register document
-            try:
-                register_document(
-                    doc_id=doc_id,
-                    run_id=run_id,
-                    original_filename=filename,
-                    pdf_total_pages=0,
-                    markdown_path=md_path,
-                )
-            except Exception as e:
-                yield f"⚠️ Database document registration failed for {filename}: {e}. Skipping.\n"
-                continue
-
-            # Upload to MinIO
-            try:
-                upload_markdown(run_id, doc_id, md_path)
-                yield f"☁️ Uploaded **{filename}** to object storage.\n"
-            except Exception as e:
-                yield f"⚠️ Storage upload warning for {filename}: {e}\n"
-
-            # Chunk document
             try:
                 chunks = chunk_document(
                     markdown_text=markdown_text,
@@ -378,64 +446,167 @@ class CorpusIndexingService:
                     page_ranges=[],
                     max_chunk_size=max_chunk_size,
                     chunk_overlap=chunk_overlap,
+                    original_filename=original_filename,
+                    provenance_type="external_markdown",
                 )
+                if not chunks:
+                    yield f"⚠️ No chunks created for {original_filename}. Skipping.\n"
+                    continue
                 all_new_chunks.extend(chunks)
-                yield f"🧩 Created **{len(chunks)}** chunk(s) for {filename}.\n"
+                processed_documents.append(
+                    {
+                        "filename": filename,
+                        "original_filename": original_filename,
+                        "staged_path": staged_path,
+                        "destination_path": destination_path,
+                        "doc_id": doc_id,
+                    }
+                )
+                yield f"🧩 Created **{len(chunks)}** chunk(s) for {original_filename}.\n"
             except Exception as e:
-                yield f"⚠️ Chunking failed for {filename}: {e}. Skipping.\n"
+                yield f"⚠️ Chunking failed for {original_filename}: {e}. Skipping.\n"
                 continue
 
         if not all_new_chunks:
+            shutil.rmtree(staging_dir, ignore_errors=True)
             yield "❌ Error: No chunks generated from the uploaded files.\n"
             return
 
-        # Step 4: Embed and upsert into Qdrant & Postgres.
-        # Postgres chunk rows are written AFTER the vectors (the db rows are the
-        # source of truth and idempotent on chunk_id), and we pre-delete any
-        # existing points for the run so a retry cannot create duplicate vectors.
+        # Step 3: Replace the affected document point sets. PostgreSQL stays in
+        # one pending -> indexed transaction. Qdrant rollback is an exact-ID
+        # journal: new IDs are deleted and overwritten IDs are restored.
+        yield "💾 Registering case metadata in database...\n"
+        rollback_snapshots = {}
+        touched_point_ids = set()
+        qdrant_mutation_started = False
+        file_journal = []
+        phase = "database registration"
         try:
-            from rag.embedding import delete_run_vectors, upsert_chunks_generator
+            from rag.embedding import (
+                delete_points,
+                init_collection,
+                prepare_chunk_point_ids,
+                rollback_point_mutations,
+                snapshot_points,
+                upsert_chunks_generator,
+            )
 
+            model_name = prepare_chunk_point_ids(all_new_chunks)
+            init_collection(model_name=model_name)
+            new_point_ids = {chunk["qdrant_point_id"] for chunk in all_new_chunks}
+            doc_ids = {document["doc_id"] for document in processed_documents}
             total_chunks_count = len(all_new_chunks)
-            yield f"🧠 Embedding and indexing {total_chunks_count} chunks...\n"
 
-            for progress_info in upsert_chunks_generator(
-                all_new_chunks, batch_size=32, pre_delete_run_ids=[run_id]
-            ):
-                stage = progress_info["stage"]
-                current = progress_info["current"]
-                total = progress_info["total"]
-                pct = int((current / total) * 100) if total > 0 else 0
-                if stage == "embedding":
-                    yield f"[PROGRESS:embedding:{current}/{total}] 🧠 Embedding chunks ({pct}%)...\n"
-                else:
-                    yield f"[PROGRESS:indexing:{current}/{total}] ⚡ Indexing chunks in vector store ({pct}%)...\n"
+            with indexing_transaction(run_id) as connection:
+                register_run(
+                    run_id,
+                    run_dir,
+                    total_documents=len(processed_documents),
+                    connection=connection,
+                )
+                mark_run_pending(run_id, connection=connection)
 
-            insert_chunks(all_new_chunks)
+                old_point_ids = get_point_ids_for_documents(doc_ids, connection=connection)
+                touched_point_ids = old_point_ids | new_point_ids
+                rollback_snapshots = snapshot_points(touched_point_ids, model_name=model_name)
 
-            # Mark all documents as indexed
-            for filename, _ in copied_files:
-                doc_id = hashlib.sha256(f"{run_id}:{filename}".encode()).hexdigest()[:24]
-                mark_document_indexed(doc_id)
+                for document in processed_documents:
+                    register_document(
+                        doc_id=document["doc_id"],
+                        run_id=run_id,
+                        original_filename=document["original_filename"],
+                        pdf_total_pages=0,
+                        markdown_path=str(document["destination_path"]),
+                        connection=connection,
+                    )
 
-            # Get total chunks for the run to mark run indexed
-            with get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT COUNT(*) FROM chunks WHERE run_id = %s", (run_id,))
-                    total_chunks_in_run = cur.fetchone()[0]
+                replace_document_chunks(doc_ids, all_new_chunks, connection=connection)
 
-            mark_run_indexed(run_id, total_chunks=total_chunks_in_run)
+                phase = "embedding/indexing"
+                yield f"🧠 Embedding and indexing {total_chunks_count} chunks...\n"
+                qdrant_mutation_started = True
+                for progress_info in upsert_chunks_generator(
+                    all_new_chunks, model_name=model_name, batch_size=32
+                ):
+                    stage = progress_info["stage"]
+                    current = progress_info["current"]
+                    total = progress_info["total"]
+                    pct = int((current / total) * 100) if total > 0 else 0
+                    if stage == "embedding":
+                        yield f"[PROGRESS:embedding:{current}/{total}] 🧠 Embedding chunks ({pct}%)...\n"
+                    else:
+                        yield f"[PROGRESS:indexing:{current}/{total}] ⚡ Indexing chunks in vector store ({pct}%)...\n"
+
+                delete_points(old_point_ids - new_point_ids, model_name=model_name)
+
+                # Final source-file replacement is journalled too, so a commit
+                # failure restores any previous markdown bytes.
+                phase = "file/database finalisation"
+                backup_dir = staging_dir / "backups"
+                backup_dir.mkdir(exist_ok=True)
+                for document in processed_documents:
+                    destination = document["destination_path"]
+                    backup = None
+                    if destination.exists():
+                        backup = backup_dir / document["filename"]
+                        shutil.copy(destination, backup)
+                    os.replace(document["staged_path"], destination)
+                    file_journal.append((destination, backup))
+
+                for doc_id in doc_ids:
+                    mark_document_indexed(doc_id, connection=connection)
+                authoritative_docs, authoritative_chunks = get_run_totals(
+                    run_id, connection=connection
+                )
+                mark_run_indexed(
+                    run_id,
+                    total_chunks=authoritative_chunks,
+                    total_documents=authoritative_docs,
+                    connection=connection,
+                )
 
         except Exception as e:
-            yield f"❌ Embedding/indexing failed: {e}\n"
-            yield "⏪ Rolling back any vectors written for this case...\n"
-            try:
-                from rag.embedding import delete_run_vectors
-
-                delete_run_vectors(run_id)
-            except Exception as rollback_err:
-                yield f"⚠️ Rollback warning: {rollback_err}\n"
+            label = (
+                "Database run registration"
+                if phase == "database registration"
+                else "Embedding/indexing"
+            )
+            yield f"❌ {label} failed: {e}\n"
+            for destination, backup in reversed(file_journal):
+                try:
+                    if backup is not None and backup.exists():
+                        os.replace(backup, destination)
+                    elif destination.exists():
+                        destination.unlink()
+                except Exception as file_rollback_err:
+                    yield f"⚠️ File rollback warning: {file_rollback_err}\n"
+            if qdrant_mutation_started:
+                yield "⏪ Restoring only the vector points touched by this upload...\n"
+                try:
+                    rollback_point_mutations(
+                        touched_point_ids,
+                        rollback_snapshots,
+                        model_name=model_name,
+                    )
+                except Exception as rollback_err:
+                    yield f"⚠️ Rollback warning: {rollback_err}\n"
+            shutil.rmtree(staging_dir, ignore_errors=True)
             return
+
+        shutil.rmtree(staging_dir, ignore_errors=True)
+
+        # Step 4: Object storage is non-authoritative and is updated only after
+        # the database/vector operation has committed successfully.
+        for document in processed_documents:
+            try:
+                upload_markdown(
+                    run_id,
+                    document["doc_id"],
+                    str(document["destination_path"]),
+                )
+                yield f"☁️ Uploaded **{document['original_filename']}** to object storage.\n"
+            except Exception as e:
+                yield (f"⚠️ Storage upload warning for {document['original_filename']}: {e}\n")
 
         # Step 5: Invalidate query cache
         try:
@@ -443,4 +614,4 @@ class CorpusIndexingService:
         except Exception:
             pass
 
-        yield f"\n✅ Successfully uploaded and indexed **{len(copied_files)}** markdown file(s) into case **{run_name}**!\n"
+        yield f"\n✅ Successfully uploaded and indexed **{len(processed_documents)}** markdown file(s) into case **{run_name}**!\n"

@@ -1,0 +1,57 @@
+services:
+  postgres:
+    image: postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    environment:
+      POSTGRES_DB: olmocr_rag
+      POSTGRES_USER: olmocr
+      POSTGRES_PASSWORD: integration-postgres-password
+    ports:
+      - "127.0.0.1::5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U olmocr -d olmocr_rag"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis@sha256:dfa18828cbc07b3ae6a95ec7343f6c214fdee2d836197b4be8e9904420762cd8
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "127.0.0.1::6379"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  minio:
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: integration-minio-user
+      MINIO_ROOT_PASSWORD: integration-minio-password
+    ports:
+      - "127.0.0.1::9000"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  qdrant:
+    image: qdrant/qdrant@sha256:6a34a799bed69c7c25c4e87ab04092005e4579062a9bf0e82a75d0b21f030006
+    ports:
+      - "127.0.0.1::6333"
+    tmpfs:
+      - /qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333'"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

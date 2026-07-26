@@ -6,14 +6,29 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
-from fastapi import APIRouter, File, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
+from api.auth import verify_admin_key
+from api.errors import error_envelope
 from api.models import MessageResponse, PipelineStartRequest, PipelineStatusResponse, RunInfo
+from api.upload_security import (
+    UPLOAD_CHUNK_BYTES,
+    LimitedUploadRoute,
+    close_uploads,
+    escaped_original_name,
+    pdf_upload_limits,
+    require_content_type,
+    unique_upload_name,
+    validate_pdf_file,
+)
+from path_security import PathSecurityError, resolve_file_under, resolve_under, validate_filename
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(route_class=LimitedUploadRoute)
 
 
 @router.post("/upload", summary="Upload source PDF documents for ingestion")
@@ -22,51 +37,83 @@ async def upload_pipeline_files(
     files: list[UploadFile] | UploadFile | None = File(default=None),
 ):
     """Upload one or more PDF files for ingestion pipeline processing."""
-    import os
-
-    from fastapi import HTTPException
-
     from settings_manager import WORKSPACE_DIR
 
+    file_list: list[UploadFile] = []
+    created_paths: list[Path] = []
     try:
-        file_list: list[UploadFile] = []
         if files:
-            if isinstance(files, list):
-                file_list.extend(files)
-            else:
-                file_list.append(files)
+            file_list.extend(files if isinstance(files, list) else [files])
 
-        if not file_list:
+        if not file_list and request is not None:
             try:
                 form = await request.form()
                 raw_files = form.getlist("files") or form.getlist("file")
-                for f in raw_files:
-                    if isinstance(f, UploadFile) or hasattr(f, "filename"):
-                        file_list.append(f)
-            except Exception as fe:
-                logger.warning(f"Error parsing request form fallback: {fe}")
+                file_list.extend(
+                    f for f in raw_files if isinstance(f, UploadFile) or hasattr(f, "filename")
+                )
+            except Exception as exc:
+                logger.warning("Error parsing request form fallback: %s", exc)
 
         if not file_list:
             raise HTTPException(status_code=400, detail="No files provided for upload.")
 
-        upload_dir = os.path.join(WORKSPACE_DIR, "uploads")
-        os.makedirs(upload_dir, exist_ok=True)
-        saved_paths = []
+        limits = pdf_upload_limits()
+        if len(file_list) > limits.max_files:
+            raise HTTPException(status_code=413, detail="Too many uploaded files")
+
+        upload_dir = resolve_under(WORKSPACE_DIR, "uploads")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        saved_paths: list[str] = []
+        metadata: list[dict[str, str]] = []
+        aggregate_bytes = 0
 
         for upload in file_list:
-            raw_name = os.path.basename(upload.filename or "").strip()
-            safe_name = raw_name if raw_name else "document.pdf"
-            dest_path = os.path.join(upload_dir, safe_name)
-            content = await upload.read()
-            with open(dest_path, "wb") as buffer:
-                buffer.write(content)
-            saved_paths.append(dest_path)
-        return {"success": True, "file_paths": saved_paths}
+            original_name = escaped_original_name(upload, ".pdf")
+            require_content_type(upload, {"application/pdf", "application/octet-stream"})
+            stored_name = unique_upload_name(".pdf")
+            dest_path = resolve_file_under(upload_dir, stored_name, {".pdf"})
+            created_paths.append(dest_path)
+
+            file_bytes = 0
+            prefix = bytearray()
+            with dest_path.open("xb") as buffer:
+                while True:
+                    chunk = await upload.read(UPLOAD_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    file_bytes += len(chunk)
+                    aggregate_bytes += len(chunk)
+                    if file_bytes > limits.max_file_bytes:
+                        raise HTTPException(status_code=413, detail="Uploaded PDF is too large")
+                    if aggregate_bytes > limits.max_total_bytes:
+                        raise HTTPException(status_code=413, detail="Aggregate upload is too large")
+                    if len(prefix) < 5:
+                        prefix.extend(chunk[: 5 - len(prefix)])
+                    buffer.write(chunk)
+
+            if bytes(prefix) != b"%PDF-":
+                raise HTTPException(status_code=415, detail="Upload is not a PDF")
+            await run_in_threadpool(validate_pdf_file, dest_path)
+            saved_paths.append(stored_name)
+            metadata.append({"file_path": stored_name, "original_name": original_name})
+
+        return {"success": True, "file_paths": saved_paths, "files": metadata}
     except HTTPException:
+        for path in created_paths:
+            path.unlink(missing_ok=True)
         raise
-    except Exception as e:
-        logger.error(f"Upload pipeline files failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+    except Exception as exc:
+        for path in created_paths:
+            path.unlink(missing_ok=True)
+        logger.error("Upload pipeline files failed", exc_info=True)
+        raise HTTPException(status_code=500, detail="Upload failed") from exc
+    except BaseException:
+        for path in created_paths:
+            path.unlink(missing_ok=True)
+        raise
+    finally:
+        await close_uploads(file_list)
 
 
 @router.post("/start", summary="Start OCR pipeline (SSE stream)")
@@ -76,34 +123,29 @@ def start_pipeline(req: PipelineStartRequest):
     Returns a Server-Sent Events stream of ``PipelineUpdate`` JSON objects,
     allowing clients to render real-time progress.
     """
-    import os
     from unittest.mock import MagicMock
 
     from pipeline_manager import process_pdfs
     from settings_manager import WORKSPACE_DIR
 
-    # Build mock file objects with .name attributes from file paths
+    try:
+        upload_dir = resolve_under(WORKSPACE_DIR, "uploads")
+    except PathSecurityError as exc:
+        raise HTTPException(status_code=400, detail="Invalid path") from exc
+
+    # API clients may select only filenames previously stored by the upload route.
     files = []
-    missing_paths = []
-    for path in req.file_paths:
-        resolved_path = path
-        if not os.path.isfile(resolved_path):
-            candidates = [
-                os.path.join(WORKSPACE_DIR, os.path.basename(path)),
-                os.path.join("/home/owner/Downloads", os.path.basename(path)),
-                os.path.expanduser(f"~/Downloads/{os.path.basename(path)}"),
-                os.path.join(WORKSPACE_DIR, "souki_enclosures.pdf"),
-            ]
-            for cand in candidates:
-                if os.path.isfile(cand):
-                    resolved_path = cand
-                    break
-        if not os.path.isfile(resolved_path):
-            missing_paths.append(path)
-        else:
-            f = MagicMock()
-            f.name = resolved_path
-            files.append(f)
+    for filename in req.file_paths:
+        try:
+            validate_filename(filename, {".pdf"})
+            resolved_path = resolve_file_under(upload_dir, filename, {".pdf"})
+        except PathSecurityError as exc:
+            raise HTTPException(status_code=400, detail="Invalid input file") from exc
+        if not resolved_path.is_file():
+            raise HTTPException(status_code=400, detail="Input file not found")
+        file_ref = MagicMock()
+        file_ref.name = str(resolved_path)
+        files.append(file_ref)
 
     def _extract_int_stat(val: object) -> int:
         if isinstance(val, int):
@@ -126,8 +168,11 @@ def start_pipeline(req: PipelineStartRequest):
         return 0
 
     def event_generator():
-        if missing_paths or not files:
-            err_msg = f"File(s) not found: {', '.join(missing_paths or req.file_paths)}"
+        if not files:
+            err_msg = "No valid input files"
+            envelope = error_envelope("invalid_input_files", err_msg).model_dump(
+                mode="json", exclude_none=True
+            )
             event_data = {
                 "log_text": f"[Error] {err_msg}",
                 "status_badge": "<span class='badge-failed'>File Not Found</span>",
@@ -137,7 +182,7 @@ def start_pipeline(req: PipelineStartRequest):
                 "run_id": "",
                 "file_status_html": "",
                 "upload_manifest_html": "",
-                "error": err_msg,
+                **envelope,
             }
             yield f"data: {json.dumps(event_data)}\n\n"
             yield "data: [DONE]\n\n"
@@ -166,8 +211,17 @@ def start_pipeline(req: PipelineStartRequest):
                 }
                 yield f"data: {json.dumps(event_data)}\n\n"
             yield "data: [DONE]\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'error': str(e), 'log_text': f'[Error] {e}', 'status_badge': '<span class=\"badge-failed\">Failed</span>'})}\n\n"
+        except Exception:
+            logger.exception("Pipeline processing failed")
+            envelope = error_envelope(
+                "pipeline_processing_failed", "Pipeline processing failed"
+            ).model_dump(mode="json", exclude_none=True)
+            event_data = {
+                **envelope,
+                "log_text": "[Error] Pipeline processing failed",
+                "status_badge": '<span class="badge-failed">Failed</span>',
+            }
+            yield f"data: {json.dumps(event_data)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -183,6 +237,7 @@ def list_runs():
         import hashlib
         import re
 
+        run_name = Path(run_dir).name
         run_id = hashlib.sha256(run_dir.encode()).hexdigest()[:16]
         # Extract file count from display name, e.g. "run_... (3 files)"
         match = re.search(r"\((\d+)\s+file", display_name)
@@ -191,7 +246,7 @@ def list_runs():
         result.append(
             RunInfo(
                 display_name=display_name,
-                run_dir=run_dir,
+                run_dir=run_name,
                 run_id=run_id,
                 file_count=file_count,
                 is_indexed=is_indexed,
@@ -200,13 +255,20 @@ def list_runs():
     return result
 
 
-@router.post("/stop/{run_id}", response_model=MessageResponse, summary="Stop a pipeline run")
+@router.post(
+    "/stop/{run_id}",
+    response_model=MessageResponse,
+    summary="Stop a pipeline run",
+    dependencies=[Depends(verify_admin_key)],
+)
 def stop_pipeline(run_id: str):
     """Send a stop signal to a running pipeline."""
     from pipeline_manager import stop_processing
 
     msg = stop_processing(run_id)
-    return MessageResponse(success="Stop request sent" in msg, message=msg)
+    if "Stop request sent" not in msg:
+        raise HTTPException(status_code=409, detail=msg or "Pipeline run cannot be stopped")
+    return MessageResponse(success=True, message=msg)
 
 
 @router.get("/status/{run_id}", response_model=PipelineStatusResponse, summary="Get run status")

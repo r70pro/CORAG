@@ -128,6 +128,9 @@ A/Prof. Eugene T. Ek
             {
                 "original_filename": "report.pdf",
                 "page_number": 3,
+                "page_start": 3,
+                "page_end": 3,
+                "provenance_type": "original_pdf",
                 "author": "Dr Ek",
                 "date_extracted": "2020-08-27",
                 "document_type": "specialist_letter",
@@ -404,7 +407,14 @@ A/Prof. Eugene T. Ek
     @patch("sentence_transformers.CrossEncoder")
     @patch("rag.retriever.get_qdrant_client")
     @patch("rag.db.get_chunks_by_qdrant_ids")
-    def test_search_similar_with_reranker(self, mock_get_chunks, mock_qdrant_client, mock_cross_encoder_class):
+    @patch("rag.retriever.encode_query", return_value=[0.1, 0.2])
+    def test_search_similar_with_reranker(
+        self,
+        _mock_encode_query,
+        mock_get_chunks,
+        mock_qdrant_client,
+        mock_cross_encoder_class,
+    ):
         # Mock database chunks enrichment
         mock_get_chunks.return_value = [
             {"qdrant_point_id": "p1", "chunk_id": "c1", "text": "acute shoulder pain"},

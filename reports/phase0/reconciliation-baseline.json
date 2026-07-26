@@ -1,0 +1,12 @@
+{
+  "captured_at_utc": "2026-07-26T03:42:41.520071+00:00",
+  "postgres_total_chunks": 0,
+  "postgres_total_runs": 0,
+  "postgres_total_vector_references": 0,
+  "qdrant_collection_totals": {
+    "olmocr_documents_baai_bge-large-en-v1_5": 0
+  },
+  "qdrant_only_runs": {},
+  "qdrant_total_vectors": 0,
+  "runs": []
+}

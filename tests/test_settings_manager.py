@@ -266,23 +266,13 @@ class TestSettingsManager(unittest.TestCase):
         # Empty arg
         self.assertFalse(settings_manager.delete_run_directory(""))
 
-        # Direct path
-        test_run_dir = os.path.join(self.tmp_dir, "test_run_direct")
+        test_run_dir = os.path.join(self.workspace_dir, "run_direct")
         os.makedirs(test_run_dir, exist_ok=True)
-        self.assertTrue(settings_manager.delete_run_directory(test_run_dir))
+        with patch("settings_manager.WORKSPACE_DIR", self.workspace_dir):
+            # Absolute paths are no longer accepted at this boundary.
+            self.assertFalse(settings_manager.delete_run_directory(test_run_dir))
+            self.assertTrue(settings_manager.delete_run_directory("run_direct"))
         self.assertFalse(os.path.exists(test_run_dir))
-
-        # DB run_dir lookup
-        test_run_db = os.path.join(self.tmp_dir, "test_run_db")
-        os.makedirs(test_run_db, exist_ok=True)
-        mock_conn = MagicMock()
-        mock_cur = MagicMock()
-        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
-        mock_cur.fetchone.return_value = (test_run_db,)
-
-        with patch("rag.db.get_connection", return_value=MagicMock(__enter__=MagicMock(return_value=mock_conn))):
-            self.assertTrue(settings_manager.delete_run_directory("run_db_id"))
-            self.assertFalse(os.path.exists(test_run_db))
 
         # Candidate workspace search
         test_ws = os.path.join(self.tmp_dir, "ws_cand")
@@ -313,5 +303,4 @@ class TestSettingsManager(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
 

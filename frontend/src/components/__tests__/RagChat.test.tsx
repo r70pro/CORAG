@@ -45,4 +45,12 @@ describe("RagChat Component", () => {
       expect(input).toHaveValue("Extract injury timeline");
     });
   });
+
+  test("does not seed the chat with fabricated verification details", () => {
+    render(<RagChat />);
+
+    expect(screen.queryByText(/Gavin Weekes/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/2024AL0008570/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Pages 1-3/i)).not.toBeInTheDocument();
+  });
 });

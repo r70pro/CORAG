@@ -4,7 +4,9 @@ Extended unit tests targeting remaining code coverage gaps in chunker.py and rag
 
 import os
 import io
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 # Prevent system operations during import
@@ -42,33 +44,26 @@ class TestRAGExtended(unittest.TestCase):
         res = chunker.chunk_documents_from_run("/mock/run", "run_id")
         self.assertEqual(res, {})
 
-    @patch("os.path.exists")
-    @patch("os.listdir")
-    def test_chunk_documents_from_run_success(self, mock_listdir, mock_exists):
-        mock_exists.return_value = True
-        
-        # Mock folder listing
-        def listdir_side_effect(path):
-            if "results" in path:
-                return ["output.jsonl", "ignored_file.txt"]  # non-jsonl file included
-            if "inputs" in path:
-                return ["report.md"]
-            return []
-        mock_listdir.side_effect = listdir_side_effect
+    def test_chunk_documents_from_run_success(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            run_dir = Path(workspace) / "run_case"
+            results_dir = run_dir / "results"
+            markdown_dir = run_dir / "markdown" / "inputs"
+            results_dir.mkdir(parents=True)
+            markdown_dir.mkdir(parents=True)
+            (results_dir / "output.jsonl").write_text(
+                '{"metadata": {"Source-File": "inputs/report.pdf"}, '
+                '"attributes": {"pdf_page_numbers": [[0, 62, 1]]}}\n\n',
+                encoding="utf-8",
+            )
+            (results_dir / "ignored_file.txt").write_text("ignored", encoding="utf-8")
+            (markdown_dir / "report.md").write_text(
+                "# Report\nPatient Name: Francis\nDear Dr. Eugene Ek,\nhello.",
+                encoding="utf-8",
+            )
 
-        # Path-aware open mock for jsonl and md
-        def open_mock(filename, mode="r", *args, **kwargs):
-            if "jsonl" in filename:
-                return io.StringIO(
-                    '{"metadata": {"Source-File": "inputs/report.pdf"}, "attributes": {"pdf_page_numbers": [[0, 100, 1]]}}\n'
-                    '\n' # empty line
-                )
-            if "report.md" in filename:
-                return io.StringIO("# Report\nPatient Name: Francis\nDear Dr. Eugene Ek,\nhello.")
-            return io.StringIO("")
-
-        with patch("builtins.open", side_effect=open_mock):
-            res = chunker.chunk_documents_from_run("/mock/run", "run_id")
+            with patch("settings_manager.WORKSPACE_DIR", workspace):
+                res = chunker.chunk_documents_from_run(str(run_dir), "run_id")
             self.assertTrue(len(res) > 0)
             doc_id = list(res.keys())[0]
             self.assertEqual(res[doc_id]["md_file"], "report.md")

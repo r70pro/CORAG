@@ -308,14 +308,17 @@ class TestRAGAnalyzerAll(unittest.TestCase):
     @patch("rag.analyzer.query_llm_streaming")
     @patch("settings_manager.load_settings")
     def test_analyze_context_truncation_streaming(self, mock_load, mock_stream, mock_search):
-        # Setup settings with small max model len to force truncation
-        mock_load.return_value = {"docker_max_model_len": 5200}
+        # OCR container length is intentionally irrelevant to analysis budgeting.
+        mock_load.return_value = {
+            "docker_max_model_len": 5200,
+            "analysis_model_name": "nvidia/Phi-4-reasoning-plus-NVFP4",
+        }
         
         # Setup 3 chunks of results, each long enough to exceed the 2048 prompt limit
         mock_search.return_value = [
-            {"text": "very long text " * 1000, "chunk_id": "c1"},
-            {"text": "very long text " * 1000, "chunk_id": "c2"},
-            {"text": "very long text " * 1000, "chunk_id": "c3"},
+            {"text": "very long text " * 4000, "chunk_id": "c1"},
+            {"text": "very long text " * 4000, "chunk_id": "c2"},
+            {"text": "very long text " * 4000, "chunk_id": "c3"},
         ]
         mock_stream.return_value = iter(["answer"])
         
@@ -331,13 +334,15 @@ class TestRAGAnalyzerAll(unittest.TestCase):
     @patch("rag.analyzer.query_llm")
     @patch("settings_manager.load_settings")
     def test_analyze_context_truncation_non_streaming(self, mock_load, mock_query, mock_search):
-        # Setup settings with small max model len
-        mock_load.return_value = {"docker_max_model_len": 5200}
+        mock_load.return_value = {
+            "docker_max_model_len": 5200,
+            "analysis_model_name": "nvidia/Phi-4-reasoning-plus-NVFP4",
+        }
         
         mock_search.return_value = [
-            {"text": "very long text " * 1000, "chunk_id": "c1"},
-            {"text": "very long text " * 1000, "chunk_id": "c2"},
-            {"text": "very long text " * 1000, "chunk_id": "c3"},
+            {"text": "very long text " * 4000, "chunk_id": "c1"},
+            {"text": "very long text " * 4000, "chunk_id": "c2"},
+            {"text": "very long text " * 4000, "chunk_id": "c3"},
         ]
         mock_query.return_value = "answer"
         
@@ -356,12 +361,15 @@ class TestRAGAnalyzerAll(unittest.TestCase):
     @patch("tiktoken.get_encoding")
     def test_analyze_context_truncation_fallback(self, mock_get_enc, mock_load, mock_stream, mock_search):
         mock_get_enc.side_effect = Exception("No internet or file not cached")
-        mock_load.return_value = {"docker_max_model_len": 5200}
+        mock_load.return_value = {
+            "docker_max_model_len": 5200,
+            "analysis_model_name": "nvidia/Phi-4-reasoning-plus-NVFP4",
+        }
         
         mock_search.return_value = [
-            {"text": "very long text " * 1000, "chunk_id": "c1"},
-            {"text": "very long text " * 1000, "chunk_id": "c2"},
-            {"text": "very long text " * 1000, "chunk_id": "c3"},
+            {"text": "very long text " * 4000, "chunk_id": "c1"},
+            {"text": "very long text " * 4000, "chunk_id": "c2"},
+            {"text": "very long text " * 4000, "chunk_id": "c3"},
         ]
         mock_stream.return_value = iter(["answer"])
         
@@ -419,11 +427,14 @@ class TestRAGAnalyzerAll(unittest.TestCase):
     @patch("rag.analyzer.query_llm_streaming")
     @patch("settings_manager.load_settings")
     def test_analyze_context_truncation_breaks_early(self, mock_load, mock_stream, mock_search):
-        mock_load.return_value = {"docker_max_model_len": 5200}
+        mock_load.return_value = {
+            "docker_max_model_len": 5200,
+            "analysis_model_name": "nvidia/Phi-4-reasoning-plus-NVFP4",
+        }
         mock_search.return_value = [
             {"text": "short", "chunk_id": "c1"},
             {"text": "short", "chunk_id": "c2"},
-            {"text": "very long text " * 1000, "chunk_id": "c3"},
+            {"text": "very long text " * 10000, "chunk_id": "c3"},
         ]
         mock_stream.return_value = iter(["answer"])
         
@@ -467,6 +478,9 @@ class TestRAGAnalyzerAll(unittest.TestCase):
             {
                 "original_filename": "souki_enclosures.pdf",
                 "page_number": 37,
+                "page_start": 37,
+                "page_end": 37,
+                "provenance_type": "original_pdf",
                 "author": "Dr. Gavin Weekes",
                 "date_extracted": "2021-02-14",
                 "document_type": "specialist_correspondence",
@@ -475,6 +489,9 @@ class TestRAGAnalyzerAll(unittest.TestCase):
             {
                 "original_filename": "medical_report.pdf",
                 "page_number": 6,
+                "page_start": 6,
+                "page_end": 6,
+                "provenance_type": "original_pdf",
                 "author": "",
                 "date_extracted": "",
                 "document_type": "unknown",
@@ -490,7 +507,7 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         self.assertIn("2021-02-14", output1)
         self.assertIn("p. 37", output1)
         self.assertIn("Ref No: 2021AL0008570-1", output1)
-        self.assertNotIn("souki_enclosures.pdf", output1)
+        self.assertIn("souki_enclosures.pdf", output1)
 
         # 2. Minimal info fallback (filename should be included)
         input2 = "Degenerative changes noted [Source 2]."
@@ -613,6 +630,84 @@ class TestRAGAnalyzerAll(unittest.TestCase):
             score_threshold=0.1
         ))
         self.assertEqual(res, ["Response"])
+
+    def test_analysis_context_length_precedence_excludes_ocr_settings(self):
+        lengths = {
+            "resolved-analysis": 32_768,
+            "configured-analysis": 131_072,
+            "ocr-model": 1_048_576,
+        }
+
+        self.assertEqual(
+            rag_anz._analysis_context_length(
+                "resolved-analysis", "configured-analysis", lengths
+            ),
+            32_768,
+        )
+        self.assertEqual(
+            rag_anz._analysis_context_length(
+                "unknown-resolved", "configured-analysis", lengths
+            ),
+            131_072,
+        )
+        self.assertEqual(
+            rag_anz._analysis_context_length(
+                "unknown-resolved", "unknown-configured", lengths
+            ),
+            rag_anz.CONSERVATIVE_ANALYSIS_CONTEXT_LENGTH,
+        )
+
+    @patch("rag.analyzer.search_similar")
+    @patch("rag.analyzer.query_llm_streaming")
+    @patch("settings_manager.load_settings")
+    def test_ocr_context_setting_cannot_override_analysis_model(
+        self, mock_load, mock_stream, mock_search
+    ):
+        mock_load.return_value = {
+            "docker_max_model_len": 1_048_576,
+            "analysis_model_name": "nvidia/Phi-4-reasoning-plus-NVFP4",
+        }
+        mock_search.return_value = [
+            {"text": "very long text " * 4000, "chunk_id": f"c{index}"}
+            for index in range(3)
+        ]
+        mock_stream.return_value = iter(["answer"])
+
+        response = list(
+            rag_anz.analyze(
+                "query",
+                model_name="nvidia/Phi-4-reasoning-plus-NVFP4",
+                stream=True,
+            )
+        )
+
+        self.assertTrue(
+            any("too large for the model's context window" in item for item in response)
+        )
+
+    @patch("rag.analyzer.search_similar")
+    @patch("rag.analyzer.query_llm_streaming")
+    @patch("settings_manager.load_settings")
+    def test_output_tokens_are_checked_and_forwarded(
+        self, mock_load, mock_stream, mock_search
+    ):
+        mock_load.return_value = {
+            "analysis_model_name": "nvidia/Phi-4-reasoning-plus-NVFP4"
+        }
+        mock_search.return_value = [{"text": "short context", "chunk_id": "c1"}]
+        mock_stream.return_value = iter(["answer"])
+
+        self.assertEqual(
+            list(rag_anz.analyze("query", max_tokens=1234, stream=True)),
+            ["answer"],
+        )
+        self.assertEqual(mock_stream.call_args.kwargs["max_tokens"], 1234)
+
+        with self.assertRaises(rag_anz.ContextWindowError):
+            list(rag_anz.analyze("query", max_tokens=32_768, stream=True))
+
+        with self.assertRaises(rag_anz.ContextWindowError):
+            list(rag_anz.analyze("query", max_tokens=32_700, stream=True))
 
     @patch("rag.analyzer.search_similar")
     @patch("rag.analyzer.query_llm")

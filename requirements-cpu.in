@@ -1,0 +1,3 @@
+# CPU-only override used with pyproject.toml by scripts/compile-locks.sh.
+# The local version satisfies the project's torch==2.9.1 requirement.
+torch==2.13.0+cpu

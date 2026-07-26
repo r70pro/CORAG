@@ -4,7 +4,14 @@ Pydantic models for KIRAG API request/response schemas.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from datetime import date
+from typing import Annotated, Any
+
+from pydantic import BaseModel, Field, model_validator
+
+MAX_MODEL_CONTEXT_LENGTH = 1_048_576
+MAX_QUERY_LENGTH = 32_768
+ContextLength = Annotated[int, Field(ge=1, le=MAX_MODEL_CONTEXT_LENGTH)]
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
@@ -12,9 +19,21 @@ from pydantic import BaseModel, Field
 class PipelineStartRequest(BaseModel):
     """Request body to start an OCR pipeline run."""
 
-    file_paths: list[str] = Field(..., description="Absolute paths to PDF files to process")
-    server_url: str = Field("http://localhost:8000/v1", description="vLLM server URL")
-    model_name: str = Field("allenai/olmOCR-2-7B-1025-FP8", description="OCR model to use")
+    file_paths: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="PDF filenames previously returned by the pipeline upload endpoint",
+    )
+    server_url: str = Field(
+        "http://localhost:8000/v1", min_length=1, max_length=2048, description="vLLM server URL"
+    )
+    model_name: str = Field(
+        "allenai/olmOCR-2-7B-1025-FP8",
+        min_length=1,
+        max_length=512,
+        description="OCR model to use",
+    )
     workers: int = Field(4, ge=1, le=32)
     max_concurrent: int = Field(20, ge=1, le=100)
     max_retries: int = Field(8, ge=0, le=50)
@@ -51,9 +70,9 @@ class DockerCreateRequest(BaseModel):
 
     hf_token: str = ""
     port: int = Field(8000, ge=1, le=65535)
-    model: str = "allenai/olmOCR-2-7B-1025-FP8"
+    model: str = Field("allenai/olmOCR-2-7B-1025-FP8", min_length=1, max_length=512)
     gpu_mem: float = Field(0.8, ge=0.1, le=1.0)
-    max_model_len: int = Field(15360, ge=512)
+    max_model_len: int = Field(15360, ge=512, le=MAX_MODEL_CONTEXT_LENGTH)
     tensor_parallel_size: int = Field(1, ge=1, le=8)
 
 
@@ -76,7 +95,7 @@ class DockerModelsResponse(BaseModel):
     """List of available / cached model names and their max content lengths."""
 
     models: list[str] = Field(default_factory=list, description="Available model identifiers")
-    max_lengths: dict[str, int] = Field(
+    max_lengths: dict[str, ContextLength] = Field(
         default_factory=dict, description="Max content length limits per model"
     )
 
@@ -87,26 +106,39 @@ class DockerModelsResponse(BaseModel):
 class RAGQueryRequest(BaseModel):
     """Request body for a RAG analysis query."""
 
-    query: str = Field(..., min_length=1)
-    mode: str = Field("free_qa", description="Analysis mode key")
-    model_url: str = "http://localhost:8000/v1"
-    model_name: str = "nvidia/Phi-4-reasoning-plus-NVFP4"
+    query: str = Field(..., min_length=1, max_length=MAX_QUERY_LENGTH)
+    mode: str = Field("free_qa", min_length=1, max_length=128, description="Analysis mode key")
+    model_url: str = Field("http://localhost:8000/v1", min_length=1, max_length=2048)
+    model_name: str = Field("nvidia/Phi-4-reasoning-plus-NVFP4", min_length=1, max_length=512)
     top_k: int = Field(15, ge=1, le=100)
-    case_id: str | None = None
-    doc_type: str | None = None
-    author: str | None = None
-    date_from: str | None = None
-    date_to: str | None = None
+    case_id: str | None = Field(None, max_length=256)
+    doc_type: str | None = Field(None, max_length=128)
+    author: str | None = Field(None, max_length=512)
+    date_from: date | None = None
+    date_to: date | None = None
     use_reranker: bool = True
-    reranker_model: str = "BAAI/bge-reranker-large"
-    reranker_device: str = "cuda"
+    reranker_model: str = Field("BAAI/bge-reranker-large", min_length=1, max_length=512)
+    reranker_device: str = Field("cuda", min_length=1, max_length=32)
+    max_output_tokens: int = Field(4096, ge=1, le=MAX_MODEL_CONTEXT_LENGTH - 1)
     stream: bool = Field(True, description="If True, response is SSE-streamed")
+
+    @model_validator(mode="after")
+    def validate_date_range(self):
+        if self.date_from and self.date_to and self.date_from > self.date_to:
+            raise ValueError("date_from must be on or before date_to")
+        return self
+
+
+class RAGQueryResponse(BaseModel):
+    """Complete non-streaming RAG response."""
+
+    response: str
 
 
 class IndexRunRequest(BaseModel):
     """Request body to index a specific run."""
 
-    run_dir: str = Field(..., description="Absolute path to the run directory")
+    run_dir: str = Field(..., description="Workspace run name beginning with run_")
 
 
 class CorpusStatsResponse(BaseModel):
@@ -143,29 +175,40 @@ class InfraStatusResponse(BaseModel):
 class SettingsUpdateRequest(BaseModel):
     """Partial settings update — only provided fields are merged."""
 
-    server_url: str | None = None
-    model_name: str | None = None
-    workers: int | None = None
-    max_concurrent_requests: int | None = None
-    target_longest_image_dim: int | None = None
-    max_page_retries: int | None = None
+    server_url: str | None = Field(None, min_length=1, max_length=2048)
+    model_name: str | None = Field(None, min_length=1, max_length=512)
+    workers: int | None = Field(None, ge=1, le=32)
+    max_concurrent_requests: int | None = Field(None, ge=1, le=100)
+    target_longest_image_dim: int | None = Field(None, ge=256, le=4096)
+    max_page_retries: int | None = Field(None, ge=0, le=50)
     guided_decoding: bool | None = None
-    docker_port: int | None = None
-    docker_gpu_mem: float | None = None
-    docker_max_model_len: int | None = None
-    docker_tensor_parallel: int | None = None
-    hf_token: str | None = None
-    analysis_model_name: str | None = None
-    analysis_server_url: str | None = None
-    embedding_model: str | None = None
-    embedding_device: str | None = None
-    chunk_size: int | None = None
-    chunk_overlap: int | None = None
-    retrieval_top_k: int | None = None
+    docker_port: int | None = Field(None, ge=1, le=65535)
+    docker_gpu_mem: float | None = Field(None, ge=0.1, le=1.0)
+    docker_max_model_len: int | None = Field(None, ge=512, le=MAX_MODEL_CONTEXT_LENGTH)
+    docker_tensor_parallel: int | None = Field(None, ge=1, le=8)
+    hf_token: str | None = Field(None, max_length=4096)
+    analysis_model_name: str | None = Field(None, min_length=1, max_length=512)
+    analysis_server_url: str | None = Field(None, min_length=1, max_length=2048)
+    embedding_model: str | None = Field(None, min_length=1, max_length=512)
+    embedding_device: str | None = Field(None, min_length=1, max_length=32)
+    embedding_batch_size: int | None = Field(None, ge=1, le=1024)
+    chunk_size: int | None = Field(None, ge=1, le=100_000)
+    chunk_overlap: int | None = Field(None, ge=0, le=99_999)
+    retrieval_top_k: int | None = Field(None, ge=1, le=100)
     rag_auto_start_infra: bool | None = None
     use_reranker: bool | None = None
-    reranker_model: str | None = None
-    reranker_device: str | None = None
+    reranker_model: str | None = Field(None, min_length=1, max_length=512)
+    reranker_device: str | None = Field(None, min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def validate_chunk_overlap(self):
+        if (
+            self.chunk_size is not None
+            and self.chunk_overlap is not None
+            and self.chunk_overlap >= self.chunk_size
+        ):
+            raise ValueError("chunk_overlap must be smaller than chunk_size")
+        return self
 
 
 # ── Diagnostics ───────────────────────────────────────────────────────────────
@@ -211,6 +254,20 @@ class MessageResponse(BaseModel):
     message: str = ""
 
 
+class ErrorDetail(BaseModel):
+    """Machine-readable API error."""
+
+    code: str
+    message: str
+    details: Any | None = None
+
+
+class ErrorEnvelope(BaseModel):
+    """Consistent error body returned for non-successful HTTP responses."""
+
+    error: ErrorDetail
+
+
 # ── Case Management & Deletion ────────────────────────────────────────────────
 
 
@@ -233,7 +290,7 @@ class EmbeddingTelemetryResponse(BaseModel):
     device_target: str = "auto"
     qdrant_points: int = 0
     collection_name: str = "cases"
-    vector_dim: int = 1024
+    vector_dim: int = Field(1024, ge=1, le=100_000)
     metric: str = "Cosine Similarity"
     redis_cached_count: str = "N/A"
     telemetry_html: str = ""
@@ -242,11 +299,17 @@ class EmbeddingTelemetryResponse(BaseModel):
 class EmbeddingConfigRequest(BaseModel):
     """Configuration updates for dense vector embedding."""
 
-    embedding_model: str = "BAAI/bge-large-en-v1.5"
-    embedding_device: str = "auto"
-    chunk_size: int = 800
-    chunk_overlap: int = 100
-    embedding_batch_size: int = 64
+    embedding_model: str = Field("BAAI/bge-large-en-v1.5", min_length=1, max_length=512)
+    embedding_device: str = Field("auto", min_length=1, max_length=32)
+    chunk_size: int = Field(800, ge=1, le=100_000)
+    chunk_overlap: int = Field(100, ge=0, le=99_999)
+    embedding_batch_size: int = Field(64, ge=1, le=1024)
+
+    @model_validator(mode="after")
+    def validate_chunk_overlap(self):
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError("chunk_overlap must be smaller than chunk_size")
+        return self
 
 
 # ── Chat Export ───────────────────────────────────────────────────────────────
@@ -299,7 +362,9 @@ class InstalledModelItem(BaseModel):
     )
     size_bytes: int = Field(..., description="Total size in bytes")
     human_size: str = Field(..., description="Formatted size string e.g. 19.10 GB")
-    context_length: int = Field(..., description="Context window max token length")
+    context_length: int = Field(
+        ..., ge=1, le=MAX_MODEL_CONTEXT_LENGTH, description="Context window max token length"
+    )
     model_type: str = Field("LLM", description="Vision LLM | LLM | Embedding | Reranker")
     is_active: bool = Field(
         False, description="True if currently loaded in active container or settings"

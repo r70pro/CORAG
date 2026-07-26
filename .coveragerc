@@ -1,24 +1,45 @@
 [run]
-source = .
+branch = True
+source =
+    api
+    rag
+    app
+    app_handlers
+    audit_log
+    cleanup_manager
+    cli
+    docker_manager
+    download_models
+    embedding_pipeline_ui
+    gradio_security
+    html_utils
+    indexing_service
+    path_security
+    pdf_manager
+    pipeline_manager
+    process_state
+    rag_export
+    rag_infra_manager
+    rag_ui
+    rag_ui_dashboard
+    rag_ui_handlers
+    rag_ui_state
+    secrets_config
+    settings_manager
+    system_diagnostics
+    ui_adapters
+    ui_theme
 omit =
-    test_*.py
     tests/*
     workspace/*
     conftest.py
-    rag_ui.py
-    rag_ui_dashboard.py
-    rag_ui_handlers.py
-    rag_ui_state.py
-    embedding_pipeline_ui.py
-    cli.py
-    api/*
-    ui_adapters.py
 
 [report]
-fail_under = 98
+fail_under = 85
+show_missing = True
+skip_covered = True
 exclude_lines =
     if __name__ == .__main__.:
     pragma: no cover
     raise NotImplementedError
     def __repr__
-

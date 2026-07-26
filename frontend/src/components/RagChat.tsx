@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   MessageSquareText,
   Send,
@@ -65,6 +65,7 @@ interface AvailableRunItem {
 }
 
 export const RagChat: React.FC = () => {
+  const ragRequestRef = useRef<ReturnType<typeof triggerRagChatSSE> | null>(null);
   const [showControls, setShowControls] = useState<boolean>(true);
   const [prompt, setPrompt] = useState<string>("");
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
@@ -131,20 +132,6 @@ export const RagChat: React.FC = () => {
       sender: "bot",
       text: "Hello! I am your AI Medicolegal Assistant. Select an indexed case or enter a prompt below to cross-reference medical records.",
       timestamp: "10:00 AM",
-      verificationDetails: [
-        {
-          docTitle: "Specialist Correspondence",
-          physician: "Dr. Gavin Weekes",
-          refNo: "Ref No: 2024AL0008570-1",
-          pageRange: "Pages 1-3",
-        },
-        {
-          docTitle: "Lumbar Spine MRI Report",
-          physician: "Dr. Sarah Jenkins",
-          refNo: "Accession Number: 77.50382801",
-          pageRange: "Pages 4-6",
-        },
-      ],
     },
   ]);
 
@@ -227,6 +214,10 @@ export const RagChat: React.FC = () => {
     };
   }, [loadInfra]);
 
+  useEffect(() => {
+    return () => ragRequestRef.current?.cancel("RAG view closed");
+  }, []);
+
   const handleStartInfra = async () => {
     setInfraMsg("Starting services...");
     const res = await startRagInfra();
@@ -279,7 +270,8 @@ export const RagChat: React.FC = () => {
 
     setMessages((prev) => [...prev, botMsg]);
 
-    triggerRagChatSSE(
+    ragRequestRef.current?.cancel("A new RAG request started");
+    ragRequestRef.current = triggerRagChatSSE(
       {
         query: queryText,
         mode: analysisMode,
@@ -302,6 +294,7 @@ export const RagChat: React.FC = () => {
         );
       },
       (err) => {
+        ragRequestRef.current = null;
         setMessages((prev) =>
           prev.map((m) =>
             m.id === botMsgId ? { ...m, text: `⚠️ Error processing query: ${String(err)}` } : m
@@ -310,6 +303,7 @@ export const RagChat: React.FC = () => {
         setIsStreaming(false);
       },
       () => {
+        ragRequestRef.current = null;
         setIsStreaming(false);
       }
     );

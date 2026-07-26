@@ -1,0 +1,27 @@
+[
+  {
+    "id": "leading-whitespace",
+    "markdown": "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPage two clinical content.",
+    "page_ranges": [[0, 40, 1], [40, 76, 2]],
+    "max_chunk_size": 800,
+    "chunk_overlap": 0,
+    "expected_first_start": 50,
+    "expected_first_page": 2
+  },
+  {
+    "id": "paragraph-normalization",
+    "markdown": "  First paragraph contains alpha beta gamma delta.\n\n    Second paragraph contains epsilon zeta eta theta.\n\nThird paragraph contains iota kappa lambda mu.",
+    "page_ranges": [],
+    "max_chunk_size": 65,
+    "chunk_overlap": 0
+  },
+  {
+    "id": "cross-page-chunk",
+    "markdown": "Page one begins with clinical evidence. Page two continues with treatment findings.",
+    "page_ranges": [[0, 40, 1], [40, 83, 2]],
+    "max_chunk_size": 800,
+    "chunk_overlap": 0,
+    "expected_page_start": 1,
+    "expected_page_end": 2
+  }
+]

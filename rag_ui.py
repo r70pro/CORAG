@@ -262,10 +262,10 @@ def make_indexing_progress_card(stages, active_stage):
         <div style='display: flex; flex-direction: column;'>
             <div style='display: flex; align-items: center; justify-content: space-between;'>
                 <span style='font-weight: 500; color: {desc_color}; display: flex; align-items: center; gap: 8px;'>
-                    <span style='font-size: 1.1rem;'>{icon}</span> {s['label']} {details_str}
+                    <span style='font-size: 1.1rem;'>{icon}</span> {s["label"]} {details_str}
                 </span>
                 <span style='font-size: 0.75rem; font-weight: 600; padding: 2px 8px; border-radius: 9999px; {badge_style}'>
-                    {s['status'].upper()}
+                    {s["status"].upper()}
                 </span>
             </div>
             {progress_bar_html}

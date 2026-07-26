@@ -4,34 +4,62 @@ import logging
 import os
 import zipfile
 from io import BytesIO
+from pathlib import Path
 
 import pypdfium2 as pdfium
 from pypdf import PdfReader
 
 import process_state
+from path_security import (
+    PathSecurityError,
+    require_approved_file,
+    resolve_file_under,
+    resolve_run_under,
+    resolve_under,
+    validate_filename,
+)
+from settings_manager import WORKSPACE_DIR
 
 logger = logging.getLogger(__name__)
 
 
 def is_safe_filename(filename):
-    if not filename:
+    try:
+        validate_filename(filename, {".md"})
+        return True
+    except PathSecurityError:
         return False
-    return (
-        os.path.basename(filename) == filename
-        and ".." not in filename
-        and "/" not in filename
-        and "\\" not in filename
-    )
 
 
 def make_zip(markdown_dir, zip_path):
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-        for root, _, files in os.walk(markdown_dir):
-            for file in files:
-                if file.endswith(".md"):
-                    file_path = os.path.join(root, file)
-                    arcname = os.path.relpath(file_path, markdown_dir)
-                    zipf.write(file_path, arcname)
+    placeholder = require_approved_file(
+        Path(markdown_dir) / "_boundary.md", {WORKSPACE_DIR}, {".md"}
+    )
+    safe_markdown_dir = placeholder.parent
+    safe_zip = require_approved_file(zip_path, {WORKSPACE_DIR}, {".zip"})
+    with zipfile.ZipFile(safe_zip, "w", zipfile.ZIP_DEFLATED) as zipf:
+        if not safe_markdown_dir.is_dir():
+            return
+        for entry in safe_markdown_dir.iterdir():
+            try:
+                file_path = resolve_file_under(safe_markdown_dir, entry.name, {".md"})
+            except PathSecurityError:
+                continue
+            if file_path.is_file():
+                zipf.write(file_path, entry.name)
+
+
+def _active_run_dir(run_id_state):
+    with process_state.active_runs_lock:
+        run_info = process_state.active_runs.get(run_id_state)
+        if not run_info:
+            return None
+        candidate = Path(run_info.get("run_dir", ""))
+    try:
+        run_dir = resolve_run_under(WORKSPACE_DIR, candidate.name)
+    except PathSecurityError:
+        return None
+    return run_dir if candidate.resolve() == run_dir else None
 
 
 def load_markdown_content(selected_file, run_id_state):
@@ -41,20 +69,21 @@ def load_markdown_content(selected_file, run_id_state):
     if not is_safe_filename(selected_file):
         return "Invalid file path.", "Invalid file path.", None
 
-    with process_state.active_runs_lock:
-        run_info = process_state.active_runs.get(run_id_state)
-        if not run_info:
-            return "Run info not found.", "Run info not found.", None
-        run_dir = run_info["run_dir"]
-
-    file_path = os.path.join(run_dir, "markdown", "inputs", selected_file)
-    if os.path.exists(file_path):
+    run_dir = _active_run_dir(run_id_state)
+    if run_dir is None:
+        return "Run info not found.", "Run info not found.", None
+    try:
+        file_path = resolve_file_under(
+            resolve_under(run_dir, "markdown", "inputs"), selected_file, {".md"}
+        )
+    except PathSecurityError:
+        return "Invalid file path.", "Invalid file path.", None
+    if file_path.is_file():
         try:
-            with open(file_path, encoding="utf-8") as f:
-                content = f.read()
-            return content, content, file_path
-        except Exception as e:
-            return f"Error reading file: {e}", f"Error reading file: {e}", None
+            content = file_path.read_text(encoding="utf-8")
+            return content, content, str(file_path)
+        except OSError:
+            return "Error reading file.", "Error reading file.", None
     return "File not found.", "File not found.", None
 
 
@@ -68,10 +97,13 @@ def pil_to_base64(img):
 
 
 def render_pdf_page(pdf_path, page_num):
-    if not pdf_path or not os.path.exists(pdf_path):
+    if not pdf_path:
         return None
     try:
-        doc = pdfium.PdfDocument(pdf_path)
+        safe_pdf = require_approved_file(pdf_path, {WORKSPACE_DIR}, {".pdf"})
+        if not safe_pdf.is_file():
+            return None
+        doc = pdfium.PdfDocument(str(safe_pdf))
         if page_num < 1 or page_num > len(doc):
             return None
         page = doc[page_num - 1]
@@ -89,32 +121,36 @@ def get_page_mapping_and_pdf_path(selected_file, run_id_state):
     if not is_safe_filename(selected_file):
         return None, 0, []
 
-    with process_state.active_runs_lock:
-        run_info = process_state.active_runs.get(run_id_state)
-        if not run_info:
-            return None, 0, []
-        run_dir = run_info["run_dir"]
+    run_dir = _active_run_dir(run_id_state)
+    if run_dir is None:
+        return None, 0, []
 
     pdf_filename = selected_file.rsplit(".", 1)[0] + ".pdf"
-    pdf_path = os.path.join(run_dir, "inputs", pdf_filename)
-    if not os.path.exists(pdf_path):
+    try:
+        pdf_path = resolve_file_under(resolve_under(run_dir, "inputs"), pdf_filename, {".pdf"})
+    except PathSecurityError:
+        return None, 0, []
+    if not pdf_path.is_file():
         return None, 0, []
 
     try:
-        reader = PdfReader(pdf_path)
+        reader = PdfReader(str(pdf_path))
         total_pages = len(reader.pages)
     except Exception as e:
         logger.error(f"Error reading PDF page count: {e}")
         total_pages = 0
 
     page_ranges = []
-    results_dir = os.path.join(run_dir, "results")
-    if os.path.exists(results_dir):
-        for f in os.listdir(results_dir):
-            if f.endswith(".jsonl"):
-                jsonl_path = os.path.join(results_dir, f)
+    results_dir = resolve_under(run_dir, "results")
+    if results_dir.is_dir():
+        for entry in results_dir.iterdir():
+            try:
+                jsonl_path = resolve_file_under(results_dir, entry.name, {".jsonl"})
+            except PathSecurityError:
+                continue
+            if jsonl_path.is_file():
                 try:
-                    with open(jsonl_path, encoding="utf-8") as file:
+                    with jsonl_path.open(encoding="utf-8") as file:
                         for line in file:
                             if not line.strip():
                                 continue
@@ -129,12 +165,12 @@ def get_page_mapping_and_pdf_path(selected_file, run_id_state):
                                 pdf_page_numbers = attributes.get("pdf_page_numbers", [])
                                 page_ranges = pdf_page_numbers
                                 break
-                except Exception as e:
-                    logger.error(f"Error reading jsonl {jsonl_path}: {e}")
+                except Exception:
+                    logger.error("Error reading run page mapping")
                 if page_ranges:
                     break
 
-    return pdf_path, total_pages, page_ranges
+    return str(pdf_path), total_pages, page_ranges
 
 
 def get_markdown_for_page(full_markdown, page_ranges, page_num):
@@ -170,18 +206,21 @@ def on_file_selected(selected_file, run_id_state):
 
     file_path = None
     full_markdown = ""
-    with process_state.active_runs_lock:
-        run_info = process_state.active_runs.get(run_id_state)
-        if run_info:
-            run_dir = run_info["run_dir"]
-            file_path = os.path.join(run_dir, "markdown", "inputs", selected_file)
-            if os.path.exists(file_path):
-                try:
-                    with open(file_path, encoding="utf-8") as f:
-                        full_markdown = f.read()
-                except Exception as e:
-                    logger.error(f"Error reading file: {e}")
-                    full_markdown = f"Error reading file: {e}"
+    run_dir = _active_run_dir(run_id_state)
+    if run_dir is not None:
+        try:
+            safe_file = resolve_file_under(
+                resolve_under(run_dir, "markdown", "inputs"), selected_file, {".md"}
+            )
+        except PathSecurityError:
+            safe_file = None
+        if safe_file is not None and safe_file.is_file():
+            try:
+                full_markdown = safe_file.read_text(encoding="utf-8")
+                file_path = str(safe_file)
+            except OSError:
+                logger.error("Error reading Markdown file")
+                full_markdown = "Error reading file."
 
     return (
         pdf_path or "",
@@ -205,8 +244,14 @@ def update_view(
 
     pdf_html = ""
     if view_mode == "Full Document":
-        if pdf_path and os.path.exists(pdf_path):
-            pdf_url = f"/gradio_api/file={pdf_path}"
+        try:
+            safe_pdf = (
+                require_approved_file(pdf_path, {WORKSPACE_DIR}, {".pdf"}) if pdf_path else None
+            )
+        except PathSecurityError:
+            safe_pdf = None
+        if safe_pdf is not None and safe_pdf.is_file():
+            pdf_url = f"/gradio_api/file={safe_pdf}"
             pdf_html = f"""<div id="pdf-scroll-container" class="sync-scroll-target pdf-scroll-outer">
                 <iframe src="{pdf_url}" class="pdf-iframe"></iframe>
             </div>"""
@@ -215,8 +260,14 @@ def update_view(
                 <span>Original PDF file not found.</span>
             </div>"""
     else:
-        if pdf_path and os.path.exists(pdf_path):
-            pil_img = render_pdf_page(pdf_path, page_num)
+        try:
+            safe_pdf = (
+                require_approved_file(pdf_path, {WORKSPACE_DIR}, {".pdf"}) if pdf_path else None
+            )
+        except PathSecurityError:
+            safe_pdf = None
+        if safe_pdf is not None and safe_pdf.is_file():
+            pil_img = render_pdf_page(str(safe_pdf), page_num)
             if pil_img:
                 img_b64 = pil_to_base64(pil_img)
                 pdf_html = f"""<div id="pdf-scroll-container" class="sync-scroll-target pdf-image-container">

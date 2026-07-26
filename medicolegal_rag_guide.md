@@ -138,7 +138,7 @@ In medicolegal work, missing a single sentence in a specialist report, or misint
 
 #### 1.1 Start the Inference Engine
 
-*   **Backend**: A local vLLM container ([docker_manager.py](file:///home/owner/KIRAG/docker_manager.py)) launched from the `vllm/vllm-openai:v0.8.5` image (overridable via the `OLMOCR_VLLM_IMAGE` environment variable) with full GPU control (`--gpus all`).
+*   **Backend**: A local, KIRAG-labeled vLLM container ([docker_manager.py](file:///home/owner/KIRAG/docker_manager.py)) launched from an immutable digest-pinned image (`OLMOCR_VLLM_IMAGE`) with GPU access. Model identifiers are allowlisted and remote model code is disabled by default.
 *   **Default OCR Model**: `allenai/olmOCR-2-7B-1025-FP8` — a vision-language model trained specifically to read PDFs and output pristine, layout-aware GitHub-flavored Markdown.
 
 **Inference Engine Startup Alternatives:**
@@ -852,4 +852,3 @@ The following features remain as future enhancements:
 12. **Credential hygiene**: All service credentials are read from environment variables (`.env`, which is git-ignored) and never hard-coded in source. The application emits a **startup security warning** if PostgreSQL or MinIO is still running with its default placeholder password — rotate these before any networked use.
 13. **Audit trail**: PostgreSQL maintains a complete registry of all indexed documents, chunks, and their metadata. This provides a defensible chain of custody for litigation purposes.
 14. **Data retention**: Configure Redis TTLs and MinIO lifecycle policies according to your firm's data retention policies. The default Redis query cache TTL is 1 hour; chat history TTL is 2 hours.
-

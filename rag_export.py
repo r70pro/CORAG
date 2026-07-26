@@ -13,9 +13,10 @@ import datetime
 import os
 import re
 
+from path_security import resolve_file_under, resolve_under
 from settings_manager import WORKSPACE_DIR
 
-EXPORT_DIR = os.path.join(WORKSPACE_DIR, "exports")
+EXPORT_DIR = str(resolve_under(WORKSPACE_DIR, "exports"))
 
 # ── Letterhead configuration ─────────────────────────────────
 # Court-ready exports are branded with a firm letterhead. Override these via
@@ -32,7 +33,7 @@ FIRM_LOGO = os.environ.get("OLMOCR_FIRM_LOGO", "")
 
 def _ensure_export_dir():
     """Create the exports directory if needed."""
-    os.makedirs(EXPORT_DIR, exist_ok=True)
+    resolve_under(WORKSPACE_DIR, "exports").mkdir(parents=True, exist_ok=True)
 
 
 def _make_export_filename(prefix, ext):
@@ -86,7 +87,7 @@ def export_chat_markdown(history, mode="Free Q&A", active_case="All Cases"):
     _ensure_export_dir()
     case_name = _extract_case_name(active_case)
     filename = _make_export_filename(f"analysis_{case_name}", "md")
-    filepath = os.path.join(EXPORT_DIR, filename)
+    filepath = resolve_file_under(EXPORT_DIR, filename, {".md"})
 
     pairs = _history_to_pairs(history)
 
@@ -116,10 +117,10 @@ def export_chat_markdown(history, mode="Free Q&A", active_case="All Cases"):
             lines.append("---")
             lines.append("")
 
-    with open(filepath, "w", encoding="utf-8") as f:
+    with filepath.open("w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
-    return filepath
+    return str(filepath)
 
 
 def export_chat_text(history, mode="Free Q&A", active_case="All Cases"):
@@ -139,7 +140,7 @@ def export_chat_text(history, mode="Free Q&A", active_case="All Cases"):
     _ensure_export_dir()
     case_name = _extract_case_name(active_case)
     filename = _make_export_filename(f"analysis_{case_name}", "txt")
-    filepath = os.path.join(EXPORT_DIR, filename)
+    filepath = resolve_file_under(EXPORT_DIR, filename, {".txt"})
 
     pairs = _history_to_pairs(history)
 
@@ -176,10 +177,10 @@ def export_chat_text(history, mode="Free Q&A", active_case="All Cases"):
             lines.append(f"{'=' * 60}")
             lines.append("")
 
-    with open(filepath, "w", encoding="utf-8") as f:
+    with filepath.open("w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
-    return filepath
+    return str(filepath)
 
 
 def export_timeline_csv(history, active_case="All Cases"):
@@ -200,7 +201,7 @@ def export_timeline_csv(history, active_case="All Cases"):
     _ensure_export_dir()
     case_name = _extract_case_name(active_case)
     filename = _make_export_filename(f"timeline_{case_name}", "csv")
-    filepath = os.path.join(EXPORT_DIR, filename)
+    filepath = resolve_file_under(EXPORT_DIR, filename, {".csv"})
 
     # Extract all markdown tables from assistant messages
     table_rows = []
@@ -235,13 +236,13 @@ def export_timeline_csv(history, active_case="All Cases"):
     if not headers and not table_rows:
         return None
 
-    with open(filepath, "w", encoding="utf-8", newline="") as f:
+    with filepath.open("w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(headers)
         for row in table_rows:
             writer.writerow(row)
 
-    return filepath
+    return str(filepath)
 
 
 # ── DOCX export (firm letterhead) ────────────────────────────
@@ -424,7 +425,7 @@ def export_chat_docx(history, mode="Free Q&A", active_case="All Cases"):
     _ensure_export_dir()
     case_name = _extract_case_name(active_case)
     filename = _make_export_filename(f"analysis_{case_name}", "docx")
-    filepath = os.path.join(EXPORT_DIR, filename)
+    filepath = resolve_file_under(EXPORT_DIR, filename, {".docx"})
 
     doc = Document()
     _add_letterhead(doc)
@@ -456,8 +457,8 @@ def export_chat_docx(history, mode="Free Q&A", active_case="All Cases"):
             _render_markdown_to_docx(doc, content)
         _set_bottom_border(doc.add_paragraph())
 
-    doc.save(filepath)
-    return filepath
+    doc.save(str(filepath))
+    return str(filepath)
 
 
 def export_timeline_docx(history, active_case="All Cases"):
@@ -509,7 +510,7 @@ def export_timeline_docx(history, active_case="All Cases"):
     _ensure_export_dir()
     case_name = _extract_case_name(active_case)
     filename = _make_export_filename(f"timeline_{case_name}", "docx")
-    filepath = os.path.join(EXPORT_DIR, filename)
+    filepath = resolve_file_under(EXPORT_DIR, filename, {".docx"})
 
     doc = Document()
     _add_letterhead(doc)
@@ -527,5 +528,5 @@ def export_timeline_docx(history, active_case="All Cases"):
         _add_docx_table(doc, headers, rows)
         doc.add_paragraph()
 
-    doc.save(filepath)
-    return filepath
+    doc.save(str(filepath))
+    return str(filepath)

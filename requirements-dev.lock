@@ -1,6 +1,13 @@
-# Pinned development/test dependencies for reproducible CI.
-# Main application deps live in requirements.txt; this file pins the test
-# tooling that the CI pipeline installs on top of them.
-pytest==8.3.4
-coverage==7.6.10
-ruff==0.8.4
+# Pinned development/test tools. Production dependencies are locked separately
+# in requirements-cpu.lock and requirements-cuda.lock.
+build==1.3.0
+bandit==1.9.4
+coverage==7.15.0
+detect-secrets==1.5.0
+httpx2==2.7.0
+pip-audit==2.10.1
+pytest==9.0.3
+PyYAML==6.0.3
+ruff==0.14.14
+uv==0.8.13
+wheel==0.46.2

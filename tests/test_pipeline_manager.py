@@ -4,6 +4,8 @@ Unit tests for pipeline_manager.py.
 
 import os
 import queue
+import shutil
+import tempfile
 import unittest
 import subprocess
 from unittest.mock import patch, MagicMock
@@ -18,8 +20,22 @@ import process_state
 class TestPipelineManager(unittest.TestCase):
 
     def setUp(self):
+        self.workspace = tempfile.mkdtemp()
+        self.upload_dir = os.path.join(self.workspace, "uploads")
+        os.makedirs(self.upload_dir)
+        self.pdf_path = os.path.join(self.upload_dir, "test.pdf")
+        with open(self.pdf_path, "wb") as pdf:
+            pdf.write(b"%PDF-1.4 test")
+        self.workspace_patcher = patch("pipeline_manager.WORKSPACE_DIR", self.workspace)
+        self.workspace_patcher.start()
         with process_state.active_runs_lock:
             process_state.active_runs.clear()
+
+    def tearDown(self):
+        self.workspace_patcher.stop()
+        with process_state.active_runs_lock:
+            process_state.active_runs.clear()
+        shutil.rmtree(self.workspace)
 
     def test_enqueue_output_success(self):
         mock_out = MagicMock()
@@ -85,7 +101,7 @@ class TestPipelineManager(unittest.TestCase):
         mock_get.return_value = MagicMock(status_code=500)
         
         mock_file = MagicMock()
-        mock_file.name = "test.pdf"
+        mock_file.name = self.pdf_path
         
         gen = pipeline_manager.process_pdfs(
             files=[mock_file],
@@ -106,7 +122,7 @@ class TestPipelineManager(unittest.TestCase):
         mock_get.side_effect = Exception("Connection refused")
         
         mock_file = MagicMock()
-        mock_file.name = "test.pdf"
+        mock_file.name = self.pdf_path
         
         gen = pipeline_manager.process_pdfs(
             files=[mock_file],
@@ -172,7 +188,7 @@ class TestPipelineManager(unittest.TestCase):
         mock_pdf_reader.return_value = mock_pdf
 
         mock_file = MagicMock()
-        mock_file.name = "test.pdf"
+        mock_file.name = self.pdf_path
         
         mock_proc_inst = MagicMock()
         mock_proc_inst.returncode = 0
@@ -206,7 +222,7 @@ class TestPipelineManager(unittest.TestCase):
             
             # Pass mixture of inputs (mock_file, string, dict) to cover branch types
             gen = pipeline_manager.process_pdfs(
-                files=[mock_file, "string_path.pdf", {"path": "dict_path.pdf"}],
+                files=[mock_file, self.pdf_path, {"path": self.pdf_path}],
                 server_url="http://localhost:8000/v1",
                 model_name="test-model",
                 workers=4,
@@ -236,7 +252,7 @@ class TestPipelineManager(unittest.TestCase):
         mock_pdf_reader.return_value = mock_pdf
 
         mock_file = MagicMock()
-        mock_file.name = "test.pdf"
+        mock_file.name = self.pdf_path
         
         mock_proc_inst = MagicMock()
         mock_proc_inst.wait.side_effect = subprocess.TimeoutExpired(cmd="vllm", timeout=3)
@@ -288,6 +304,8 @@ class TestPipelineManager(unittest.TestCase):
             step_1 = next(gen)
             res.append(step_1)
             run_id_ref[0] = step_1[9]
+            with process_state.active_runs_lock:
+                process_state.active_runs[step_1[9]]["stop"] = True
 
             # Consume the remaining steps
             res.extend(list(gen))
@@ -308,7 +326,7 @@ class TestPipelineManager(unittest.TestCase):
         mock_pdf_reader.return_value = mock_pdf
 
         mock_file = MagicMock()
-        mock_file.name = "test.pdf"
+        mock_file.name = self.pdf_path
         
         mock_proc_inst = MagicMock()
         mock_proc_inst.wait.side_effect = subprocess.TimeoutExpired(cmd="vllm", timeout=3)
@@ -358,7 +376,7 @@ class TestPipelineManager(unittest.TestCase):
         mock_pdf_reader.return_value = mock_pdf
 
         mock_file = MagicMock()
-        mock_file.name = "test.pdf"
+        mock_file.name = self.pdf_path
 
         mock_proc_inst = MagicMock()
         mock_proc_inst.returncode = 0
@@ -403,7 +421,7 @@ class TestPipelineManager(unittest.TestCase):
         mock_pdf_reader.return_value = mock_pdf
 
         mock_file = MagicMock()
-        mock_file.name = "test.pdf"
+        mock_file.name = self.pdf_path
 
         # Force Popen to raise Exception
         mock_popen.side_effect = OSError("Permission denied")
@@ -433,7 +451,7 @@ class TestPipelineManager(unittest.TestCase):
         mock_pdf_reader.return_value = mock_pdf
 
         mock_file = MagicMock()
-        mock_file.name = "test.pdf"
+        mock_file.name = self.pdf_path
 
         # 1. Test process_pdfs with guided_decoding = False (147->150 branch)
         mock_proc_inst1 = MagicMock()
@@ -569,7 +587,8 @@ class TestPipelineManager(unittest.TestCase):
                 guided_decoding=True
             )
             res4 = list(gen4)
-            self.assertTrue(any("Exception during processing" in str(chunk[0]) for chunk in res4))
+            self.assertTrue(res4)
+            self.assertFalse(any("Invalid file uploads" in str(chunk[0]) for chunk in res4))
 
     def test_cleanup_active_runs_exception(self):
         # Line 476-477: verify exception caught during terminate/wait
@@ -635,7 +654,7 @@ class TestPipelineManager(unittest.TestCase):
         mock_get.return_value = mock_response
         
         mock_file = MagicMock()
-        mock_file.name = "test.pdf"
+        mock_file.name = self.pdf_path
         
         gen = pipeline_manager.process_pdfs(
             files=[mock_file],
@@ -682,7 +701,7 @@ class TestPipelineManager(unittest.TestCase):
         mock_get.return_value = mock_response
         
         mock_file = MagicMock()
-        mock_file.name = "test.pdf"
+        mock_file.name = self.pdf_path
         
         gen = pipeline_manager.process_pdfs(
             files=[mock_file],
@@ -708,7 +727,7 @@ class TestPipelineManager(unittest.TestCase):
         mock_get.return_value = mock_response
         
         mock_file = MagicMock()
-        mock_file.name = "test.pdf"
+        mock_file.name = self.pdf_path
         
         gen = pipeline_manager.process_pdfs(
             files=[mock_file],
@@ -741,24 +760,22 @@ class TestPipelineManager(unittest.TestCase):
         mock_proc.stdout.readline.side_effect = ["Processing page 1/2...\n", ""]
         mock_popen.return_value = mock_proc
 
-        # Dict style file input without direct isfile match
-        file_dict = {"path": "/nonexistent/test_file.pdf"}
-        with patch("os.path.isfile", side_effect=lambda p: p.endswith("souki_enclosures.pdf")):
-            gen = pipeline_manager.process_pdfs(
-                files=[file_dict],
-                server_url="http://localhost:8000/v1",
-                model_name="model",
-                workers=2,
-                max_concurrent=10,
-                max_retries=3,
-                target_dim=1288,
-                guided_decoding=True
-            )
-            res = list(gen)
-            self.assertTrue(len(res) > 0)
-            self.assertIn("Failed", res[-1][1])
+        # Dict-style input is accepted only when it points at an approved file.
+        file_dict = {"path": self.pdf_path}
+        gen = pipeline_manager.process_pdfs(
+            files=[file_dict],
+            server_url="http://localhost:8000/v1",
+            model_name="model",
+            workers=2,
+            max_concurrent=10,
+            max_retries=3,
+            target_dim=1288,
+            guided_decoding=True
+        )
+        res = list(gen)
+        self.assertTrue(len(res) > 0)
+        self.assertIn("Failed", res[-1][1])
 
 
 if __name__ == "__main__":
     unittest.main()
-

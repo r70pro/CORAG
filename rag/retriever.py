@@ -193,6 +193,10 @@ def search_similar(
         # Merge Qdrant payload with PostgreSQL metadata
         db_data = db_chunks.get(point_id, {})
 
+        def first_present(key, default=None, _payload=payload, _db_data=db_data):
+            value = _payload.get(key)
+            return value if value is not None else _db_data.get(key, default)
+
         enriched_results.append(
             {
                 "qdrant_point_id": point_id,
@@ -201,13 +205,19 @@ def search_similar(
                 "doc_id": payload.get("doc_id") or db_data.get("doc_id"),
                 "run_id": payload.get("run_id") or db_data.get("run_id"),
                 "text": db_data.get("text", payload.get("text_preview", "")),
-                "page_number": payload.get("page_number") or db_data.get("page_number"),
+                "page_number": first_present("page_number"),
+                "source_char_start": first_present("source_char_start"),
+                "source_char_end": first_present("source_char_end"),
+                "page_start": first_present("page_start"),
+                "page_end": first_present("page_end"),
+                "provenance_type": first_present("provenance_type"),
                 "document_type": payload.get("document_type") or db_data.get("document_type"),
                 "author": payload.get("author") or db_data.get("author"),
                 "date_extracted": payload.get("date_extracted") or db_data.get("date_extracted"),
+                "date_raw": payload.get("date_raw") or db_data.get("date_raw"),
                 "section_type": payload.get("section_type") or db_data.get("section_type"),
                 "patient_name": payload.get("patient_name") or db_data.get("patient_name"),
-                "original_filename": db_data.get("original_filename", ""),
+                "original_filename": first_present("original_filename", ""),
             }
         )
 
@@ -390,13 +400,13 @@ def _normalize_iso_date(value) -> str | None:
     try:
         if len(parts) == 3:
             y, m, d = (int(p) for p in parts)
-            return f"{y:04d}-{m:02d}-{d:02d}"
+            return datetime.date(y, m, d).isoformat()
         if len(parts) == 2:
             y, m = (int(p) for p in parts)
-            return f"{y:04d}-{m:02d}-01"
+            return datetime.date(y, m, 1).isoformat()
         if len(parts) == 1:
-            return f"{int(parts[0]):04d}-01-01"
-    except (ValueError, TypeError):
+            return datetime.date(int(parts[0]), 1, 1).isoformat()
+    except (ValueError, TypeError, OverflowError):
         return None
     return None
 
@@ -421,8 +431,22 @@ def format_context_for_llm(results: list[dict]) -> str:
 
         if result.get("original_filename"):
             header_parts.append(f"File: {result['original_filename']}")
-        if result.get("page_number"):
-            header_parts.append(f"Page: {result['page_number']}")
+        provenance_type = result.get("provenance_type")
+        page_start = result.get("page_start")
+        page_end = result.get("page_end")
+        if provenance_type == "external_markdown":
+            header_parts.append("PDF provenance: none (external Markdown)")
+        elif page_start is not None and page_end is not None:
+            if page_start == page_end:
+                header_parts.append(f"Page: {page_start}")
+            else:
+                header_parts.append(f"Pages: {page_start}-{page_end}")
+        elif page_start is not None:
+            header_parts.append(
+                f"Page: {page_start} (start page only; end page not present in source metadata)"
+            )
+        else:
+            header_parts.append("PDF page provenance: not present in source metadata")
         if result.get("author"):
             header_parts.append(f"Author: {result['author']}")
         if result.get("date_extracted"):

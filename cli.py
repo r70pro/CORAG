@@ -160,7 +160,11 @@ def cmd_rag_query(args: argparse.Namespace) -> None:
 def cmd_rag_index(args: argparse.Namespace) -> None:
     from indexing_service import CorpusIndexingService
 
-    for msg in CorpusIndexingService.index_run(args.run_dir):
+    for msg in CorpusIndexingService.index_run(
+        args.run_dir,
+        force=args.full_reindex,
+        full_reindex=args.full_reindex,
+    ):
         print(msg, end="")
     print()
 
@@ -181,6 +185,20 @@ def cmd_rag_stats(_args: argparse.Namespace) -> None:
         db_stats = get_corpus_stats()
         qdrant_info = get_collection_info()
         _print_json({**db_stats, "vectors_count": qdrant_info.get("points_count", 0)})
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_rag_reconcile(args: argparse.Namespace) -> None:
+    """Report PostgreSQL/Qdrant drift without modifying either store."""
+    try:
+        from rag.reconciliation import reconcile
+
+        result = reconcile(collection_name=args.collection, run_id=args.run_id)
+        _print_json(result)
+        if args.fail_on_drift and not result["healthy"]:
+            sys.exit(2)
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -344,9 +362,29 @@ def main() -> None:
 
     r_index = rag_sub.add_parser("index", help="Index a specific run")
     r_index.add_argument("run_dir", help="Path to run directory")
+    r_index.add_argument(
+        "--full-reindex",
+        action="store_true",
+        help="Explicitly replace the run's complete document and point set",
+    )
 
     rag_sub.add_parser("index-all", help="Index all available runs")
     rag_sub.add_parser("stats", help="Show corpus statistics")
+    r_reconcile = rag_sub.add_parser(
+        "reconcile",
+        help="Report PostgreSQL/Qdrant drift per run",
+    )
+    r_reconcile.add_argument("--run-id", default=None, help="Limit the report to one run")
+    r_reconcile.add_argument(
+        "--collection",
+        default=None,
+        help="Qdrant collection (defaults to the active embedding collection)",
+    )
+    r_reconcile.add_argument(
+        "--fail-on-drift",
+        action="store_true",
+        help="Exit with status 2 when reconciliation finds drift",
+    )
 
     # RAG infrastructure sub-subcommands
     r_infra = rag_sub.add_parser("infra", help="RAG infrastructure management")
@@ -389,6 +427,7 @@ def main() -> None:
         ("rag", "index"): cmd_rag_index,
         ("rag", "index-all"): cmd_rag_index_all,
         ("rag", "stats"): cmd_rag_stats,
+        ("rag", "reconcile"): cmd_rag_reconcile,
         ("diagnostics", "health"): cmd_diagnostics_health,
         ("diagnostics", "gpu"): cmd_diagnostics_gpu,
         ("diagnostics", "report"): cmd_diagnostics_report,

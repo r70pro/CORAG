@@ -33,7 +33,9 @@ The suite features **built-in Docker lifecycle management** to dynamically run t
   - [rag_ui_dashboard.py](file:///home/owner/KIRAG/rag_ui_dashboard.py) — Case Dashboard UI: card grid builder, select/deselect-all JS handlers, single/multi/all case deletion from PostgreSQL + Qdrant + MinIO
   - [rag_ui_handlers.py](file:///home/owner/KIRAG/rag_ui_handlers.py) — RAG business logic: indexing, infrastructure control, corpus stats, chat submission, streaming bot responses, analysis settings, and chat export dispatch
   - [rag_ui_state.py](file:///home/owner/KIRAG/rag_ui_state.py) — Shared RAG state: thread-safe log buffer (`RAG_LOG_BUFFER`), `LAST_CREATED_RUN_ID`, `extract_text_content()` for Gradio 6 format handling
-  - [requirements.txt](file:///home/owner/KIRAG/requirements.txt) — Python packages and third-party dependencies (FastAPI, Uvicorn, multipart added)
+  - [requirements.txt](requirements.txt) — Direct production dependencies only
+  - [requirements-cpu.lock](requirements-cpu.lock) / [requirements-cuda.lock](requirements-cuda.lock) — Pinned, hashed Python 3.12/Linux x86_64 environments for CPU-only and CUDA 12.8 installations
+  - [requirements-dev.lock](requirements-dev.lock) — Pinned build, lint, coverage, and test tools (including pytest 9.0.3)
   - [settings.json](file:///home/owner/KIRAG/settings.json) — Persistent user configuration (pipeline, Docker, analysis, embedding, reranker settings)
   - [settings_manager.py](file:///home/owner/KIRAG/settings_manager.py) — Loading, saving, and validation utility for configurations; defines `SUPPORTED_MODELS`, `MODEL_MAX_CONTENT_LENGTHS`, `WORKSPACE_DIR`
   - [system_diagnostics.py](file:///home/owner/KIRAG/system_diagnostics.py) — Service latency probes (PostgreSQL, Redis, MinIO, Qdrant, vLLM), `nvidia-smi` GPU metrics parser, and vLLM model loading progress tracker
@@ -253,7 +255,7 @@ The application uses a persistent **left navigation sidebar** with 6 navigation 
 |:---|:---|:---|
 | **Logo & Branding** | "IQ-RAG Client" title, "Mission Control" subtitle | Styled `.sidebar-logo-container` |
 | **Panel Navigation** | 6 `gr.Button` components: 📥 Ingestion Pipeline, 🔍 Layout Inspector, 🧠 Embedding Pipeline, 📊 Case Dashboard, 💬 RAG Processing, 🖥️ System Diagnostics | Active button highlighted via `active-nav-btn` CSS class; `.click()` handlers call `select_view(idx)` |
-| **🐳 Inference Server (Docker)** | HF token (password field), Model selector dropdown, Docker port (number), GPU memory slider (0.1–1.0), Max Content Length slider (2048–model max, up to 1M), Start/Stop/Recreate buttons | Creates and manages the `olmocr` vLLM container (default image `vllm/vllm-openai:v0.8.5`, overridable via `OLMOCR_VLLM_IMAGE`). Model change auto-syncs between Pipeline and Docker dropdowns and adjusts max content length limits via `MODEL_MAX_CONTENT_LENGTHS` |
+| **🐳 Inference Server (Docker)** | HF token (password field), Model selector dropdown, Docker port (number), GPU memory slider (0.1–1.0), Max Content Length slider (2048–model max, up to 1M), Start/Stop/Recreate buttons | Creates and manages the labeled `olmocr` vLLM container using a digest-pinned image. Models are restricted to `SUPPORTED_MODELS`; remote model code is disabled by default. Model change auto-syncs between Pipeline and Docker dropdowns and adjusts max content length limits via `MODEL_MAX_CONTENT_LENGTHS` |
 | **Sidebar Footer** | Active Role dropdown (Admin, Clinical Reviewer, Legal Specialist), Comfortable/Compact layout toggle buttons, Version label (`IQ-RAG Workstation v2.0.3`) | Compact mode toggles `.layout-compact` CSS class via JS |
 
 #### Panel 1: PDF Ingestion ([app.py:L247-L369](file:///home/owner/KIRAG/app.py#L247-L369))
@@ -470,7 +472,7 @@ mindmap
 
 ## 📦 Dependencies
 
-The application relies on the following key dependencies ([requirements.txt](file:///home/owner/KIRAG/requirements.txt)):
+The application relies on the following key production dependencies ([requirements.txt](requirements.txt)):
 - **`gradio`** (≥4.0.0): Interactive web interface with streaming support.
 - **`psycopg2-binary`** (≥2.9.0): PostgreSQL database connector with connection pooling.
 - **`redis`** (≥5.0.0): Caching layer for responses, embeddings, and chat session variables.
@@ -478,16 +480,22 @@ The application relies on the following key dependencies ([requirements.txt](fil
 - **`qdrant-client`** (≥1.9.0, <1.11.0): Dense vector indices with payload filtering.
 - **`sentence-transformers`** (≥3.0.0): Generates high-dimensional vector representations and Cross-Encoder reranking.
 - **`tiktoken`** (≥0.7.0): Token count measurement for context window management.
-- **`pypdf`** (≥4.0.0) / **`pypdfium2`** (≥4.0.0): PDF validation and high-performance page rendering.
+- **`pypdf`** (≥5.2.0) / **`pypdfium2`** (≥4.0.0): PDF validation and high-performance page rendering.
 - **`httpx`** (≥0.27.0): HTTP client for communicating with the vLLM server (streaming SSE support).
 - **`numpy`** (≥1.24.0): Multidimensional array operations (used in embeddings/retrievals).
-- **`coverage`** (≥7.15.0) / **`pytest`** (≥8.0.0): Testing framework and coverage statistics.
 - **`fastapi`** (≥0.111.0): REST API framework with automatic OpenAPI schema generation.
+- **`pydantic`** (≥2.7.0) / **`starlette`** (≥0.37.2): Directly imported API validation and ASGI primitives.
 - **`uvicorn`** (≥0.30.0): ASGI web server implementation.
 - **`python-multipart`** (≥0.0.9): Multipart parsing support for file uploads.
 - **`python-docx`** (≥1.1.0): DOCX document generation for court-ready analysis reports with firm letterhead.
 - **`requests`** (≥2.31.0): HTTP library used for synchronous API calls.
+- **`torch`** (=2.9.1): Embedding/reranker execution and GPU diagnostics. The pin fixes ARM64 dependency metadata that otherwise selects unsupported CUDA packages.
+- **`huggingface-hub`** (≥0.23.0) / **`psutil`** (≥5.9.0): Model downloads and host diagnostics.
 - **`olmocr`** (≥0.4.27): OLMOCR pipeline library for PDF-to-Markdown extraction.
+
+Build and test tools are isolated in the `dev` optional dependency group and
+[requirements-dev.lock](requirements-dev.lock); they are not installed by the
+production wheel. The lock pins pytest to `9.0.3`.
 
 ---
 
@@ -529,15 +537,23 @@ The frontend is a single-page application with client-side view routing. API cal
 
 ### Running the Frontend
 
+The browser communicates only with the Next.js same-origin `/api/*` proxy. The proxy injects server-only API credentials and supports uploads, downloads, PDF byte ranges, and SSE. See [frontend/README.md](frontend/README.md) for the local-only and authenticated reverse-proxy deployment profiles.
+
 ```bash
-cd frontend
-npm install
-npm run dev
+export KIRAG_API_KEY="replace-with-a-long-random-api-key"
+export KIRAG_ADMIN_API_KEY="replace-with-a-different-long-random-admin-key"
+uvicorn api.main:app --host 127.0.0.1 --port 8001
 ```
 
-The development server starts on `http://localhost:3000`. Ensure the FastAPI backend is running on port `8001`:
+In a second terminal, provide the same server-only values to Next.js:
+
 ```bash
-uvicorn api.main:app --host 0.0.0.0 --port 8001
+cd frontend
+export KIRAG_API_URL="http://127.0.0.1:8001"
+export KIRAG_API_KEY="replace-with-the-same-api-key"
+export KIRAG_ADMIN_API_KEY="replace-with-the-same-admin-key"
+npm ci
+npm run dev -- --hostname 127.0.0.1
 ```
 
 ### Frontend Test Suite
@@ -560,7 +576,7 @@ The suite exposes a complete backend REST API layer via FastAPI, allowing you to
 
 You can run the API server as a standalone service on a separate port (e.g., `8001`):
 ```bash
-uvicorn api.main:app --host 0.0.0.0 --port 8001 --reload
+uvicorn api.main:app --host 127.0.0.1 --port 8001 --reload
 ```
 
 Once started, interactive OpenAPI/Swagger documentation is available at:
@@ -638,6 +654,10 @@ python cli.py -h
   ```bash
   python cli.py rag index /home/owner/.local/share/kirag/workspace/run_20260719_082815
   ```
+- **Explicitly replace a run's complete point set**:
+  ```bash
+  python cli.py rag index --full-reindex /home/owner/.local/share/kirag/workspace/run_20260719_082815
+  ```
 - **Index all completed runs**:
   ```bash
   python cli.py rag index-all
@@ -645,6 +665,11 @@ python cli.py -h
 - **Show database and vector corpus statistics**:
   ```bash
   python cli.py rag stats
+  ```
+- **Report PostgreSQL/Qdrant drift per run (read-only)**:
+  ```bash
+  python cli.py rag reconcile
+  python cli.py rag reconcile --run-id RUN_ID --fail-on-drift
   ```
 - **Control database backing services**:
   ```bash
@@ -698,7 +723,7 @@ python cli.py -h
 
 This workstation processes **medicolegal PII** (patient names, DOBs, injuries, clinical records). Treat it accordingly:
 
-- **Never expose service ports publicly.** The Gradio app (`7860`) and vLLM (`8000`, bound to `127.0.0.1` only) have no built-in authentication, and the Docker Compose stack exposes Postgres, Redis, MinIO, and Qdrant with no auth beyond their passwords. Keep them on `127.0.0.1` / the internal `olmocr_net` network.
+- **Never expose service ports publicly.** The API and Gradio app default to loopback and refuse non-loopback configuration without their respective authentication settings. Keep vLLM and the Docker Compose services on `127.0.0.1` / the internal `olmocr_net` network.
 - **Use a reverse proxy for sharing.** To give practitioners remote access, front the app with `nginx`/`Caddy` + TLS and an auth layer (basic-auth, OAuth, or SSO). Do not bind Gradio to `0.0.0.0` directly.
 - **Strong, unique credentials.** Set `OLMOCR_PG_PASS` and `OLMOCR_MINIO_SECRET_KEY` to values other than the documented defaults before any networked use; the app prints a startup warning otherwise (see `app.py`).
 - **Hugging Face tokens.** The vLLM container receives `HF_TOKEN` via a temporary env-file (not `-e`), so it is not leaked into `docker inspect` output or process arguments.
@@ -729,12 +754,28 @@ This workstation processes **medicolegal PII** (patient names, DOBs, injuries, c
    source ~/olmocr-env/bin/activate
    ```
 
-3. **Install Dependencies**:
+3. **Install a Reproducible Environment**:
+
+   CPU-only (Linux x86_64):
+
    ```bash
    pip install -U pip
-   pip install olmocr
-   pip install -r requirements.txt
+   pip install --require-hashes -r requirements-cpu.lock
+   pip install --no-deps .
    ```
+
+   CUDA 12.8 (Linux x86_64 with a compatible NVIDIA driver):
+
+   ```bash
+   pip install -U pip
+   pip install --require-hashes -r requirements-cuda.lock
+   pip install --no-deps .
+   ```
+
+   The CUDA lock is intentionally a separate x86_64 environment; do not use it
+   on ARM64. On other supported platforms, `pip install .` uses the wheel
+   metadata, whose Torch 2.9.1 CUDA dependencies are guarded to Linux x86_64.
+   Regenerate both locks with `scripts/compile-locks.sh`.
 
 4. **Configure Environment** (copy and edit `.env`):
     ```bash
@@ -742,7 +783,7 @@ This workstation processes **medicolegal PII** (patient names, DOBs, injuries, c
     # Edit .env to set your HF_TOKEN and service passwords
     ```
     > [!WARNING]
-    > The `.env` file is **git-ignored** and must never be committed. Set strong, unique values for `OLMOCR_PG_PASS` and `OLMOCR_MINIO_SECRET_KEY` — the application prints a startup security warning if either is still using its documented default placeholder (`change_me_in_production` / `change_me_minio_secret`). The vLLM container image defaults to `vllm/vllm-openai:v0.8.5` and can be overridden with the `OLMOCR_VLLM_IMAGE` variable if you need a different CUDA-toolkit-matched tag.
+    > The `.env` file is **git-ignored** and must never be committed. Set strong, unique values for `OLMOCR_PG_PASS` and `OLMOCR_MINIO_SECRET_KEY` — the application prints a startup security warning if either is still using its documented default placeholder (`change_me_in_production` / `change_me_minio_secret`). `OLMOCR_VLLM_IMAGE` must use an immutable `repository@sha256:<digest>` reference. Unlisted models require the administrator-only `KIRAG_ADVANCED_MODEL_OVERRIDE`; this does not enable remote code. Remote code separately requires `KIRAG_ENABLE_REMOTE_CODE`, a dedicated controlled Docker network, and a scoped short-lived credential. See `.env.example` for the fail-closed defaults.
 
 5. **Pre-download Models (Optional)**:
    Pre-fetch the required NVFP4 models using the downloader script to avoid download latency during application start:
@@ -790,8 +831,18 @@ The repository includes a comprehensive testing suite comprising **511 unit and 
 To run the test suite, ensure the virtual environment is active, then execute:
 
 ```bash
+pip install -r requirements-dev.lock
+
 # Execute all unit and integration tests
 pytest
+```
+
+To exercise the distribution acceptance gate (isolated PEP 517 build, wheel and
+sdist content checks, clean virtual-environment install, `kirag --help`, imports
+from outside the checkout, and `pip check`):
+
+```bash
+scripts/verify-distribution.sh
 ```
 
 > [!NOTE]

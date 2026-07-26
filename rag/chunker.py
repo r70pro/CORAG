@@ -16,6 +16,7 @@ Designed for:
 import hashlib
 import logging
 import re
+from datetime import date
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +183,11 @@ LETTER_BOUNDARY_PATTERNS = [
 ]
 
 
+def _first_date_match(text: str):
+    matches = [match for pattern in DATE_PATTERNS if (match := pattern.search(text))]
+    return min(matches, key=lambda match: match.start()) if matches else None
+
+
 def _parse_date(text: str) -> str | None:
     """Extract and normalise the first date found in text to ISO-8601 format.
 
@@ -193,43 +199,37 @@ def _parse_date(text: str) -> str | None:
     Returns:
         ISO date string (YYYY-MM-DD) or None.
     """
-    for pattern in DATE_PATTERNS:
-        match = pattern.search(text)
-        if match:
-            groups = match.groups()
-            try:
-                if len(groups) == 3 and groups[0].isdigit() and groups[1].isdigit():
-                    day, month, year = int(groups[0]), int(groups[1]), int(groups[2])
-                    if year < 100:
-                        year += 2000 if year < 50 else 1900
-                    if 1 <= month <= 12 and 1 <= day <= 31:
-                        return f"{year:04d}-{month:02d}-{day:02d}"
-                elif len(groups) == 3:
-                    # Named month variants
-                    if groups[0].isdigit():
-                        # "12 February 2018"
-                        day = int(groups[0])
-                        month = MONTH_MAP.get(groups[1].lower(), 0)
-                        year = int(groups[2])
-                    else:
-                        # "February 12, 2018"
-                        month = MONTH_MAP.get(groups[0].lower(), 0)
-                        day = int(groups[1])
-                        year = int(groups[2])
-                    if 1 <= month <= 12 and 1 <= day <= 31:
-                        return f"{year:04d}-{month:02d}-{day:02d}"
-            except (ValueError, TypeError):
-                continue
+    match = _first_date_match(text)
+    if match:
+        groups = match.groups()
+        try:
+            if len(groups) == 3 and groups[0].isdigit() and groups[1].isdigit():
+                day, month, year = int(groups[0]), int(groups[1]), int(groups[2])
+                if year < 100:
+                    year += 2000 if year < 50 else 1900
+                return date(year, month, day).isoformat()
+            elif len(groups) == 3:
+                # Named month variants
+                if groups[0].isdigit():
+                    # "12 February 2018"
+                    day = int(groups[0])
+                    month = MONTH_MAP.get(groups[1].lower(), 0)
+                    year = int(groups[2])
+                else:
+                    # "February 12, 2018"
+                    month = MONTH_MAP.get(groups[0].lower(), 0)
+                    day = int(groups[1])
+                    year = int(groups[2])
+                return date(year, month, day).isoformat()
+        except (ValueError, TypeError, OverflowError):
+            return None
     return None
 
 
 def _extract_raw_date(text: str) -> str | None:
     """Extract the raw date string as it appears in the text."""
-    for pattern in DATE_PATTERNS:
-        match = pattern.search(text)
-        if match:
-            return match.group(0)
-    return None
+    match = _first_date_match(text)
+    return match.group(0) if match else None
 
 
 def _extract_author(text: str) -> str | None:
@@ -289,6 +289,17 @@ def _find_page_for_position(char_pos: int, page_ranges: list) -> int | None:
     return None
 
 
+def _find_pages_for_span(
+    source_char_start: int, source_char_end: int, page_ranges: list
+) -> tuple[int | None, int | None]:
+    """Return the source pages containing both ends of an exclusive span."""
+    if source_char_end <= source_char_start:
+        return None, None
+    page_start = _find_page_for_position(source_char_start, page_ranges)
+    page_end = _find_page_for_position(source_char_end - 1, page_ranges)
+    return page_start, page_end
+
+
 def _make_chunk_id(doc_id: str, chunk_index: int) -> str:
     """Create a deterministic chunk ID."""
     raw = f"{doc_id}:{chunk_index}"
@@ -327,9 +338,11 @@ def _split_into_sections(text: str) -> list[tuple[int, int, str]]:
     sections = []
     for i, start in enumerate(filtered_positions):
         end = filtered_positions[i + 1] if i + 1 < len(filtered_positions) else len(text)
-        section_text = text[start:end].strip()
-        if section_text:
-            sections.append((start, end, section_text))
+        content_match = re.search(r"\S(?:[\s\S]*\S)?", text[start:end])
+        if content_match:
+            exact_start = start + content_match.start()
+            exact_end = start + content_match.end()
+            sections.append((exact_start, exact_end, text[exact_start:exact_end]))
 
     return sections
 
@@ -357,61 +370,59 @@ def _split_section_into_chunks(
     if len(section_text) <= max_chunk_size:
         return [(section_start, section_start + len(section_text), section_text)]
 
-    # Find natural break points (paragraph boundaries)
-    paragraphs = re.split(r"\n\s*\n", section_text)
+    if max_chunk_size <= 0:
+        raise ValueError("max_chunk_size must be greater than zero")
+    overlap = max(0, min(overlap, max_chunk_size - 1))
 
     chunks = []
-    current_chunk = ""
-    current_start = section_start
+    local_start = 0
+    text_length = len(section_text)
 
-    for para in paragraphs:
-        para = para.strip()
-        if not para:
+    while local_start < text_length:
+        while local_start < text_length and section_text[local_start].isspace():
+            local_start += 1
+        if local_start >= text_length:
+            break
+
+        limit = min(local_start + max_chunk_size, text_length)
+        split_end = limit
+        if limit < text_length:
+            minimum_break = local_start + max_chunk_size // 2
+
+            paragraph_end = None
+            for match in re.finditer(r"\n[ \t]*\n+", section_text[local_start:limit]):
+                candidate = local_start + match.start()
+                if candidate >= minimum_break:
+                    paragraph_end = candidate
+            if paragraph_end is not None:
+                split_end = paragraph_end
+            else:
+                sentence_end = section_text.rfind(". ", local_start, limit)
+                if sentence_end >= minimum_break:
+                    split_end = sentence_end + 1
+                else:
+                    newline_end = section_text.rfind("\n", local_start, limit)
+                    if newline_end >= minimum_break:
+                        split_end = newline_end
+
+        exact_end = split_end
+        while exact_end > local_start and section_text[exact_end - 1].isspace():
+            exact_end -= 1
+
+        if exact_end <= local_start:
+            local_start = max(local_start + 1, split_end)
             continue
 
-        if len(current_chunk) + len(para) + 2 <= max_chunk_size:
-            if current_chunk:
-                current_chunk += "\n\n" + para
-            else:
-                current_chunk = para
-        else:
-            # Current chunk is full — save it
-            if current_chunk:
-                chunk_end = current_start + len(current_chunk)
-                chunks.append((current_start, chunk_end, current_chunk))
-                # Start next chunk with overlap
-                overlap_text = current_chunk[-overlap:] if len(current_chunk) > overlap else ""
-                current_start = chunk_end - len(overlap_text)
-                current_chunk = overlap_text + ("\n\n" if overlap_text else "") + para
-            else:
-                current_chunk = para
+        global_start = section_start + local_start
+        global_end = section_start + exact_end
+        chunks.append((global_start, global_end, section_text[local_start:exact_end]))
 
-            # Handle paragraphs that are themselves too large
-            while len(current_chunk) > max_chunk_size:
-                # Split at sentence boundary
-                split_point = max_chunk_size
-                sentence_end = current_chunk.rfind(". ", 0, max_chunk_size)
-                if sentence_end > max_chunk_size // 2:
-                    split_point = sentence_end + 2
-                else:
-                    newline_pos = current_chunk.rfind("\n", 0, max_chunk_size)
-                    if newline_pos > max_chunk_size // 2:
-                        split_point = newline_pos + 1
-
-                chunk_text = current_chunk[:split_point].strip()
-                # Clamp overlap so the residual slice start never goes negative
-                # (which would wrap to the end of the string and duplicate or
-                # loop forever when split_point is small).
-                actual_overlap = max(0, min(overlap, len(chunk_text) - 1))
-                safe_start = len(chunk_text) - actual_overlap
-                chunk_end = current_start + len(chunk_text)
-                chunks.append((current_start, chunk_end, chunk_text))
-                current_start = chunk_end - actual_overlap
-                current_chunk = current_chunk[safe_start:].strip()
-
-    # Don't forget the last chunk
-    if current_chunk.strip():
-        chunks.append((current_start, current_start + len(current_chunk), current_chunk.strip()))
+        if exact_end >= text_length:
+            break
+        next_start = exact_end - overlap if overlap else split_end
+        if next_start <= local_start:
+            next_start = local_start + 1
+        local_start = next_start
 
     return chunks
 
@@ -423,6 +434,8 @@ def chunk_document(
     page_ranges: list | None = None,
     max_chunk_size: int = 800,
     chunk_overlap: int = 100,
+    original_filename: str | None = None,
+    provenance_type: str | None = None,
 ) -> list[dict]:
     """Chunk a document into semantically meaningful pieces with rich metadata.
 
@@ -435,6 +448,9 @@ def chunk_document(
         page_ranges: Optional page boundary data from JSONL attributes.
         max_chunk_size: Maximum chunk size in characters.
         chunk_overlap: Overlap between consecutive chunks.
+        original_filename: Source filename supported by ingestion metadata.
+        provenance_type: ``original_pdf``, ``external_markdown``, or a
+            no-page-map Markdown provenance marker.
 
     Returns:
         List of chunk dicts ready for embedding and database insertion.
@@ -476,8 +492,7 @@ def chunk_document(
             if not chunk_text.strip():
                 continue
 
-            # Determine which page this chunk falls on
-            page_num = _find_page_for_position(chunk_start, page_ranges)
+            page_start, page_end = _find_pages_for_span(chunk_start, chunk_end, page_ranges)
 
             # Chunk-level metadata extraction (may override section-level)
             chunk_author = _extract_author(chunk_text) or section_author
@@ -496,7 +511,13 @@ def chunk_document(
                     "text": chunk_text,
                     "char_start": chunk_start,
                     "char_end": chunk_end,
-                    "page_number": page_num,
+                    "source_char_start": chunk_start,
+                    "source_char_end": chunk_end,
+                    "page_number": page_start,
+                    "page_start": page_start,
+                    "page_end": page_end,
+                    "original_filename": original_filename,
+                    "provenance_type": provenance_type,
                     "document_type": effective_doc_type,
                     "author": chunk_author,
                     "date_extracted": chunk_date,
@@ -529,23 +550,41 @@ def chunk_documents_from_run(
         Dict mapping doc_id -> list of chunk dicts.
     """
     import json
-    import os
+    from pathlib import Path
+
+    from path_security import (
+        PathSecurityError,
+        resolve_file_under,
+        resolve_run_under,
+        resolve_under,
+    )
+    from settings_manager import WORKSPACE_DIR
 
     results = {}
-    md_inputs_dir = os.path.join(run_dir, "markdown", "inputs")
-    results_dir = os.path.join(run_dir, "results")
+    candidate_run = Path(run_dir)
+    try:
+        safe_run_dir = resolve_run_under(WORKSPACE_DIR, candidate_run.name)
+    except PathSecurityError:
+        return results
+    if candidate_run.resolve() != safe_run_dir:
+        return results
+    md_inputs_dir = resolve_under(safe_run_dir, "markdown", "inputs")
+    results_dir = resolve_under(safe_run_dir, "results")
 
-    if not os.path.exists(md_inputs_dir):
+    if not md_inputs_dir.is_dir():
         return results
 
     # Load page ranges from JSONL results
-    page_ranges_by_source = {}
-    if os.path.exists(results_dir):
-        for f in os.listdir(results_dir):
-            if f.endswith(".jsonl"):
-                jsonl_path = os.path.join(results_dir, f)
+    source_metadata_by_markdown = {}
+    if results_dir.is_dir():
+        for entry in results_dir.iterdir():
+            try:
+                jsonl_path = resolve_file_under(results_dir, entry.name, {".jsonl"})
+            except PathSecurityError:
+                continue
+            if jsonl_path.is_file():
                 try:
-                    with open(jsonl_path, encoding="utf-8") as fh:
+                    with jsonl_path.open(encoding="utf-8") as fh:
                         for line in fh:
                             line = line.strip()
                             if not line:
@@ -553,30 +592,46 @@ def chunk_documents_from_run(
                             data = json.loads(line)
                             source_file = data.get("metadata", {}).get("Source-File", "")
                             page_ranges = data.get("attributes", {}).get("pdf_page_numbers", [])
-                            source_basename = os.path.basename(source_file)
-                            if source_basename.endswith(".pdf"):
-                                md_name = source_basename[:-4] + ".md"
-                                page_ranges_by_source[md_name] = page_ranges
-                except Exception as e:
-                    logger.error(f"Error reading JSONL {jsonl_path}: {e}")
+                            source_basename = Path(str(source_file).replace("\\", "/")).name
+                            if Path(source_basename).suffix.lower() == ".pdf":
+                                md_name = Path(source_basename).with_suffix(".md").name
+                                source_metadata_by_markdown[md_name] = {
+                                    "page_ranges": page_ranges,
+                                    "original_filename": source_basename,
+                                    "provenance_type": (
+                                        "original_pdf"
+                                        if page_ranges
+                                        else "markdown_without_pdf_page_map"
+                                    ),
+                                }
+                except Exception:
+                    logger.error("Error reading run JSONL metadata")
 
     # Process each markdown file
-    for md_file in sorted(os.listdir(md_inputs_dir)):
-        if not md_file.endswith(".md"):
-            continue
-
-        md_path = os.path.join(md_inputs_dir, md_file)
+    for entry in sorted(md_inputs_dir.iterdir(), key=lambda path: path.name):
         try:
-            with open(md_path, encoding="utf-8") as f:
-                markdown_text = f.read()
-        except Exception as e:
-            logger.error(f"Error reading {md_path}: {e}")
+            md_path = resolve_file_under(md_inputs_dir, entry.name, {".md"})
+        except PathSecurityError:
+            continue
+        if not md_path.is_file():
+            continue
+        md_file = md_path.name
+        try:
+            markdown_text = md_path.read_text(encoding="utf-8")
+        except OSError:
+            logger.error("Error reading run Markdown")
             continue
 
         # Generate deterministic doc_id from run_id and filename
         doc_id = hashlib.sha256(f"{run_id}:{md_file}".encode()).hexdigest()[:24]
 
-        page_ranges = page_ranges_by_source.get(md_file, [])
+        unprefixed_md_file = re.sub(r"^\d+_", "", md_file)
+        source_metadata = source_metadata_by_markdown.get(
+            md_file, source_metadata_by_markdown.get(unprefixed_md_file, {})
+        )
+        page_ranges = source_metadata.get("page_ranges", [])
+        original_filename = source_metadata.get("original_filename", md_file)
+        provenance_type = source_metadata.get("provenance_type", "markdown_without_pdf_page_map")
 
         chunks = chunk_document(
             markdown_text=markdown_text,
@@ -585,14 +640,18 @@ def chunk_documents_from_run(
             page_ranges=page_ranges,
             max_chunk_size=max_chunk_size,
             chunk_overlap=chunk_overlap,
+            original_filename=original_filename,
+            provenance_type=provenance_type,
         )
 
         results[doc_id] = {
             "doc_id": doc_id,
             "md_file": md_file,
-            "md_path": md_path,
+            "md_path": str(md_path),
             "markdown_text": markdown_text,
             "page_ranges": page_ranges,
+            "original_filename": original_filename,
+            "provenance_type": provenance_type,
             "chunks": chunks,
         }
 

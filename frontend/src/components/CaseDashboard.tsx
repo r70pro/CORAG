@@ -25,12 +25,14 @@ import { ResizableBlock } from "@/components/ResizableBlock";
 
 interface TimelineEvent {
   date: string;
-  title: string;
-  physician: string;
-  clinic: string;
-  docType: string;
-  pageRange: string;
-  refNo: string;
+  title: string | null;
+  physician: string | null;
+  clinic: string | null;
+  docType: string | null;
+  pageRange: string | null;
+  pageProvenance?: string | null;
+  originalFilename?: string | null;
+  refNo: string | null;
   summary: string;
 }
 
@@ -38,6 +40,7 @@ interface CaseItem {
   run_id: string;
   client_name: string;
   dob: string;
+  dob_unparsed_raw: string[];
   injuries: string[];
   documents_count: number;
   chunks_count: number;
@@ -47,47 +50,12 @@ interface CaseItem {
   timeline_events?: TimelineEvent[];
 }
 
-const SAMPLE_CASES: CaseItem[] = [
-  {
-    run_id: "run_issa6_20260722_192705",
-    client_name: "Souki, Issa",
-    dob: "14-Feb-1978",
-    injuries: ["Lumbar Spine L4-L5 Disc Herniation", "Bilateral Sciatica"],
-    documents_count: 1,
-    chunks_count: 54,
-    authors_count: 4,
-    date_range: "19-Apr-2024 → 02-May-2024",
-    indexed_at: "2026-07-22 19:30",
-    timeline_events: [
-      {
-        date: "19-Apr-2024",
-        title: "Initial Specialist Consultation",
-        physician: "Dr. Gavin Weekes (Consultant Orthopaedic Surgeon)",
-        clinic: "Capital Radiology",
-        docType: "Specialist Correspondence",
-        pageRange: "Pages 1-3",
-        refNo: "Ref No: 2024AL0008570-1",
-        summary: "Patient presented with severe lower back pain radiating down right leg following workplace incident. MRI recommended.",
-      },
-      {
-        date: "24-Apr-2024",
-        title: "Lumbar Spine MRI Scan",
-        physician: "Dr. Sarah Jenkins (Radiologist)",
-        clinic: "Capital Radiology",
-        docType: "Imaging Report",
-        pageRange: "Pages 4-6",
-        refNo: "Accession Number: 77.50382801",
-        summary: "3.0T MRI demonstrates L4-L5 posterior disc protrusion compressing the right L5 nerve root.",
-      },
-    ],
-  },
-];
-
 interface RawIndexedCase {
   run_id: string;
   display_name?: string;
   client_name?: string;
   dob?: string;
+  dob_unparsed_raw?: string[];
   injuries?: string[];
   documents_count?: number;
   chunks_count?: number;
@@ -109,13 +77,20 @@ export const CaseDashboard: React.FC = () => {
 
   const mapRawCase = (c: RawIndexedCase): CaseItem => ({
     run_id: c.run_id,
-    client_name: c.client_name || c.display_name || (c.run_id ? `Case ${c.run_id.slice(0, 8)}` : "Unknown Client"),
-    dob: c.dob || "—",
-    injuries: c.injuries && c.injuries.length > 0 ? c.injuries : ["No specific injury/diagnosis extracted"],
-    documents_count: c.documents_count || 1,
-    chunks_count: c.chunks_count || 0,
-    authors_count: c.authors_count || 0,
-    date_range: c.date_range || "—",
+    client_name:
+      c.client_name ||
+      c.display_name ||
+      (c.run_id ? `Case ${c.run_id.slice(0, 8)}` : "Not present in source"),
+    dob: c.dob || "Not present in source",
+    dob_unparsed_raw: c.dob_unparsed_raw || [],
+    injuries:
+      c.injuries && c.injuries.length > 0
+        ? c.injuries
+        : ["Not present in source"],
+    documents_count: c.documents_count ?? 0,
+    chunks_count: c.chunks_count ?? 0,
+    authors_count: c.authors_count ?? 0,
+    date_range: c.date_range || "Not present in source",
     indexed_at: c.indexed_at || c.created_at || "—",
     timeline_events: c.timeline_events || [],
   });
@@ -135,8 +110,9 @@ export const CaseDashboard: React.FC = () => {
         setSelectedCaseId("");
       }
     } else {
-      setCases(SAMPLE_CASES);
-      setSelectedCaseId(SAMPLE_CASES[0].run_id);
+      setCases([]);
+      setSelectedCaseId("");
+      setStatusMsg("Unable to load case evidence; no fallback records were displayed.");
     }
     setLoading(false);
   };
@@ -156,8 +132,9 @@ export const CaseDashboard: React.FC = () => {
           setSelectedCaseId("");
         }
       } else {
-        setCases(SAMPLE_CASES);
-        setSelectedCaseId(SAMPLE_CASES[0].run_id);
+        setCases([]);
+        setSelectedCaseId("");
+        setStatusMsg("Unable to load case evidence; no fallback records were displayed.");
       }
     };
     init();
@@ -212,8 +189,8 @@ export const CaseDashboard: React.FC = () => {
 
   const filteredEvents = activeEvents.filter((e) => {
     const matchesSearch =
-      e.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      e.physician.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (e.title || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (e.physician || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
       e.summary.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesDocType = docTypeFilter === "all" || e.docType === docTypeFilter;
     return matchesSearch && matchesDocType;
@@ -246,12 +223,12 @@ export const CaseDashboard: React.FC = () => {
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center space-x-1.5 bg-slate-950/80 border border-slate-800 rounded-xl px-2.5 py-1 text-xs font-mono text-slate-300">
             <span className="text-slate-500">Case ID:</span>
-            <span className="text-indigo-300 font-bold max-w-[140px] truncate">{activeCase?.run_id || "souki_enclosures"}</span>
+            <span className="text-indigo-300 font-bold max-w-[140px] truncate">{activeCase?.run_id || "—"}</span>
           </div>
 
           <div className="flex items-center space-x-1.5 bg-slate-950/80 border border-slate-800 rounded-xl px-2.5 py-1 text-xs font-mono text-slate-300">
             <span className="text-slate-500">Documents:</span>
-            <span className="text-cyan-300 font-bold">{activeCase?.documents_count || 1} file</span>
+            <span className="text-cyan-300 font-bold">{activeCase?.documents_count ?? 0} file</span>
           </div>
 
           <div className="flex items-center space-x-1.5 bg-slate-950/80 border border-slate-800 rounded-xl px-2.5 py-1 text-xs font-mono text-slate-300">
@@ -381,6 +358,11 @@ export const CaseDashboard: React.FC = () => {
                         <span className="font-semibold text-slate-400">DOB:</span>
                         <span>{c.dob}</span>
                       </div>
+                      {c.dob_unparsed_raw.length > 0 && (
+                        <div className="mt-1 text-[11px] text-amber-300">
+                          Unparsed source DOB: {c.dob_unparsed_raw.join(", ")}
+                        </div>
+                      )}
 
                       <div className="mt-2 p-2 rounded-xl bg-indigo-950/20 border border-indigo-500/15">
                         <div className="text-[10px] font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-1">
@@ -482,17 +464,22 @@ export const CaseDashboard: React.FC = () => {
                             📅 {evt.date}
                           </span>
                           <span className="text-[11px] font-mono text-emerald-400 bg-emerald-950/30 px-2 py-0.5 rounded border border-emerald-500/20">
-                            {evt.pageRange}
+                            {evt.pageRange ||
+                              evt.pageProvenance ||
+                              "PDF page provenance not present in source"}
                           </span>
                         </div>
 
-                        <h4 className="text-xs font-bold text-slate-100">{evt.title}</h4>
+                        <h4 className="text-xs font-bold text-slate-100">
+                          {evt.title || "Not present in source"}
+                        </h4>
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-1 text-[11px] text-slate-400">
-                          <div><span className="font-semibold text-slate-300">Physician:</span> {evt.physician}</div>
-                          <div><span className="font-semibold text-slate-300">Clinic/Facility:</span> {evt.clinic}</div>
-                          <div><span className="font-semibold text-slate-300">Type:</span> {evt.docType}</div>
-                          <div><span className="font-semibold text-slate-300">Reference:</span> <span className="font-mono text-indigo-300">{evt.refNo}</span></div>
+                          <div><span className="font-semibold text-slate-300">Physician:</span> {evt.physician || "Not present in source"}</div>
+                          <div><span className="font-semibold text-slate-300">Clinic/Facility:</span> {evt.clinic || "Not present in source"}</div>
+                          <div><span className="font-semibold text-slate-300">Type:</span> {evt.docType || "Not present in source"}</div>
+                          <div><span className="font-semibold text-slate-300">Reference:</span> <span className="font-mono text-indigo-300">{evt.refNo || "Not present in source"}</span></div>
+                          <div><span className="font-semibold text-slate-300">File:</span> {evt.originalFilename || "Not present in source"}</div>
                         </div>
 
                         <p className="text-xs text-slate-300 pt-1 border-t border-slate-800/60">

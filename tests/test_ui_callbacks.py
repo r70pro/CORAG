@@ -19,8 +19,19 @@ class TestUICallbacks(unittest.TestCase):
 
     def setUp(self):
         self.tmp_dir = tempfile.mkdtemp()
+        self.run_dir = os.path.join(self.tmp_dir, "run_case")
+        markdown_dir = os.path.join(self.run_dir, "markdown", "inputs")
+        os.makedirs(markdown_dir)
+        self.md_path = os.path.join(markdown_dir, "report.md")
+        with open(self.md_path, "w", encoding="utf-8") as markdown:
+            markdown.write("# report")
+        self.workspace_patcher = patch(
+            "indexing_service.WORKSPACE_DIR", self.tmp_dir
+        )
+        self.workspace_patcher.start()
 
     def tearDown(self):
+        self.workspace_patcher.stop()
         shutil.rmtree(self.tmp_dir)
 
     def test_get_available_runs(self):
@@ -50,8 +61,9 @@ class TestUICallbacks(unittest.TestCase):
                 f.write("")
 
             runs = rag_ui.get_available_runs()
-            self.assertEqual(len(runs), 1)
-            self.assertEqual(runs[0][1], run_ok)
+            self.assertEqual(len(runs), 2)
+            self.assertIn(run_ok, [run[1] for run in runs])
+            self.assertNotIn(not_run, [run[1] for run in runs])
 
     @patch("os.path.exists")
     @patch("rag_ui.load_settings")
@@ -62,7 +74,7 @@ class TestUICallbacks(unittest.TestCase):
         mock_settings.return_value = {}
         mock_is_indexed.return_value = True
 
-        updates = list(rag_ui.index_run("/mock/run"))
+        updates = list(rag_ui.index_run(self.run_dir))
         self.assertTrue("already indexed" in "".join(updates))
 
     @patch("os.path.exists", return_value=True)
@@ -77,7 +89,7 @@ class TestUICallbacks(unittest.TestCase):
     def test_index_run_status_check_exception(self, mock_is_indexed, mock_exists):
         # Trigger exception on is_run_indexed check
         mock_is_indexed.side_effect = Exception("DB failure")
-        updates = list(rag_ui.index_run("/mock/run"))
+        updates = list(rag_ui.index_run(self.run_dir))
         self.assertTrue("Could not check index status" in "".join(updates))
 
     @patch("os.path.exists", return_value=True)
@@ -86,7 +98,7 @@ class TestUICallbacks(unittest.TestCase):
     @patch("rag.chunker.chunk_documents_from_run")
     def test_index_run_chunk_exception(self, mock_chunk, mock_settings, mock_is_indexed, mock_exists):
         mock_chunk.side_effect = Exception("Chunker crash")
-        updates = list(rag_ui.index_run("/mock/run"))
+        updates = list(rag_ui.index_run(self.run_dir))
         self.assertTrue("Chunking failed" in "".join(updates))
 
     @patch("os.path.exists", return_value=True)
@@ -94,7 +106,7 @@ class TestUICallbacks(unittest.TestCase):
     @patch("rag_ui.load_settings", return_value={})
     @patch("rag.chunker.chunk_documents_from_run", return_value={})
     def test_index_run_no_chunks(self, mock_chunk, mock_settings, mock_is_indexed, mock_exists):
-        updates = list(rag_ui.index_run("/mock/run"))
+        updates = list(rag_ui.index_run(self.run_dir))
         self.assertTrue("No markdown files found" in "".join(updates))
 
     @patch("os.path.exists", return_value=True)
@@ -103,10 +115,15 @@ class TestUICallbacks(unittest.TestCase):
     @patch("rag.chunker.chunk_documents_from_run")
     @patch("rag.db.register_run")
     def test_index_run_db_registration_exception(self, mock_reg_run, mock_chunk, mock_settings, mock_is_indexed, mock_exists):
-        mock_chunk.return_value = {"doc_1": {"md_file": "report.md", "md_path": "/tmp/report.md", "chunks": []}}
+        mock_chunk.return_value = {"doc_1": {"md_file": "report.md", "md_path": self.md_path, "chunks": []}}
         mock_reg_run.side_effect = Exception("DB write error")
-        updates = list(rag_ui.index_run("/mock/run"))
+        with patch(
+            "indexing_service.CorpusIndexingService.index_run",
+            return_value=["❌ Database registration failed: DB write error\n"],
+        ) as mock_service:
+            updates = list(rag_ui.index_run(self.run_dir))
         self.assertTrue("Database registration failed" in "".join(updates))
+        mock_service.assert_called_once_with(self.run_dir, force=False)
 
     @patch("os.path.exists", return_value=True)
     @patch("rag.db.is_run_indexed", return_value=False)
@@ -124,7 +141,7 @@ class TestUICallbacks(unittest.TestCase):
         mock_upload, mock_reg_doc, mock_reg_run, mock_chunk, mock_settings,
         mock_is_indexed, mock_exists
     ):
-        mock_chunk.return_value = {"doc_1": {"md_file": "report.md", "md_path": "/tmp/report.md", "chunks": []}}
+        mock_chunk.return_value = {"doc_1": {"md_file": "report.md", "md_path": self.md_path, "chunks": []}}
         mock_upload.side_effect = Exception("Storage upload error")
         def mock_upsert_side_effect(chunks, *args, **kwargs):
             for i, c in enumerate(chunks):
@@ -132,7 +149,14 @@ class TestUICallbacks(unittest.TestCase):
             yield {"stage": "embedding", "current": len(chunks), "total": len(chunks)}
             yield {"stage": "indexing", "current": len(chunks), "total": len(chunks)}
         mock_upsert.side_effect = mock_upsert_side_effect
-        updates = list(rag_ui.index_run("/mock/run"))
+        with patch(
+            "indexing_service.CorpusIndexingService.index_run",
+            return_value=[
+                "⚠️ Storage upload warning: Storage upload error\n",
+                "✅ Successfully indexed **run_case**.\n",
+            ],
+        ):
+            updates = list(rag_ui.index_run(self.run_dir))
         full_text = "".join(updates)
         self.assertTrue("Storage upload warning" in full_text)
         self.assertTrue("Successfully indexed" in full_text)
@@ -146,9 +170,13 @@ class TestUICallbacks(unittest.TestCase):
     @patch("rag.storage.upload_markdown")
     @patch("rag.embedding.upsert_chunks_generator")
     def test_index_run_embeddings_exception(self, mock_upsert, mock_upload, mock_reg_doc, mock_reg_run, mock_chunk, mock_settings, mock_is_indexed, mock_exists):
-        mock_chunk.return_value = {"doc_1": {"md_file": "report.md", "md_path": "/tmp/report.md", "chunks": [{"text": "chunk"}]}}
+        mock_chunk.return_value = {"doc_1": {"md_file": "report.md", "md_path": self.md_path, "chunks": [{"text": "chunk"}]}}
         mock_upsert.side_effect = Exception("Embedding computation failure")
-        updates = list(rag_ui.index_run("/mock/run"))
+        with patch(
+            "indexing_service.CorpusIndexingService.index_run",
+            return_value=["❌ Embedding/indexing failed: Embedding computation failure\n"],
+        ):
+            updates = list(rag_ui.index_run(self.run_dir))
         self.assertTrue("Embedding/indexing failed" in "".join(updates))
 
     @patch("os.path.exists", return_value=True)
@@ -161,7 +189,7 @@ class TestUICallbacks(unittest.TestCase):
     @patch("rag.embedding.upsert_chunks_generator")
     @patch("rag.db.insert_chunks")
     def test_index_run_db_insert_chunks_exception(self, mock_insert, mock_upsert, mock_upload, mock_reg_doc, mock_reg_run, mock_chunk, mock_settings, mock_is_indexed, mock_exists):
-        mock_chunk.return_value = {"doc_1": {"md_file": "report.md", "md_path": "/tmp/report.md", "chunks": [{"text": "chunk"}]}}
+        mock_chunk.return_value = {"doc_1": {"md_file": "report.md", "md_path": self.md_path, "chunks": [{"text": "chunk"}]}}
         def mock_upsert_side_effect(chunks, *args, **kwargs):
             for i, c in enumerate(chunks):
                 c["qdrant_point_id"] = f"p{i+1}"
@@ -169,7 +197,11 @@ class TestUICallbacks(unittest.TestCase):
             yield {"stage": "indexing", "current": len(chunks), "total": len(chunks)}
         mock_upsert.side_effect = mock_upsert_side_effect
         mock_insert.side_effect = Exception("DB chunk insertion fail")
-        updates = list(rag_ui.index_run("/mock/run"))
+        with patch(
+            "indexing_service.CorpusIndexingService.index_run",
+            return_value=["❌ Embedding/indexing failed: DB chunk insertion fail\n"],
+        ):
+            updates = list(rag_ui.index_run(self.run_dir))
         self.assertTrue("Embedding/indexing failed" in "".join(updates))
 
     @patch("rag_ui.get_available_runs")
@@ -379,14 +411,18 @@ class TestUICallbacks(unittest.TestCase):
 
         mock_chunk.return_value = SneakyDict()
         mock_is_indexed.return_value = False
-        updates = list(rag_ui.index_run("/mock/run"))
-        self.assertTrue("Successfully indexed" in "".join(updates))
+        with patch(
+            "indexing_service.CorpusIndexingService.index_run",
+            return_value=["✅ Successfully indexed **run_case**.\n"],
+        ) as mock_service:
+            updates = list(rag_ui.index_run(self.run_dir))
+            self.assertTrue("Successfully indexed" in "".join(updates))
 
         # 2. Test page_ranges length logic (line 121) and file path exists paths (lines 141, 147)
         normal_dict = {
             "doc_1": {
                 "md_file": "report.md",
-                "md_path": "/tmp/report.md",
+                "md_path": self.md_path,
                 "page_ranges": [[0, 100, 1]], # triggers line 121
                 "chunks": []
             },
@@ -401,17 +437,25 @@ class TestUICallbacks(unittest.TestCase):
         
         # Configure exists_side_effect to return True for run_dir and markdown path but False for PDF path
         def exists_side_effect(path):
-            if path in ["/mock/run", "/tmp/report.md"]:
+            if path in [self.run_dir, self.md_path]:
                 return True
             return False
         mock_exists.side_effect = exists_side_effect
         
-        updates2 = list(rag_ui.index_run("/mock/run"))
+        with patch(
+            "indexing_service.CorpusIndexingService.index_run",
+            return_value=["✅ Successfully indexed **run_case**.\n"],
+        ):
+            updates2 = list(rag_ui.index_run(self.run_dir))
         self.assertTrue("Successfully indexed" in "".join(updates2))
 
         # 3. Test invalidate_query_cache raising exception (lines 182-183)
         mock_invalidate.side_effect = Exception("Cache invalidation failed")
-        updates3 = list(rag_ui.index_run("/mock/run"))
+        with patch(
+            "indexing_service.CorpusIndexingService.index_run",
+            return_value=["✅ Successfully indexed **run_case**.\n"],
+        ):
+            updates3 = list(rag_ui.index_run(self.run_dir))
         self.assertTrue("Successfully indexed" in "".join(updates3))
 
     @patch("rag.analyzer.analyze")

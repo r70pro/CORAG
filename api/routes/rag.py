@@ -5,11 +5,15 @@ RAG query, indexing, and infrastructure API routes.
 from __future__ import annotations
 
 import json
-import os
+import logging
+from pathlib import Path
+from types import SimpleNamespace
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
+from api.auth import verify_admin_key
+from api.errors import error_envelope
 from api.models import (
     CaseInfo,
     CorpusStatsResponse,
@@ -21,14 +25,37 @@ from api.models import (
     InfraStatusResponse,
     MessageResponse,
     RAGQueryRequest,
+    RAGQueryResponse,
+)
+from api.upload_security import (
+    UPLOAD_CHUNK_BYTES,
+    LimitedUploadRoute,
+    MarkdownValidator,
+    close_uploads,
+    escaped_original_name,
+    markdown_upload_limits,
+    require_content_type,
+    unique_upload_name,
+)
+from path_security import (
+    PathSecurityError,
+    require_approved_file,
+    resolve_file_under,
+    resolve_run_under,
 )
 
-router = APIRouter()
+router = APIRouter(route_class=LimitedUploadRoute)
+logger = logging.getLogger(__name__)
 
 # ── Case Management & Deletion ────────────────────────────────────────────────
 
 
-@router.post("/cases/delete", response_model=MessageResponse, summary="Delete indexed cases")
+@router.post(
+    "/cases/delete",
+    response_model=MessageResponse,
+    summary="Delete indexed cases",
+    dependencies=[Depends(verify_admin_key)],
+)
 def delete_cases(req: DeleteCasesRequest):
     """Delete selected or all cases from Qdrant vector store, PostgreSQL DB, and MinIO storage."""
     try:
@@ -42,63 +69,46 @@ def delete_cases(req: DeleteCasesRequest):
         logger = logging.getLogger(__name__)
 
         def _purge_run_dir_from_disk(run_id: str):
-            import hashlib
-            import shutil
-
-            from settings_manager import WORKSPACE_DIR, delete_run_directory
+            from settings_manager import delete_run_directory
 
             delete_run_directory(run_id)
-            bundled_ws = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                "workspace",
-            )
-            fallback_ws = os.path.join(
-                os.path.expanduser("~"), ".local", "share", "kirag", "workspace"
-            )
-            for ws in [WORKSPACE_DIR, bundled_ws, fallback_ws]:
-                if ws and os.path.exists(ws):
-                    try:
-                        for name in os.listdir(ws):
-                            target = os.path.join(ws, name)
-                            if os.path.isdir(target):
-                                hashed_id = hashlib.sha256(target.encode()).hexdigest()[:16]
-                                if (
-                                    name == run_id
-                                    or hashed_id == run_id
-                                    or (name.startswith("run_") and run_id in name)
-                                ):
-                                    shutil.rmtree(target, ignore_errors=True)
-                    except Exception:
-                        pass
 
         def _purge_all_run_dirs_from_disk():
             import shutil
 
             from settings_manager import WORKSPACE_DIR
 
-            bundled_ws = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                "workspace",
-            )
-            fallback_ws = os.path.join(
-                os.path.expanduser("~"), ".local", "share", "kirag", "workspace"
-            )
-            for ws in [WORKSPACE_DIR, bundled_ws, fallback_ws]:
-                if ws and os.path.exists(ws):
-                    try:
-                        for name in os.listdir(ws):
-                            if name.startswith("run_"):
-                                target = os.path.join(ws, name)
-                                if os.path.isdir(target):
-                                    shutil.rmtree(target, ignore_errors=True)
-                    except Exception:
-                        pass
+            workspace = Path(WORKSPACE_DIR).resolve()
+            if not workspace.is_dir():
+                return
+            for entry in workspace.iterdir():
+                try:
+                    target = resolve_run_under(workspace, entry.name)
+                except PathSecurityError:
+                    continue
+                if target.is_dir():
+                    shutil.rmtree(target)
+
+        def _valid_run_id(run_id: object) -> str | None:
+            if not isinstance(run_id, str):
+                return None
+            if (
+                not run_id
+                or len(run_id) > 128
+                or "\x00" in run_id
+                or "/" in run_id
+                or "\\" in run_id
+                or Path(run_id).is_absolute()
+                or not all(char.isalnum() or char in "_-" for char in run_id)
+            ):
+                return None
+            return run_id
 
         if req.delete_all:
             runs = get_all_runs()
             count = 0
             for r in runs:
-                rid = r.get("run_id")
+                rid = _valid_run_id(r.get("run_id"))
                 if rid:
                     try:
                         delete_run_vectors(rid)
@@ -141,26 +151,31 @@ def delete_cases(req: DeleteCasesRequest):
                 success=True, message=f"Deleted all {count} case(s) successfully."
             )
         elif req.run_ids:
+            validated_run_ids = []
+            for raw_run_id in req.run_ids:
+                run_id = _valid_run_id(raw_run_id)
+                if run_id is None:
+                    raise HTTPException(status_code=400, detail="Invalid run identifier")
+                validated_run_ids.append(run_id)
             count = 0
-            for rid in req.run_ids:
-                if rid:
-                    try:
-                        delete_run_vectors(rid)
-                    except Exception as e:
-                        logger.warning(f"Vector delete error for {rid}: {e}")
-                    try:
-                        delete_run_data(rid)
-                    except Exception as e:
-                        logger.warning(f"DB delete error for {rid}: {e}")
-                    try:
-                        delete_run_objects(rid)
-                    except Exception as e:
-                        logger.warning(f"Storage delete error for {rid}: {e}")
-                    try:
-                        _purge_run_dir_from_disk(rid)
-                    except Exception as e:
-                        logger.warning(f"Disk purge error for {rid}: {e}")
-                    count += 1
+            for rid in validated_run_ids:
+                try:
+                    delete_run_vectors(rid)
+                except Exception as e:
+                    logger.warning(f"Vector delete error for {rid}: {e}")
+                try:
+                    delete_run_data(rid)
+                except Exception as e:
+                    logger.warning(f"DB delete error for {rid}: {e}")
+                try:
+                    delete_run_objects(rid)
+                except Exception as e:
+                    logger.warning(f"Storage delete error for {rid}: {e}")
+                try:
+                    _purge_run_dir_from_disk(rid)
+                except Exception as e:
+                    logger.warning(f"Disk purge error for {rid}: {e}")
+                count += 1
 
             try:
                 invalidate_query_cache()
@@ -169,9 +184,12 @@ def delete_cases(req: DeleteCasesRequest):
 
             return MessageResponse(success=True, message=f"Deleted {count} case(s).")
         else:
-            return MessageResponse(success=False, message="No run_ids provided to delete.")
-    except Exception as e:
-        return MessageResponse(success=False, message=f"Error deleting cases: {e}")
+            raise HTTPException(status_code=400, detail="No run_ids provided to delete")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Case deletion failed")
+        raise HTTPException(status_code=500, detail="Error deleting cases")
 
 
 # ── Embedding & Vector Store ──────────────────────────────────────────────────
@@ -226,8 +244,9 @@ def get_embedding_telemetry():
             redis_cached_count=cached_count,
             telemetry_html=html_val,
         )
-    except Exception as e:
-        return EmbeddingTelemetryResponse(redis_cached_count=f"Error: {e}")
+    except Exception as exc:
+        logger.exception("Embedding telemetry failed")
+        raise HTTPException(status_code=503, detail="Embedding telemetry is unavailable") from exc
 
 
 @router.post(
@@ -244,18 +263,25 @@ def save_embedding_config(req: EmbeddingConfigRequest):
         req.chunk_overlap,
         req.embedding_batch_size,
     )
-    return MessageResponse(success="✅" in msg, message=msg)
+    if "✅" not in msg:
+        raise HTTPException(status_code=500, detail="Unable to save embedding configuration")
+    return MessageResponse(success=True, message=msg)
 
 
 @router.post(
-    "/embedding/purge-cache", response_model=MessageResponse, summary="Purge Redis embedding cache"
+    "/embedding/purge-cache",
+    response_model=MessageResponse,
+    summary="Purge Redis embedding cache",
+    dependencies=[Depends(verify_admin_key)],
 )
 def purge_cache():
     """Purge Redis vector cache."""
     from embedding_pipeline_ui import purge_embedding_cache
 
     msg = purge_embedding_cache()
-    return MessageResponse(success="✅" in msg, message=msg)
+    if "✅" not in msg:
+        raise HTTPException(status_code=500, detail="Unable to purge embedding cache")
+    return MessageResponse(success=True, message=msg)
 
 
 # ── Chat Export ───────────────────────────────────────────────────────────────
@@ -267,10 +293,10 @@ def export_chat_session(req: ExportChatRequest):
     from fastapi.responses import FileResponse
 
     from rag_export import (
-        export_chat_csv,
         export_chat_docx,
         export_chat_markdown,
         export_chat_text,
+        export_timeline_csv,
         export_timeline_docx,
     )
 
@@ -282,19 +308,26 @@ def export_chat_session(req: ExportChatRequest):
     elif fmt == "txt":
         path = export_chat_text(req.history, mode=req.mode, active_case=case_label)
     elif fmt == "csv":
-        path = export_chat_csv(req.history, active_case=case_label)
+        path = export_timeline_csv(req.history, active_case=case_label)
     elif fmt == "docx":
         path = export_chat_docx(req.history, mode=req.mode, active_case=case_label)
     elif fmt == "timeline_docx":
         path = export_timeline_docx(req.history, active_case=case_label)
     else:
-        return MessageResponse(success=False, message=f"Unsupported format: {fmt}")
+        raise HTTPException(status_code=422, detail=f"Unsupported export format: {fmt}")
 
-    if not path or not os.path.exists(path):
-        return MessageResponse(success=False, message="Failed to generate export file.")
+    if not path:
+        raise HTTPException(status_code=500, detail="Failed to generate export file")
 
-    filename = os.path.basename(path)
-    return FileResponse(path, filename=filename)
+    from rag_export import EXPORT_DIR
+
+    try:
+        safe_path = require_approved_file(path, {EXPORT_DIR}, {".md", ".txt", ".csv", ".docx"})
+    except PathSecurityError as exc:
+        raise HTTPException(status_code=500, detail="Failed to generate export file") from exc
+    if not safe_path.is_file():
+        raise HTTPException(status_code=500, detail="Failed to generate export file")
+    return FileResponse(safe_path, filename=safe_path.name)
 
 
 # ── Infrastructure ────────────────────────────────────────────────────────────
@@ -306,15 +339,24 @@ def start_infra():
     from rag_infra_manager import start_and_init_rag
 
     success, msg = start_and_init_rag()
+    if not success:
+        raise HTTPException(status_code=503, detail=msg or "Unable to start RAG infrastructure")
     return MessageResponse(success=success, message=msg)
 
 
-@router.post("/infra/stop", response_model=MessageResponse, summary="Stop RAG infrastructure")
+@router.post(
+    "/infra/stop",
+    response_model=MessageResponse,
+    summary="Stop RAG infrastructure",
+    dependencies=[Depends(verify_admin_key)],
+)
 def stop_infra():
     """Stop all RAG infrastructure services."""
     from rag_infra_manager import stop_rag_infrastructure
 
     success, msg = stop_rag_infrastructure()
+    if not success:
+        raise HTTPException(status_code=500, detail=msg or "Unable to stop RAG infrastructure")
     return MessageResponse(success=success, message=msg)
 
 
@@ -327,16 +369,28 @@ def infra_status():
     return InfraStatusResponse(**statuses)
 
 
-@router.post("/query", summary="Query the RAG system")
+@router.post(
+    "/query",
+    response_model=RAGQueryResponse,
+    responses={
+        200: {
+            "content": {"text/event-stream": {}},
+            "description": "SSE stream or complete JSON response",
+        }
+    },
+    summary="Query the RAG system",
+)
 def rag_query(req: RAGQueryRequest):
     """Run a RAG analysis query.
 
     If ``stream=True`` (default), returns an SSE stream of text chunks.
     Otherwise returns the complete response as JSON.
     """
-    from rag.analyzer import ANALYSIS_MODE_MAP, analyze
+    from rag.analyzer import ANALYSIS_MODE_MAP, ContextWindowError, analyze
 
     mode_key = ANALYSIS_MODE_MAP.get(req.mode, req.mode)
+    date_from = req.date_from.isoformat() if req.date_from else None
+    date_to = req.date_to.isoformat() if req.date_to else None
 
     if req.stream:
 
@@ -351,17 +405,23 @@ def rag_query(req: RAGQueryRequest):
                     run_id_filter=req.case_id,
                     doc_type_filter=req.doc_type,
                     author_filter=req.author,
-                    date_from=req.date_from,
-                    date_to=req.date_to,
+                    date_from=date_from,
+                    date_to=date_to,
                     stream=True,
+                    max_tokens=req.max_output_tokens,
                     use_reranker=req.use_reranker,
                     reranker_model=req.reranker_model,
                     reranker_device=req.reranker_device,
                 ):
                     yield f"data: {json.dumps({'chunk': chunk})}\n\n"
                 yield "data: [DONE]\n\n"
-            except Exception as e:
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            except ContextWindowError as exc:
+                envelope = error_envelope("context_window_exceeded", str(exc))
+                yield f"data: {envelope.model_dump_json(exclude_none=True)}\n\n"
+            except Exception:
+                logger.exception("Streaming RAG query failed")
+                envelope = error_envelope("rag_query_failed", "RAG query failed")
+                yield f"data: {envelope.model_dump_json(exclude_none=True)}\n\n"
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
     else:
@@ -377,44 +437,69 @@ def rag_query(req: RAGQueryRequest):
                 run_id_filter=req.case_id,
                 doc_type_filter=req.doc_type,
                 author_filter=req.author,
-                date_from=req.date_from,
-                date_to=req.date_to,
-                stream=True,
+                date_from=date_from,
+                date_to=date_to,
+                stream=False,
+                max_tokens=req.max_output_tokens,
                 use_reranker=req.use_reranker,
                 reranker_model=req.reranker_model,
                 reranker_device=req.reranker_device,
             ):
                 full_response += chunk
-        except Exception as e:
-            return {"error": str(e)}
-        return {"response": full_response}
+        except ContextWindowError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "context_window_exceeded",
+                    "message": str(exc),
+                },
+            ) from exc
+        except Exception as exc:
+            logger.exception("RAG query failed")
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "rag_query_failed",
+                    "message": "RAG query failed",
+                },
+            ) from exc
+        return RAGQueryResponse(response=full_response)
 
 
 # ── Indexing ──────────────────────────────────────────────────────────────────
 
 
-@router.post("/index", summary="Index a specific run")
+@router.post("/index", summary="Index a specific run", dependencies=[Depends(verify_admin_key)])
 def index_run(req: IndexRunRequest):
     """Index a single OCR run into the RAG corpus."""
     from indexing_service import CorpusIndexingService
+    from settings_manager import WORKSPACE_DIR
 
-    messages = list(CorpusIndexingService.index_run(req.run_dir, force=True))
-    return MessageResponse(
-        success=any("✅" in m or "Done" in m for m in messages),
-        message="\n".join(messages),
-    )
+    try:
+        run_dir = resolve_run_under(WORKSPACE_DIR, req.run_dir)
+    except PathSecurityError as exc:
+        raise HTTPException(status_code=400, detail="Invalid run name") from exc
+    if not run_dir.is_dir():
+        raise HTTPException(status_code=400, detail="Run not found")
+    messages = list(CorpusIndexingService.index_run(str(run_dir), force=True))
+    success = any("✅" in m or "Done" in m for m in messages)
+    if not success:
+        raise HTTPException(status_code=500, detail="Unable to index run")
+    return MessageResponse(success=True, message="\n".join(messages))
 
 
-@router.post("/index-all", summary="Index all available runs")
+@router.post(
+    "/index-all", summary="Index all available runs", dependencies=[Depends(verify_admin_key)]
+)
 def index_all_runs():
     """Index all available OCR runs into the RAG corpus."""
     from indexing_service import CorpusIndexingService
 
     messages = list(CorpusIndexingService.index_all_runs(force=True))
-    return MessageResponse(
-        success=any("✅" in m or "Done" in m for m in messages),
-        message="\n".join(messages),
-    )
+    success = any("✅" in m or "Done" in m for m in messages)
+    if not success:
+        raise HTTPException(status_code=500, detail="Unable to index runs")
+    return MessageResponse(success=True, message="\n".join(messages))
 
 
 @router.post("/upload-markdown", summary="Upload external markdown files")
@@ -424,10 +509,7 @@ async def upload_markdown(
     new_case_name: str = Form(""),
 ):
     """Upload and index external markdown files into the corpus."""
-    import os
     import tempfile
-
-    from fastapi import HTTPException
 
     from indexing_service import CorpusIndexingService
 
@@ -435,34 +517,57 @@ async def upload_markdown(
         raise HTTPException(status_code=400, detail="No files provided for upload.")
 
     file_list = files if isinstance(files, list) else [files]
+    limits = markdown_upload_limits()
+    if len(file_list) > limits.max_files:
+        await close_uploads(file_list)
+        raise HTTPException(status_code=413, detail="Too many uploaded files")
 
-    # Write uploaded files to a temp dir so the indexer can read them.
-    # Sanitise the client-supplied filename via basename so a path like
-    # "../../evil.md" cannot escape the temp dir and overwrite arbitrary files.
-    temp_dir = tempfile.mkdtemp()
-    saved_paths = []
+    temp_dir = tempfile.mkdtemp(prefix="kirag-markdown-")
+    saved_files = []
+    aggregate_bytes = 0
     try:
         for upload in file_list:
-            safe_name = os.path.basename(upload.filename or "").strip()
-            if not safe_name or "/" in safe_name or "\\" in safe_name or ".." in safe_name:
-                continue
-            path = os.path.join(temp_dir, safe_name)
-            content = await upload.read()
-            with open(path, "wb") as f:
-                f.write(content)
-            saved_paths.append(path)
+            original_name = escaped_original_name(upload, ".md")
+            require_content_type(
+                upload,
+                {"text/markdown", "text/plain", "application/octet-stream"},
+            )
+            stored_name = unique_upload_name(".md")
+            path = resolve_file_under(temp_dir, stored_name, {".md"})
+            validator = MarkdownValidator()
+            file_bytes = 0
+            with path.open("xb") as output:
+                while True:
+                    chunk = await upload.read(UPLOAD_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    file_bytes += len(chunk)
+                    aggregate_bytes += len(chunk)
+                    if file_bytes > limits.max_file_bytes:
+                        raise HTTPException(
+                            status_code=413, detail="Uploaded Markdown file is too large"
+                        )
+                    if aggregate_bytes > limits.max_total_bytes:
+                        raise HTTPException(status_code=413, detail="Aggregate upload is too large")
+                    validator.feed(chunk)
+                    output.write(chunk)
+            if file_bytes == 0:
+                raise HTTPException(status_code=415, detail="Markdown upload is empty")
+            validator.finish()
+            saved_files.append(SimpleNamespace(name=str(path), original_filename=original_name))
 
         messages = list(
-            CorpusIndexingService.add_markdown_to_case(saved_paths, case_option, new_case_name)
+            CorpusIndexingService.add_markdown_to_case(saved_files, case_option, new_case_name)
         )
-        return MessageResponse(
-            success=any("✅" in m or "Done" in m for m in messages),
-            message="\n".join(messages),
-        )
+        success = any("✅" in m or "Done" in m for m in messages)
+        if not success:
+            raise HTTPException(status_code=500, detail="Unable to index Markdown files")
+        return MessageResponse(success=True, message="\n".join(messages))
     finally:
         import shutil
 
         shutil.rmtree(temp_dir, ignore_errors=True)
+        await close_uploads(file_list)
 
 
 # ── Corpus ────────────────────────────────────────────────────────────────────
@@ -489,8 +594,8 @@ def corpus_stats():
             latest_date=str(l_date) if l_date else None,
             vectors_count=qdrant_info.get("points_count", 0),
         )
-    except Exception:
-        return CorpusStatsResponse(indexed_runs=-1, total_chunks=-1)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Corpus statistics are unavailable") from exc
 
 
 @router.get("/corpus/cases", response_model=list[CaseInfo], summary="List indexed cases")
@@ -503,5 +608,5 @@ def list_cases():
         return [
             CaseInfo(label=r.get("display_name", r["run_id"]), run_id=r["run_id"]) for r in runs
         ]
-    except Exception:
-        return []
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Indexed cases are unavailable") from exc

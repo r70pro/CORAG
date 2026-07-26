@@ -6,9 +6,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
+from api.auth import verify_admin_key
 from api.models import (
     CleanupRequest,
     CleanupResponse,
@@ -20,6 +21,7 @@ from api.models import (
     InstalledModelsResponse,
     ServiceHealth,
 )
+from path_security import PathSecurityError, require_approved_file, resolve_under
 
 logger = logging.getLogger(__name__)
 
@@ -103,15 +105,26 @@ def download_report():
     settings = load_settings()
     port = settings.get("docker_port", 8000)
     report_path = generate_diagnostic_report_file(port)
+    from settings_manager import WORKSPACE_DIR
+
+    try:
+        safe_report = require_approved_file(
+            report_path, {resolve_under(WORKSPACE_DIR, "exports")}, {".md"}
+        )
+    except PathSecurityError as exc:
+        raise HTTPException(status_code=500, detail="Unable to generate report") from exc
     return FileResponse(
-        report_path,
+        safe_report,
         media_type="text/markdown",
         filename="diagnostic_report.md",
     )
 
 
 @router.post(
-    "/cleanup", response_model=CleanupResponse, summary="Perform system reset and disk cleanup"
+    "/cleanup",
+    response_model=CleanupResponse,
+    summary="Perform system reset and disk cleanup",
+    dependencies=[Depends(verify_admin_key)],
 )
 def execute_cleanup(req: CleanupRequest):
     """Execute cleanup of selected components to reclaim disk space."""
@@ -156,16 +169,14 @@ def get_installed_models():
         )
     except Exception as e:
         logger.error(f"Error fetching installed models: {e}")
-        return InstalledModelsResponse(
-            models=[],
-            total_count=0,
-            total_size_bytes=0,
-            total_human_size="0 B",
-        )
+        raise HTTPException(status_code=500, detail="Unable to retrieve installed models") from e
 
 
 @router.delete(
-    "/models", response_model=DeleteModelsResponse, summary="Delete selected installed models"
+    "/models",
+    response_model=DeleteModelsResponse,
+    summary="Delete selected installed models",
+    dependencies=[Depends(verify_admin_key)],
 )
 def delete_models(req: DeleteModelsRequest):
     """Delete selected cached model directories from disk to reclaim storage space."""
@@ -173,19 +184,18 @@ def delete_models(req: DeleteModelsRequest):
         from system_diagnostics import delete_installed_models, format_bytes_human
 
         success, msg, deleted, reclaimed = delete_installed_models(req.model_ids)
-        return DeleteModelsResponse(
+        response = DeleteModelsResponse(
             success=success,
             message=msg,
             deleted_models=deleted,
             reclaimed_bytes=reclaimed,
             reclaimed_str=format_bytes_human(reclaimed),
         )
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to delete models")
+        return response
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise
         logger.error(f"Error deleting installed models: {e}")
-        return DeleteModelsResponse(
-            success=False,
-            message=f"Failed to delete models: {str(e)}",
-            deleted_models=[],
-            reclaimed_bytes=0,
-            reclaimed_str="0 B",
-        )
+        raise HTTPException(status_code=500, detail="Failed to delete models") from e

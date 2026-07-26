@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from api.auth import verify_admin_key
 from api.models import (
     DockerCreateRequest,
     DockerLogsResponse,
@@ -51,7 +52,7 @@ def get_status():
 
 
 @router.get("/logs", response_model=DockerLogsResponse, summary="Get container logs")
-def get_logs(tail: int = 200):
+def get_logs(tail: int = Query(200, ge=1, le=10_000)):
     """Return stdout/stderr logs from the vLLM container."""
     from docker_manager import get_docker_logs, get_docker_status
 
@@ -60,25 +61,44 @@ def get_logs(tail: int = 200):
     return DockerLogsResponse(logs=logs, container_status=status)
 
 
-@router.post("/start", response_model=MessageResponse, summary="Start container")
+@router.post(
+    "/start",
+    response_model=MessageResponse,
+    summary="Start container",
+    dependencies=[Depends(verify_admin_key)],
+)
 async def start_container():
     """Start the existing vLLM inference container."""
     from docker_manager import start_docker_container
 
     success, msg = await asyncio.to_thread(start_docker_container)
+    if not success:
+        raise HTTPException(status_code=503, detail=msg or "Unable to start container")
     return MessageResponse(success=success, message=msg)
 
 
-@router.post("/stop", response_model=MessageResponse, summary="Stop container")
+@router.post(
+    "/stop",
+    response_model=MessageResponse,
+    summary="Stop container",
+    dependencies=[Depends(verify_admin_key)],
+)
 async def stop_container():
     """Stop the running vLLM inference container."""
     from docker_manager import stop_docker_container
 
     success, msg = await asyncio.to_thread(stop_docker_container)
+    if not success:
+        raise HTTPException(status_code=500, detail=msg or "Unable to stop container")
     return MessageResponse(success=success, message=msg)
 
 
-@router.post("/create", response_model=MessageResponse, summary="Create/recreate container")
+@router.post(
+    "/create",
+    response_model=MessageResponse,
+    summary="Create/recreate container",
+    dependencies=[Depends(verify_admin_key)],
+)
 async def create_container(req: DockerCreateRequest):
     """Create or recreate the vLLM inference container with the given parameters."""
     import os
@@ -142,13 +162,22 @@ async def create_container(req: DockerCreateRequest):
             new_settings["hf_token"] = hf_token
         settings.update(new_settings)
         save_settings(settings)
+    else:
+        raise HTTPException(status_code=503, detail=msg or "Unable to create container")
     return MessageResponse(success=success, message=msg)
 
 
-@router.post("/shutdown", response_model=MessageResponse, summary="Shutdown and remove")
+@router.post(
+    "/shutdown",
+    response_model=MessageResponse,
+    summary="Shutdown and remove",
+    dependencies=[Depends(verify_admin_key)],
+)
 async def shutdown_container():
     """Stop and remove the vLLM inference container."""
     from docker_manager import shutdown_docker_container
 
     success, msg = await asyncio.to_thread(shutdown_docker_container)
+    if not success:
+        raise HTTPException(status_code=500, detail=msg or "Unable to remove container")
     return MessageResponse(success=success, message=msg)

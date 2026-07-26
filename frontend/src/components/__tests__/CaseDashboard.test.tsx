@@ -62,4 +62,19 @@ describe("CaseDashboard Component", () => {
       expect(screen.getByText("No Indexed Cases Found")).toBeInTheDocument();
     });
   });
+
+  test("does not render fabricated case evidence when the API is unavailable", async () => {
+    mockFetchCaseSummary.mockResolvedValueOnce(null);
+
+    render(<CaseDashboard />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Unable to load case evidence; no fallback records were displayed.")
+      ).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Gavin Weekes/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/2024AL0008570/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Pages 1-3/i)).not.toBeInTheDocument();
+  });
 });

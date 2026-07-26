@@ -1,8 +1,11 @@
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
     container_name: olmocr_postgres
+    labels:
+      com.kirag.managed: "true"
+      com.kirag.component: postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: olmocr_rag
@@ -20,8 +23,11 @@ services:
       retries: 5
 
   redis:
-    image: redis:7.2-alpine
+    image: redis@sha256:dfa18828cbc07b3ae6a95ec7343f6c214fdee2d836197b4be8e9904420762cd8
     container_name: olmocr_redis
+    labels:
+      com.kirag.managed: "true"
+      com.kirag.component: redis
     restart: unless-stopped
     ports:
       - "127.0.0.1:6379:6379"
@@ -35,8 +41,11 @@ services:
       retries: 5
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     container_name: olmocr_minio
+    labels:
+      com.kirag.managed: "true"
+      com.kirag.component: minio
     restart: unless-stopped
     environment:
       MINIO_ROOT_USER: ${OLMOCR_MINIO_ACCESS_KEY:-minio_access_5c6d3284f18b}
@@ -54,8 +63,11 @@ services:
       retries: 5
 
   qdrant:
-    image: qdrant/qdrant:v1.10.1
+    image: qdrant/qdrant@sha256:6a34a799bed69c7c25c4e87ab04092005e4579062a9bf0e82a75d0b21f030006
     container_name: olmocr_qdrant
+    labels:
+      com.kirag.managed: "true"
+      com.kirag.component: qdrant
     restart: unless-stopped
     ports:
       - "127.0.0.1:6333:6333"
@@ -74,4 +86,3 @@ networks:
   default:
     name: olmocr_rag_network
     driver: bridge
-

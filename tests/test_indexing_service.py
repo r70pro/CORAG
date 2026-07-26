@@ -6,6 +6,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from contextlib import contextmanager
 from unittest.mock import patch, MagicMock
 
 # Prevent system operations during import
@@ -18,10 +19,13 @@ class TestIndexingService(unittest.TestCase):
 
     def setUp(self):
         self.tmp_dir = tempfile.mkdtemp()
+        self.workspace_patch = patch("indexing_service.WORKSPACE_DIR", self.tmp_dir)
+        self.workspace_patch.start()
         self.run_dir = os.path.join(self.tmp_dir, "run_test_1")
         os.makedirs(self.run_dir)
 
     def tearDown(self):
+        self.workspace_patch.stop()
         shutil.rmtree(self.tmp_dir)
 
     @patch("indexing_service.load_settings")
@@ -59,6 +63,32 @@ class TestIndexingService(unittest.TestCase):
     @patch("rag.embedding.upsert_chunks_generator")
     @patch("rag.db.insert_chunks")
     def test_index_run_full_flow_with_exceptions(self, mock_insert, mock_upsert, mock_upload, mock_reg_doc, mock_register_run, mock_chunk, mock_mark_doc, mock_mark_run):
+        @contextmanager
+        def transaction(_run_id):
+            yield MagicMock()
+
+        def prepare(chunks, model_name=None):
+            for i, chunk in enumerate(chunks):
+                chunk["qdrant_point_id"] = f"p{i+1}"
+                chunk["embedding_model"] = "test-model"
+            return "test-model"
+
+        safety_patchers = [
+            patch("rag.db.indexing_transaction", transaction),
+            patch("rag.db.mark_run_pending"),
+            patch("rag.db.get_point_ids_for_documents", return_value=set()),
+            patch("rag.db.replace_document_chunks"),
+            patch("rag.db.get_run_totals", return_value=(1, 1)),
+            patch("rag.embedding.prepare_chunk_point_ids", side_effect=prepare),
+            patch("rag.embedding.init_collection"),
+            patch("rag.embedding.snapshot_points", return_value={}),
+            patch("rag.embedding.delete_points"),
+            patch("rag.embedding.rollback_point_mutations"),
+        ]
+        for patcher in safety_patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
         mock_chunk.return_value = {
             "doc1": {
                 "md_file": "0001_doc.md",
@@ -87,20 +117,20 @@ class TestIndexingService(unittest.TestCase):
         # Reset registry side effect
         mock_register_run.side_effect = None
 
-        # 2. Storage upload fails (yields warning, but doesn't crash)
+        # 2. Failed vector indexing does not upload to object storage.
         mock_upload.side_effect = Exception("MinIO error")
         mock_upsert.side_effect = Exception("Upsert failed") # to break early after upload
         with patch("rag.db.is_run_indexed", return_value=False):
             updates2 = list(CorpusIndexingService.index_run(self.run_dir))
-            self.assertIn("Storage upload warning", "".join(updates2))
             self.assertIn("Embedding/indexing failed", "".join(updates2))
+            mock_upload.assert_not_called()
 
-        # 3. Cache invalidation fails (caught internally)
-        mock_upload.side_effect = None
+        # 3. Storage/cache failures after commit are non-fatal.
         mock_upsert.side_effect = None
         with patch("rag.db.is_run_indexed", return_value=False):
             with patch("rag.cache.invalidate_query_cache", side_effect=Exception("Cache error")):
                 updates3 = list(CorpusIndexingService.index_run(self.run_dir))
+                self.assertIn("Storage upload warning", "".join(updates3))
                 self.assertIn("Successfully indexed", "".join(updates3))
 
     def test_index_all_runs(self):
@@ -173,6 +203,32 @@ class TestIndexingService(unittest.TestCase):
     @patch("rag.embedding.upsert_chunks_generator")
     @patch("rag.db.insert_chunks")
     def test_add_markdown_to_case_processing_variants(self, mock_insert, mock_upsert, mock_chunk, mock_upload, mock_reg_doc, mock_reg_run, mock_get_runs, mock_conn, mock_mark_doc, mock_mark_run):
+        @contextmanager
+        def transaction(_run_id):
+            yield MagicMock()
+
+        def prepare(chunks, model_name=None):
+            for i, chunk in enumerate(chunks):
+                chunk["qdrant_point_id"] = f"p{i+1}"
+                chunk["embedding_model"] = "test-model"
+            return "test-model"
+
+        safety_patchers = [
+            patch("rag.db.indexing_transaction", transaction),
+            patch("rag.db.mark_run_pending"),
+            patch("rag.db.get_point_ids_for_documents", return_value=set()),
+            patch("rag.db.replace_document_chunks"),
+            patch("rag.db.get_run_totals", return_value=(2, 1)),
+            patch("rag.embedding.prepare_chunk_point_ids", side_effect=prepare),
+            patch("rag.embedding.init_collection"),
+            patch("rag.embedding.snapshot_points", return_value={}),
+            patch("rag.embedding.delete_points"),
+            patch("rag.embedding.rollback_point_mutations"),
+        ]
+        for patcher in safety_patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
         # Configure get_connection mock
         mock_conn_inst = mock_conn.return_value.__enter__.return_value
         mock_cur = mock_conn_inst.cursor.return_value.__enter__.return_value
@@ -210,6 +266,17 @@ class TestIndexingService(unittest.TestCase):
             self.assertIn("No files were successfully copied", "".join(updates2))
 
         # 3. Database run registration fails
+        mock_chunk.return_value = [
+            {
+                "chunk_id": "c1",
+                "doc_id": "d1",
+                "run_id": "r123",
+                "chunk_index": 0,
+                "text": "text",
+                "char_start": 0,
+                "char_end": 4,
+            }
+        ]
         mock_reg_run.side_effect = Exception("Run register failed")
         updates3 = list(CorpusIndexingService.add_markdown_to_case([mock_file], "r123", ""))
         self.assertIn("Database run registration failed", "".join(updates3))
@@ -218,7 +285,7 @@ class TestIndexingService(unittest.TestCase):
         # 4. Open markdown file raises Exception
         orig_open = open
         def mock_open_fn(file, mode="r", *args, **kwargs):
-            if isinstance(file, str) and "markdown/inputs" in file and "r" in mode:
+            if "markdown/inputs" in str(file) and "r" in mode:
                 raise Exception("Read error")
             return orig_open(file, mode, *args, **kwargs)
 
@@ -227,11 +294,10 @@ class TestIndexingService(unittest.TestCase):
             self.assertIn("Error reading uploaded.md", "".join(updates4))
             self.assertIn("No chunks generated", "".join(updates4))
 
-        # 5. Document registration in database fails (skips document)
+        # 5. Document registration failure aborts the atomic operation.
         mock_reg_doc.side_effect = Exception("Doc register failed")
         updates5 = list(CorpusIndexingService.add_markdown_to_case([mock_file], "r123", ""))
-        self.assertIn("Database document registration failed for uploaded.md", "".join(updates5))
-        self.assertIn("No chunks generated", "".join(updates5))
+        self.assertIn("Database run registration failed", "".join(updates5))
         mock_reg_doc.side_effect = None
 
         # 6. MinIO storage upload fails (yields warning, but continues)

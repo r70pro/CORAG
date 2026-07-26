@@ -4,13 +4,41 @@ RAG Infrastructure Manager — Docker Compose lifecycle for PostgreSQL, Redis, M
 Extends the existing docker_manager.py pattern to manage the RAG services.
 """
 
-import os
 import subprocess
 import time
+from importlib.metadata import PackageNotFoundError, distribution
+from pathlib import Path
 
-# Path to the docker-compose file
-COMPOSE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docker-compose.rag.yml")
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+from audit_log import audit_event
+from settings_manager import WORKSPACE_DIR
+
+
+def _installed_compose_file() -> Path:
+    """Return the bundled Compose file in a checkout or an installed wheel."""
+    checkout_file = Path(__file__).resolve().with_name("docker-compose.rag.yml")
+    if checkout_file.is_file():
+        return checkout_file
+
+    try:
+        package = distribution("kirag")
+    except PackageNotFoundError as exc:
+        raise FileNotFoundError("KIRAG's bundled docker-compose.rag.yml was not found") from exc
+
+    for entry in package.files or ():
+        if entry.as_posix().endswith("share/kirag/docker-compose.rag.yml"):
+            installed_file = Path(package.locate_file(entry)).resolve()
+            if installed_file.is_file():
+                return installed_file
+    raise FileNotFoundError("KIRAG's bundled docker-compose.rag.yml was not found")
+
+
+COMPOSE_FILE = str(_installed_compose_file())
+_checkout_root = Path(__file__).resolve().parent
+PROJECT_DIR = str(
+    _checkout_root
+    if (_checkout_root / "docker-compose.rag.yml").is_file()
+    else Path(WORKSPACE_DIR).resolve().parent
+)
 
 
 def _run_compose(args: list, timeout: int = 60) -> tuple[bool, str]:
@@ -23,7 +51,15 @@ def _run_compose(args: list, timeout: int = 60) -> tuple[bool, str]:
     Returns:
         (success, message) tuple.
     """
-    cmd = ["docker", "compose", "-f", COMPOSE_FILE] + args
+    cmd = [
+        "docker",
+        "compose",
+        "--project-directory",
+        PROJECT_DIR,
+        "-f",
+        COMPOSE_FILE,
+        *args,
+    ]
     try:
         result = subprocess.run(
             cmd,
@@ -48,9 +84,12 @@ def start_rag_infrastructure() -> tuple[bool, str]:
     Returns:
         (success, message) tuple.
     """
+    audit_event("infrastructure_create", "attempt", stack="rag")
     success, msg = _run_compose(["up", "-d", "--wait"], timeout=120)
     if success:
+        audit_event("infrastructure_create", "success", stack="rag")
         return True, "RAG infrastructure started successfully."
+    audit_event("infrastructure_create", "failure", stack="rag", error=msg)
     return False, f"Failed to start RAG infrastructure: {msg}"
 
 
@@ -60,9 +99,12 @@ def stop_rag_infrastructure() -> tuple[bool, str]:
     Returns:
         (success, message) tuple.
     """
+    audit_event("infrastructure_shutdown", "attempt", stack="rag")
     success, msg = _run_compose(["stop"], timeout=30)
     if success:
+        audit_event("infrastructure_shutdown", "success", stack="rag")
         return True, "RAG infrastructure stopped."
+    audit_event("infrastructure_shutdown", "failure", stack="rag", error=msg)
     return False, f"Failed to stop: {msg}"
 
 
@@ -78,9 +120,28 @@ def destroy_rag_infrastructure(remove_volumes: bool = False) -> tuple[bool, str]
     args = ["down"]
     if remove_volumes:
         args.append("-v")
+    audit_event(
+        "infrastructure_delete",
+        "attempt",
+        stack="rag",
+        remove_volumes=remove_volumes,
+    )
     success, msg = _run_compose(args, timeout=30)
     if success:
+        audit_event(
+            "infrastructure_delete",
+            "success",
+            stack="rag",
+            remove_volumes=remove_volumes,
+        )
         return True, "RAG infrastructure destroyed."
+    audit_event(
+        "infrastructure_delete",
+        "failure",
+        stack="rag",
+        remove_volumes=remove_volumes,
+        error=msg,
+    )
     return False, f"Failed to destroy: {msg}"
 
 
@@ -99,7 +160,17 @@ def get_rag_service_status() -> dict[str, str]:
 
     try:
         result = subprocess.run(
-            ["docker", "compose", "-f", COMPOSE_FILE, "ps", "--format", "json"],
+            [
+                "docker",
+                "compose",
+                "--project-directory",
+                PROJECT_DIR,
+                "-f",
+                COMPOSE_FILE,
+                "ps",
+                "--format",
+                "json",
+            ],
             capture_output=True,
             text=True,
             timeout=10,

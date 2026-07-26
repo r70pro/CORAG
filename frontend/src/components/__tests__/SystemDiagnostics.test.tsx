@@ -18,7 +18,7 @@ jest.mock("@/lib/api", () => ({
   executeCleanup: jest.fn().mockResolvedValue({ success: true }),
   fetchInstalledModels: jest.fn().mockResolvedValue({ models: [], total_count: 0, total_size_bytes: 0, total_human_size: "0 B" }),
   deleteInstalledModels: jest.fn().mockResolvedValue({ success: true, message: "Deleted" }),
-  API_BASE_URL: "http://127.0.0.1:8001",
+  downloadDiagnosticReport: jest.fn().mockResolvedValue({ success: true }),
 }));
 
 const mockFetchSystemHealth = fetchSystemHealth as jest.Mock;
@@ -53,7 +53,7 @@ describe("SystemDiagnostics Component", () => {
   test("handles cleanup network errors gracefully", async () => {
     mockExecuteCleanup.mockResolvedValueOnce({
       success: false,
-      message: "Network error connecting to API server at http://127.0.0.1:8001: TypeError: NetworkError",
+      message: "Network error connecting to the same-origin API proxy: TypeError: NetworkError",
     });
 
     render(<SystemDiagnostics />);
@@ -66,7 +66,7 @@ describe("SystemDiagnostics Component", () => {
     fireEvent.click(cleanButton);
 
     await waitFor(() => {
-      expect(screen.getAllByText(/Network error connecting to API server/i).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/Network error connecting to the same-origin API proxy/i).length).toBeGreaterThan(0);
     });
   });
 });

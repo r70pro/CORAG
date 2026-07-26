@@ -1,24 +1,57 @@
+import hashlib
 import logging
 import os
+import re
 import socket
 import subprocess
 import time
 
 import httpx
 
+from audit_log import audit_event
+
 logger = logging.getLogger(__name__)
+
+CONTAINER_NAME = "olmocr"
+MANAGED_LABEL = "com.kirag.managed"
+MANAGED_LABEL_VALUE = "true"
+DEFAULT_MODEL = "allenai/olmOCR-2-7B-1025-FP8"
+DEFAULT_VLLM_IMAGE = (
+    "vllm/vllm-openai@sha256:04563c302537a91aa49ebdfbceda96111c5712275999b7e8804fa598f0b5641d"
+)
+_DIGEST_IMAGE_RE = re.compile(r"^.+@sha256:[0-9a-fA-F]{64}$")
+_DOCKER_NETWORK_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _decode_stderr(error: subprocess.CalledProcessError) -> str:
+    if isinstance(error.stderr, bytes):
+        return error.stderr.decode("utf-8", errors="replace").strip()
+    return str(error.stderr or "").strip()
 
 
 def get_docker_status():
     try:
         res = subprocess.run(
-            ["docker", "inspect", "-f", "{{.State.Status}}", "olmocr"],
+            [
+                "docker",
+                "inspect",
+                "-f",
+                f'{{{{.State.Status}}}}\t{{{{index .Config.Labels "{MANAGED_LABEL}"}}}}',
+                CONTAINER_NAME,
+            ],
             capture_output=True,
             text=True,
             check=False,
         )
         if res.returncode == 0:
-            return res.stdout.strip().lower()
+            parts = res.stdout.strip().lower().split("\t", 1)
+            if len(parts) != 2 or parts[1] != MANAGED_LABEL_VALUE:
+                return "foreign"
+            return parts[0]
         elif (
             "no such object" in res.stderr.lower() or "no such inspect object" in res.stderr.lower()
         ):
@@ -91,13 +124,10 @@ def is_vllm_compatible_model(model_id: str) -> bool:
 
 
 def get_cached_models() -> list[str]:
-    """Scan HuggingFace cache directories and standard presets for available models."""
-    presets = [
-        "allenai/olmOCR-2-7B-1025-FP8",
-        "nvidia/Phi-4-reasoning-plus-NVFP4",
-        "Qwen/Qwen2-VL-7B-Instruct",
-    ]
-    models = list(presets)
+    """Return allowlisted models, plus compatible cached models under admin override."""
+    from settings_manager import SUPPORTED_MODELS
+
+    models = list(SUPPORTED_MODELS)
 
     cache_dirs = []
     hf_home = os.environ.get("HF_HOME")
@@ -121,7 +151,11 @@ def get_cached_models() -> list[str]:
                         parts = item[len("models--") :].split("--", 1)
                         if len(parts) == 2:
                             model_id = f"{parts[0]}/{parts[1]}"
-                            if is_vllm_compatible_model(model_id) and model_id not in models:
+                            if (
+                                _env_enabled("KIRAG_ADVANCED_MODEL_OVERRIDE")
+                                and is_vllm_compatible_model(model_id)
+                                and model_id not in models
+                            ):
                                 models.append(model_id)
             except Exception as e:
                 logger.warning(f"Error scanning cache dir {c_dir}: {e}")
@@ -161,11 +195,18 @@ def start_docker_container():
     status = get_docker_status()
     if status == "exited":
         try:
-            subprocess.run(["docker", "start", "olmocr"], check=True, capture_output=True)
+            subprocess.run(["docker", "start", CONTAINER_NAME], check=True, capture_output=True)
+            audit_event("container_start", "success", container=CONTAINER_NAME)
             msg_parts.append("Container 'olmocr' started successfully.")
         except subprocess.CalledProcessError as e:
             success = False
-            msg_parts.append(f"Failed to start container 'olmocr': {e.stderr.decode().strip()}")
+            audit_event(
+                "container_start",
+                "failure",
+                container=CONTAINER_NAME,
+                error=_decode_stderr(e),
+            )
+            msg_parts.append(f"Failed to start container 'olmocr': {_decode_stderr(e)}")
     elif status in ("running", "restarting"):
         msg_parts.append("Container 'olmocr' is already running.")
     elif status == "not_found":
@@ -175,7 +216,7 @@ def start_docker_container():
             settings = load_settings()
             hf_token = settings.get("hf_token", os.environ.get("HF_TOKEN", ""))
             port = settings.get("docker_port", 8000)
-            model = settings.get("model_name", "allenai/olmOCR-2-7B-1025-FP8")
+            model = settings.get("model_name", DEFAULT_MODEL)
             gpu_mem = settings.get("docker_gpu_mem", 0.8)
             max_len = settings.get("docker_max_model_len", 15360)
             tp = settings.get("docker_tensor_parallel", 1)
@@ -189,6 +230,12 @@ def start_docker_container():
         except Exception as e:
             success = False
             msg_parts.append(f"Failed to provision 'olmocr' container: {e}")
+    elif status == "foreign":
+        success = False
+        msg_parts.append(
+            "Container name 'olmocr' is occupied by an unmanaged container; "
+            "explicit operator action is required."
+        )
     else:
         success = False
         msg_parts.append(f"Container status is '{status}', cannot start.")
@@ -202,11 +249,24 @@ def stop_docker_container():
     success = True
     if status in ["running", "restarting"]:
         try:
-            subprocess.run(["docker", "stop", "olmocr"], check=True, capture_output=True)
+            subprocess.run(["docker", "stop", CONTAINER_NAME], check=True, capture_output=True)
+            audit_event("container_stop", "success", container=CONTAINER_NAME)
             msg_parts.append("Container 'olmocr' stopped successfully.")
         except subprocess.CalledProcessError as e:
             success = False
-            msg_parts.append(f"Failed to stop container 'olmocr': {e.stderr.decode().strip()}")
+            audit_event(
+                "container_stop",
+                "failure",
+                container=CONTAINER_NAME,
+                error=_decode_stderr(e),
+            )
+            msg_parts.append(f"Failed to stop container 'olmocr': {_decode_stderr(e)}")
+    elif status == "foreign":
+        success = False
+        msg_parts.append(
+            "Refusing to stop unmanaged container named 'olmocr'; "
+            "explicit operator action is required."
+        )
     else:
         msg_parts.append("Container 'olmocr' is not running.")
 
@@ -224,37 +284,19 @@ def stop_docker_container():
 
 
 def resolve_vllm_image() -> str:
-    env_img = os.environ.get("OLMOCR_VLLM_IMAGE")
-    if env_img:
-        if os.environ.get("TESTING") == "true":
-            return env_img
-        try:
-            res = subprocess.run(["docker", "inspect", env_img], capture_output=True, check=False)
-            if res.returncode == 0:
-                return env_img
-            logger.warning(
-                f"Configured OLMOCR_VLLM_IMAGE '{env_img}' not found locally via docker inspect. "
-                "Falling back to available cached local image."
-            )
-        except Exception:
-            pass
-    for img in [
-        "nvcr.io/nvidia/vllm:26.04-py3",
-        "vllm/vllm-openai:v0.20.0",
-    ]:
-        try:
-            res = subprocess.run(["docker", "inspect", img], capture_output=True, check=False)
-            if res.returncode == 0:
-                return img
-        except Exception:
-            pass
-    return "vllm/vllm-openai:v0.20.0"
+    image = os.environ.get("OLMOCR_VLLM_IMAGE", "").strip() or DEFAULT_VLLM_IMAGE
+    if not _DIGEST_IMAGE_RE.fullmatch(image):
+        raise ValueError(
+            "OLMOCR_VLLM_IMAGE must be pinned by an immutable sha256 digest "
+            "(repository@sha256:<64 hex characters>)."
+        )
+    return image
 
 
-def free_host_port(port: int):
-    """Remove any Docker containers bound to host port before starting a new container."""
+def find_port_occupant(port: int) -> tuple[str, str] | None:
+    """Return the ID/name of a container publishing ``port`` without mutating it."""
     if os.environ.get("TESTING") == "true":
-        return
+        return None
     try:
         res = subprocess.run(
             ["docker", "ps", "-a", "--format", "{{.ID}}\t{{.Names}}\t{{.Ports}}"],
@@ -268,14 +310,99 @@ def free_host_port(port: int):
                     parts = line.split("\t")
                     cid = parts[0].strip()
                     if cid:
-                        logger.info(
-                            f"Removing container {cid} ({parts[1] if len(parts)>1 else ''}) bound to port {port}"
-                        )
-                        subprocess.run(
-                            ["docker", "rm", "-f", cid], check=False, capture_output=True
-                        )
+                        return cid, parts[1].strip() if len(parts) > 1 else ""
     except Exception as e:
-        logger.warning(f"Error checking/clearing containers on port {port}: {e}")
+        logger.warning(f"Error checking containers on port {port}: {e}")
+    return None
+
+
+def free_host_port(port: int):
+    """Compatibility wrapper retained as a read-only port occupancy check."""
+    return find_port_occupant(port)
+
+
+def _port_conflict_message(port: int, occupant: tuple[str, str] | None) -> str:
+    if occupant:
+        cid, name = occupant
+        identity = f"'{name}' ({cid})" if name else cid
+        return (
+            f"Port {port} is already published by container {identity}. "
+            "No container was removed; explicit operator action is required."
+        )
+    return (
+        f"Port {port} is already in use by a non-Docker or unidentified process. "
+        "No process was stopped; explicit operator action is required."
+    )
+
+
+def _validate_model(model: str) -> tuple[bool, str]:
+    from settings_manager import SUPPORTED_MODELS
+
+    if model in SUPPORTED_MODELS:
+        return True, ""
+    if _env_enabled("KIRAG_ADVANCED_MODEL_OVERRIDE"):
+        return True, ""
+    return (
+        False,
+        f"Model '{model}' is not in the configured allowlist. "
+        "An administrator must explicitly enable KIRAG_ADVANCED_MODEL_OVERRIDE "
+        "to run an unlisted model.",
+    )
+
+
+def _remote_code_config() -> tuple[bool, str, str]:
+    enabled = _env_enabled("KIRAG_ENABLE_REMOTE_CODE")
+    if not enabled:
+        return False, "", ""
+    network = os.environ.get("KIRAG_REMOTE_CODE_NETWORK", "").strip()
+    if not _DOCKER_NETWORK_RE.fullmatch(network) or network in {
+        "host",
+        "bridge",
+        "default",
+        "none",
+    }:
+        raise ValueError(
+            "Remote code requires KIRAG_REMOTE_CODE_NETWORK to name a dedicated, "
+            "operator-controlled Docker network (built-in and namespace-sharing "
+            "network modes are refused)."
+        )
+    token = os.environ.get("KIRAG_REMOTE_CODE_HF_TOKEN", "").strip()
+    if not token:
+        raise ValueError(
+            "Remote code requires a dedicated scoped, short-lived credential in "
+            "KIRAG_REMOTE_CODE_HF_TOKEN."
+        )
+    return True, network, token
+
+
+def _validate_remote_network(network: str) -> None:
+    """Require an explicitly labeled internal network for remote-code workloads."""
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "network",
+                "inspect",
+                "--format",
+                '{{index .Labels "com.kirag.remote-code"}}\t{{.Internal}}',
+                network,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception as e:
+        raise ValueError(f"Remote-code network '{network}' could not be inspected: {e}") from e
+    if result.returncode != 0:
+        raise ValueError(
+            f"Remote-code network '{network}' was not found or could not be inspected."
+        )
+    parts = result.stdout.strip().lower().split("\t", 1)
+    if parts != ["true", "true"]:
+        raise ValueError(
+            f"Remote-code network '{network}' must be internal and labeled "
+            "com.kirag.remote-code=true."
+        )
 
 
 def wait_for_port_free(port: int, timeout: float = 5.0) -> bool:
@@ -300,9 +427,14 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tenso
     status = get_docker_status()
     # Fall back to default model if model is invalid, empty, or literally "model"
     if not model or not str(model).strip() or str(model).strip() == "model":
-        model = "allenai/olmOCR-2-7B-1025-FP8"
+        model = DEFAULT_MODEL
     else:
         model = str(model).strip()
+
+    model_ok, model_error = _validate_model(model)
+    if not model_ok:
+        audit_event("container_create", "denied", model=model, reason="model_not_allowlisted")
+        return False, model_error
 
     # Coerce the port to a sane integer default before any int() conversion
     try:
@@ -332,30 +464,96 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tenso
     except (TypeError, ValueError):
         max_model_len_int = 15360
 
-    if status != "not_found" and status != "error":
+    # Validate all administrator-controlled security settings before mutating
+    # an existing managed container.
+    try:
+        remote_code, remote_network, remote_token = _remote_code_config()
+        target_image = resolve_vllm_image()
+        if remote_code:
+            _validate_remote_network(remote_network)
+    except ValueError as e:
+        audit_event("container_create", "denied", model=model, port=port_int, reason=str(e))
+        return False, str(e)
+
+    hf_cache_dir = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+    try:
+        os.makedirs(hf_cache_dir, exist_ok=True)
+    except OSError as e:
+        audit_event(
+            "container_create",
+            "failure",
+            model=model,
+            port=port_int,
+            reason="cache_unavailable",
+            error=str(e),
+        )
+        return False, f"Failed to prepare the Hugging Face cache: {e}"
+
+    if status == "foreign":
+        audit_event(
+            "container_create",
+            "denied",
+            container=CONTAINER_NAME,
+            model=model,
+            reason="foreign_name_conflict",
+        )
+        return (
+            False,
+            "Container name 'olmocr' is occupied by an unmanaged container. "
+            "No container was removed; explicit operator action is required.",
+        )
+
+    occupant = find_port_occupant(port_int)
+    if occupant and occupant[1] != CONTAINER_NAME:
+        audit_event(
+            "container_create",
+            "denied",
+            model=model,
+            port=port_int,
+            occupying_container_id=occupant[0],
+            occupying_container_name=occupant[1],
+            reason="port_conflict",
+        )
+        return False, _port_conflict_message(port_int, occupant)
+
+    if status not in {"not_found", "error"}:
         try:
-            subprocess.run(["docker", "rm", "-f", "olmocr"], check=True, capture_output=True)
+            subprocess.run(["docker", "rm", "-f", CONTAINER_NAME], check=True, capture_output=True)
+            audit_event(
+                "container_delete",
+                "success",
+                container=CONTAINER_NAME,
+                reason="recreate",
+            )
         except subprocess.CalledProcessError as e:
-            err_msg = (
-                e.stderr.decode("utf-8", errors="replace")
-                if isinstance(e.stderr, bytes)
-                else str(e.stderr or "")
-            ).strip()
+            err_msg = _decode_stderr(e)
+            audit_event(
+                "container_delete",
+                "failure",
+                container=CONTAINER_NAME,
+                reason="recreate",
+                error=err_msg,
+            )
             return False, f"Failed to remove existing container: {err_msg}"
 
-    # Clear any orphan docker containers listening on host port and wait for socket release
-    free_host_port(port_int)
-    wait_for_port_free(port_int, timeout=2.0)
-    time.sleep(1.0)
-
-    hf_cache_dir = os.path.expanduser("~/.cache/huggingface")
-    os.makedirs(hf_cache_dir, exist_ok=True)
+    if not wait_for_port_free(port_int, timeout=2.0):
+        occupant = find_port_occupant(port_int)
+        audit_event(
+            "container_create",
+            "denied",
+            model=model,
+            port=port_int,
+            reason="port_conflict",
+            occupying_container_id=occupant[0] if occupant else "",
+            occupying_container_name=occupant[1] if occupant else "",
+        )
+        return False, _port_conflict_message(port_int, occupant)
 
     # Resolve HF_TOKEN: filter out dummy/masked tokens ("********", "tok", empty strings)
-    token_str = str(hf_token).strip() if hf_token else ""
-    if not token_str or token_str in ("********", "tok"):
+    token_str = remote_token if remote_code else (str(hf_token).strip() if hf_token else "")
+    if not remote_code and (not token_str or token_str in ("********", "tok")):
         token_str = os.environ.get("HF_TOKEN", "").strip()
-    if not token_str or token_str in ("********", "tok"):
+    if not remote_code and (not token_str or token_str in ("********", "tok")):
         dotenv_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
         if os.path.exists(dotenv_file):
             try:
@@ -373,12 +571,13 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tenso
     # Pass secrets via a temporary env-file rather than `-e HF_TOKEN=...`.
     # Only write HF_TOKEN if non-empty and not masked.
     env_file = None
+    credential_path = None
     try:
         import tempfile
 
         fd, env_path = tempfile.mkstemp(prefix="olmocr_env_", suffix=".env")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            if token_str and token_str != "********":
+            if not remote_code and token_str and token_str != "********":
                 fh.write(f"HF_TOKEN={token_str}\n")
             fh.write("PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True\n")
             # Disable PyTorch AOT Autograd caching to prevent pickling launcher errors
@@ -387,19 +586,28 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tenso
             # derived maximum. Allow the app's configured value to override it.
             fh.write("VLLM_ALLOW_LONG_MAX_MODEL_LEN=1\n")
         env_file = env_path
+        if remote_code:
+            credential_fd, credential_path = tempfile.mkstemp(
+                prefix="olmocr_hf_credential_", suffix=".token"
+            )
+            os.fchmod(credential_fd, 0o600)
+            with os.fdopen(credential_fd, "w", encoding="utf-8") as credential_file:
+                credential_file.write(remote_token)
 
-        target_image = resolve_vllm_image()
         cmd = [
             "docker",
             "run",
             "-d",
             "--name",
-            "olmocr",
+            CONTAINER_NAME,
+            "--label",
+            f"{MANAGED_LABEL}={MANAGED_LABEL_VALUE}",
+            "--label",
+            "com.kirag.component=vllm",
             "--restart",
             "unless-stopped",
             "--gpus",
             "all",
-            "--ipc=host",
             "-e",
             "NVIDIA_DISABLE_REQUIRE=1",
             "-p",
@@ -424,10 +632,66 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tenso
             str(max(max_model_len_int, 4096)),
             "--tensor-parallel-size",
             str(tp_int),
-            "--trust-remote-code",
         ]
+        if remote_code:
+            model_hash = hashlib.sha256(model.encode("utf-8")).hexdigest()[:12]
+            safe_model_name = (
+                re.sub(r"[^A-Za-z0-9_.-]+", "--", model).strip("-")[:100] + "-" + model_hash
+            )
+            remote_cache_dir = os.path.join(hf_cache_dir, "kirag-remote-code", safe_model_name)
+            os.makedirs(remote_cache_dir, exist_ok=True)
+            cache_mount_index = cmd.index("-v")
+            cmd[cache_mount_index + 1] = f"{remote_cache_dir}:/model-cache"
+            cmd[cache_mount_index:cache_mount_index] = [
+                "--mount",
+                f"type=bind,src={credential_path},dst=/run/secrets/kirag_hf_token,readonly",
+            ]
+            env_file_index = cmd.index("--env-file")
+            cmd[env_file_index:env_file_index] = [
+                "--read-only",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges:true",
+                "--network",
+                remote_network,
+                "--shm-size",
+                os.environ.get("KIRAG_REMOTE_CODE_SHM_SIZE", "8g"),
+                "--tmpfs",
+                "/tmp:rw,noexec,nosuid,nodev,size=2g",
+                "-e",
+                "HF_HOME=/model-cache",
+                "-e",
+                "HF_TOKEN_PATH=/run/secrets/kirag_hf_token",
+            ]
+            restart_index = cmd.index("--restart")
+            cmd[restart_index + 1] = "no"
+            cmd.append("--trust-remote-code")
+        else:
+            # Dedicated shared memory avoids sharing the host IPC namespace.
+            env_file_index = cmd.index("--env-file")
+            cmd[env_file_index:env_file_index] = ["--shm-size", "8g"]
+
+        audit_event(
+            "container_create",
+            "attempt",
+            container=CONTAINER_NAME,
+            image=target_image,
+            model=model,
+            port=port_int,
+            remote_code=remote_code,
+        )
         try:
             subprocess.run(cmd, check=True, capture_output=True, text=True)
+            audit_event(
+                "container_create",
+                "success",
+                container=CONTAINER_NAME,
+                image=target_image,
+                model=model,
+                port=port_int,
+                remote_code=remote_code,
+            )
             return True, "Container created and started successfully."
         except subprocess.CalledProcessError as e:
             err_msg = str(e.stderr or "").strip()
@@ -435,16 +699,28 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tenso
                 "port is already allocated" in err_msg.lower()
                 or "address already in use" in err_msg.lower()
             ):
-                logger.info(
-                    "Port conflict detected. Waiting 1.5s for Docker proxy socket release and retrying..."
+                occupant = find_port_occupant(port_int)
+                audit_event(
+                    "container_create",
+                    "denied",
+                    container=CONTAINER_NAME,
+                    model=model,
+                    port=port_int,
+                    reason="port_conflict",
+                    occupying_container_id=occupant[0] if occupant else "",
+                    occupying_container_name=occupant[1] if occupant else "",
                 )
-                time.sleep(1.5)
-                subprocess.run(["docker", "rm", "-f", "olmocr"], check=False, capture_output=True)
-                try:
-                    subprocess.run(cmd, check=True, capture_output=True, text=True)
-                    return True, "Container created and started successfully (retry)."
-                except subprocess.CalledProcessError as retry_e:
-                    err_msg = str(retry_e.stderr or "").strip()
+                return False, _port_conflict_message(port_int, occupant)
+            audit_event(
+                "container_create",
+                "failure",
+                container=CONTAINER_NAME,
+                image=target_image,
+                model=model,
+                port=port_int,
+                remote_code=remote_code,
+                error=err_msg,
+            )
             return False, f"Failed to create container: {err_msg}"
         finally:
             # Always remove the temp env-file (best-effort; ignore cleanup errors).
@@ -452,6 +728,11 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tenso
                 os.remove(env_path)
             except OSError:
                 pass
+            if credential_path:
+                try:
+                    os.remove(credential_path)
+                except OSError:
+                    pass
     finally:
         # Defensive cleanup in case an exception escaped the inner try/finally.
         if env_file is not None and os.path.exists(env_file):
@@ -459,21 +740,47 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tenso
                 os.remove(env_path)
             except OSError:
                 pass
+        if credential_path is not None and os.path.exists(credential_path):
+            try:
+                os.remove(credential_path)
+            except OSError:
+                pass
 
 
 def shutdown_docker_container():
     status = get_docker_status()
+    audit_event("container_shutdown", "attempt", container=CONTAINER_NAME, status=status)
     msg_parts = []
     success = True
     if status in ["running", "exited"]:
         try:
             if status == "running":
-                subprocess.run(["docker", "stop", "olmocr"], check=True, capture_output=True)
-            subprocess.run(["docker", "rm", "olmocr"], check=True, capture_output=True)
+                subprocess.run(["docker", "stop", CONTAINER_NAME], check=True, capture_output=True)
+            subprocess.run(["docker", "rm", CONTAINER_NAME], check=True, capture_output=True)
+            audit_event("container_delete", "success", container=CONTAINER_NAME, reason="shutdown")
+            audit_event("container_shutdown", "success", container=CONTAINER_NAME)
             msg_parts.append("Container 'olmocr' shutdown successfully.")
         except subprocess.CalledProcessError as e:
             success = False
-            msg_parts.append(f"Failed to shutdown container 'olmocr': {e.stderr.decode().strip()}")
+            audit_event(
+                "container_shutdown",
+                "failure",
+                container=CONTAINER_NAME,
+                error=_decode_stderr(e),
+            )
+            msg_parts.append(f"Failed to shutdown container 'olmocr': {_decode_stderr(e)}")
+    elif status == "foreign":
+        success = False
+        audit_event(
+            "container_shutdown",
+            "denied",
+            container=CONTAINER_NAME,
+            reason="unmanaged_container",
+        )
+        msg_parts.append(
+            "Refusing to stop or remove unmanaged container named 'olmocr'; "
+            "explicit operator action is required."
+        )
     else:
         msg_parts.append("Container 'olmocr' is not running.")
 
@@ -492,18 +799,43 @@ def shutdown_docker_container():
 
 def cleanup_docker():
     if os.environ.get("TESTING") == "true":
+        audit_event("docker_cleanup", "skipped", reason="testing")
         return
     # Allow operators to keep the GPU container running across app restarts
     # (e.g. in a persistent deployment) by setting KEEP_CONTAINERS_ON_EXIT.
     if os.environ.get("KEEP_CONTAINERS_ON_EXIT") == "true":
+        audit_event("docker_cleanup", "skipped", reason="keep_containers_on_exit")
         return
+    status = get_docker_status()
+    audit_event("docker_cleanup", "attempt", container=CONTAINER_NAME, status=status)
     logger.info(
         "Application shutting down. Stopping local OLMOCR Docker container & RAG infra to release resources..."
     )
     try:
-        subprocess.run(["docker", "stop", "olmocr"], capture_output=True)
-        logger.info("Docker container 'olmocr' stopped successfully.")
+        if status in {"running", "restarting"}:
+            res = subprocess.run(
+                ["docker", "stop", CONTAINER_NAME], capture_output=True, text=True, check=False
+            )
+            if res.returncode == 0:
+                audit_event("docker_cleanup", "success", container=CONTAINER_NAME)
+                logger.info("Docker container 'olmocr' stopped successfully.")
+            else:
+                audit_event(
+                    "docker_cleanup",
+                    "failure",
+                    container=CONTAINER_NAME,
+                    error=res.stderr.strip(),
+                )
+        elif status == "foreign":
+            audit_event(
+                "docker_cleanup",
+                "denied",
+                container=CONTAINER_NAME,
+                reason="unmanaged_container",
+            )
+            logger.warning("Refusing to stop unmanaged container named 'olmocr' during cleanup.")
     except Exception as e:
+        audit_event("docker_cleanup", "failure", container=CONTAINER_NAME, error=str(e))
         logger.error(f"Error stopping container on shutdown: {e}")
 
     try:

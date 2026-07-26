@@ -4,6 +4,7 @@ Unit tests for system_diagnostics.py targeting 100% statement and branch coverag
 
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch, MagicMock, mock_open
 
@@ -416,9 +417,9 @@ class TestSystemDiagnostics(unittest.TestCase):
     @patch("system_diagnostics.check_backing_services_data")
     @patch("system_diagnostics.get_gpu_metrics_data")
     @patch("settings_manager.load_settings")
-    @patch("builtins.open", new_callable=mock_open)
-    @patch("os.makedirs")
-    def test_generate_diagnostic_report_file(self, mock_makedirs, mock_file, mock_load_settings, mock_gpu_data, mock_backing_data):
+    def test_generate_diagnostic_report_file(
+        self, mock_load_settings, mock_gpu_data, mock_backing_data
+    ):
         mock_load_settings.return_value = {"hf_token": "some_token", "other_setting": "value"}
         mock_backing_data.return_value = {
             "all_healthy": True,
@@ -440,15 +441,18 @@ class TestSystemDiagnostics(unittest.TestCase):
             ]
         }
         
-        # Test path when CUDA is available
-        path = system_diagnostics.generate_diagnostic_report_file(8000)
-        self.assertTrue(path.endswith("diagnostic_report.md"))
-        mock_file.assert_called_with(path, "w", encoding="utf-8")
-        
-        # Test path when CUDA is not available
-        mock_gpu_data.return_value["cuda_available"] = False
-        path = system_diagnostics.generate_diagnostic_report_file(8000)
-        self.assertTrue(path.endswith("diagnostic_report.md"))
+        with tempfile.TemporaryDirectory() as workspace:
+            with patch("settings_manager.WORKSPACE_DIR", workspace):
+                path = system_diagnostics.generate_diagnostic_report_file(8000)
+                self.assertTrue(path.endswith("diagnostic_report.md"))
+                with open(path, encoding="utf-8") as report:
+                    contents = report.read()
+                self.assertIn("RTX 4090", contents)
+                self.assertNotIn("some_token", contents)
+
+                mock_gpu_data.return_value["cuda_available"] = False
+                path = system_diagnostics.generate_diagnostic_report_file(8000)
+                self.assertTrue(path.endswith("diagnostic_report.md"))
 
     def test_format_bytes_human(self):
         self.assertEqual(system_diagnostics.format_bytes_human(0), "0 B")
@@ -477,7 +481,24 @@ class TestSystemDiagnostics(unittest.TestCase):
         self.assertEqual(deleted, [])
 
         # 2. Deleting active model (should skip)
-        success, msg, deleted, reclaimed = system_diagnostics.delete_installed_models(["allenai/olmOCR-2-7B-1025-FP8"])
+        active_data = {
+            "models": [
+                {
+                    "id": "allenai/olmOCR-2-7B-1025-FP8",
+                    "folder": "models--allenai--olmOCR-2-7B-1025-FP8",
+                    "name": "olmOCR-2-7B-1025-FP8",
+                    "path": "/tmp/active-model",
+                    "size_bytes": 1024,
+                    "is_active": True,
+                }
+            ]
+        }
+        with patch(
+            "system_diagnostics.get_installed_models_data", return_value=active_data
+        ):
+            success, msg, deleted, reclaimed = system_diagnostics.delete_installed_models(
+                ["allenai/olmOCR-2-7B-1025-FP8"]
+            )
         self.assertFalse(success)
         self.assertIn("Skipped", msg)
         self.assertEqual(deleted, [])
@@ -580,7 +601,6 @@ class TestSystemDiagnostics(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
 
 
 

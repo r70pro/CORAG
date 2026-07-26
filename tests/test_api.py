@@ -1,9 +1,11 @@
 import os
 import unittest
 import json
+import io
 import tempfile
 from unittest.mock import patch, MagicMock, mock_open
 from fastapi.testclient import TestClient
+from pypdf import PdfWriter
 
 # Disable docker commands and atexit hooks in testing
 os.environ["TESTING"] = "true"
@@ -13,7 +15,48 @@ from api.main import app
 class TestAPI(unittest.TestCase):
 
     def setUp(self):
-        self.client = TestClient(app)
+        self.temp_directory = tempfile.TemporaryDirectory()
+        self.workspace = os.path.join(self.temp_directory.name, "workspace")
+        self.run_dir = os.path.join(self.workspace, "run_case")
+        self.markdown_dir = os.path.join(self.run_dir, "markdown", "inputs")
+        self.upload_dir = os.path.join(self.workspace, "uploads")
+        os.makedirs(self.markdown_dir)
+        os.makedirs(self.upload_dir)
+
+        pdf_buffer = io.BytesIO()
+        writer = PdfWriter()
+        writer.add_blank_page(width=72, height=72)
+        writer.write(pdf_buffer)
+        self.pdf_bytes = pdf_buffer.getvalue()
+
+        self.workspace_patchers = [
+            patch("settings_manager.WORKSPACE_DIR", self.workspace),
+            patch("api.routes.documents.WORKSPACE_DIR", self.workspace),
+        ]
+        for patcher in self.workspace_patchers:
+            patcher.start()
+        self.auth_environment = patch.dict(
+            os.environ,
+            {
+                "KIRAG_API_KEY": "test-api-key",
+                "KIRAG_ADMIN_API_KEY": "test-admin-key",
+            },
+        )
+        self.auth_environment.start()
+        self.client = TestClient(
+            app,
+            headers={
+                "X-API-Key": "test-api-key",
+                "X-Admin-API-Key": "test-admin-key",
+            },
+        )
+
+    def tearDown(self):
+        self.client.close()
+        self.auth_environment.stop()
+        for patcher in reversed(self.workspace_patchers):
+            patcher.stop()
+        self.temp_directory.cleanup()
 
     def test_root(self):
         response = self.client.get("/")
@@ -48,9 +91,8 @@ class TestAPI(unittest.TestCase):
 
         # Case 2: empty payload
         response = self.client.put("/api/settings/", json={})
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertFalse(data["success"])
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"]["code"], "bad_request")
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
 
@@ -108,9 +150,11 @@ class TestAPI(unittest.TestCase):
     def test_diagnostics_report(self, mock_settings, mock_gen):
         mock_settings.return_value = {}
         
-        with tempfile.NamedTemporaryFile(suffix=".md", mode="w", delete=False) as tmp:
-            tmp.write("# Diagnostic Report")
-            tmp_path = tmp.name
+        export_dir = os.path.join(self.workspace, "exports")
+        os.makedirs(export_dir)
+        tmp_path = os.path.join(export_dir, "diagnostic_report.md")
+        with open(tmp_path, "w", encoding="utf-8") as report:
+            report.write("# Diagnostic Report")
 
         mock_gen.return_value = tmp_path
         try:
@@ -221,48 +265,42 @@ class TestAPI(unittest.TestCase):
     # ── Documents ─────────────────────────────────────────────────────────────
 
     @patch("settings_manager.get_available_runs")
-    @patch("os.path.exists")
-    @patch("os.listdir")
-    def test_documents_runs(self, mock_listdir, mock_exists, mock_runs):
-        mock_runs.return_value = [("run1 (3 files)", "/path/to/run1")]
-        mock_exists.return_value = True
-        mock_listdir.return_value = ["file1.md", "file2.md"]
+    def test_documents_runs(self, mock_runs):
+        for filename in ("file1.md", "file2.md"):
+            with open(os.path.join(self.markdown_dir, filename), "w", encoding="utf-8"):
+                pass
+        mock_runs.return_value = [("run_case (2 files)", self.run_dir)]
 
         response = self.client.get("/api/documents/runs")
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(len(data), 1)
-        self.assertEqual(data[0]["run_name"], "run1")
+        self.assertEqual(data[0]["run_name"], "run_case")
         self.assertEqual(data[0]["file_count"], 2)
 
-    @patch("os.path.isdir")
-    @patch("os.path.exists")
-    @patch("os.listdir")
-    def test_list_run_files(self, mock_listdir, mock_exists, mock_isdir):
-        mock_isdir.return_value = True
-        mock_exists.return_value = True
-        mock_listdir.return_value = ["a.md", "b.md"]
+    def test_list_run_files(self):
+        for filename in ("a.md", "b.md"):
+            with open(os.path.join(self.markdown_dir, filename), "w", encoding="utf-8"):
+                pass
 
-        response = self.client.get("/api/documents/runs/run1/files")
+        response = self.client.get("/api/documents/runs/run_case/files")
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data, ["a.md", "b.md"])
 
         # Run not found
-        mock_isdir.return_value = False
-        response = self.client.get("/api/documents/runs/invalid-run/files")
+        response = self.client.get("/api/documents/runs/run_missing/files")
         self.assertEqual(response.status_code, 404)
 
-    @patch("os.path.isfile")
-    def test_get_markdown(self, mock_isfile):
-        mock_isfile.return_value = True
-        with patch("builtins.open", mock_open(read_data="Markdown content")):
-            response = self.client.get("/api/documents/runs/run1/markdown/file.md")
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.text, "Markdown content")
+    def test_get_markdown(self):
+        with open(os.path.join(self.markdown_dir, "file.md"), "w", encoding="utf-8") as markdown:
+            markdown.write("Markdown content")
+        response = self.client.get("/api/documents/runs/run_case/markdown/file.md")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.text, "Markdown content")
 
-        # Bad path (traversal) - '..' inside the parameter
-        response = self.client.get("/api/documents/runs/run1/markdown/..file.md")
+        # A non-Markdown filename is rejected at the boundary.
+        response = self.client.get("/api/documents/runs/run_case/markdown/file.pdf")
         self.assertEqual(response.status_code, 400)
 
     # ── Pipeline ──────────────────────────────────────────────────────────────
@@ -302,13 +340,14 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(response.json()["status"], "running")
 
     @patch("pipeline_manager.process_pdfs")
-    @patch("os.path.isfile")
-    def test_pipeline_start(self, mock_isfile, mock_process):
-        mock_isfile.return_value = True
+    def test_pipeline_start(self, mock_process):
+        stored_pdf = os.path.join(self.upload_dir, "stored.pdf")
+        with open(stored_pdf, "wb") as pdf:
+            pdf.write(self.pdf_bytes)
         mock_process.return_value = [("log", "badge", "progress", None, None, None, None, None, None, "run_id", "status", "manifest", "stop")]
 
         payload = {
-            "file_paths": ["/path/doc.pdf"],
+            "file_paths": ["stored.pdf"],
             "server_url": "http://localhost",
             "model_name": "test-model"
         }
@@ -320,7 +359,7 @@ class TestAPI(unittest.TestCase):
         self.assertTrue(any("run_id" in line for line in lines))
 
     def test_pipeline_upload(self):
-        files = [("files", ("test.pdf", b"%PDF-1.4 test content", "application/pdf"))]
+        files = [("files", ("test.pdf", self.pdf_bytes, "application/pdf"))]
         response = self.client.post("/api/pipeline/upload", files=files)
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -328,25 +367,25 @@ class TestAPI(unittest.TestCase):
         self.assertTrue(len(data["file_paths"]) == 1)
 
     def test_pipeline_upload_with_spaces(self):
-        files = [("files", ("test file with spaces.pdf", b"%PDF-1.4 test content", "application/pdf"))]
+        files = [("files", ("test file with spaces.pdf", self.pdf_bytes, "application/pdf"))]
         response = self.client.post("/api/pipeline/upload", files=files)
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertTrue(data["success"])
-        self.assertTrue(data["file_paths"][0].endswith("test file with spaces.pdf"))
+        self.assertEqual(data["files"][0]["original_name"], "test file with spaces.pdf")
 
     def test_pipeline_upload_single_file_param(self):
-        files = {"files": ("test_single.pdf", b"%PDF-1.4 test content", "application/pdf")}
+        files = {"files": ("test_single.pdf", self.pdf_bytes, "application/pdf")}
         response = self.client.post("/api/pipeline/upload", files=files)
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertTrue(data["success"])
-        self.assertTrue(data["file_paths"][0].endswith("test_single.pdf"))
+        self.assertEqual(data["files"][0]["original_name"], "test_single.pdf")
 
     def test_pipeline_upload_multiple_files(self):
         files = [
-            ("files", ("file1.pdf", b"%PDF-1.4 content 1", "application/pdf")),
-            ("files", ("file2.pdf", b"%PDF-1.4 content 2", "application/pdf")),
+            ("files", ("file1.pdf", self.pdf_bytes, "application/pdf")),
+            ("files", ("file2.pdf", self.pdf_bytes, "application/pdf")),
         ]
         response = self.client.post("/api/pipeline/upload", files=files)
         self.assertEqual(response.status_code, 200)
@@ -402,7 +441,7 @@ class TestAPI(unittest.TestCase):
     @patch("indexing_service.CorpusIndexingService.index_run")
     def test_rag_index_run(self, mock_index):
         mock_index.return_value = ["Scanning...", "✅ Done"]
-        response = self.client.post("/api/rag/index", json={"run_dir": "/path/run"})
+        response = self.client.post("/api/rag/index", json={"run_dir": "run_case"})
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["success"])
 
@@ -445,21 +484,23 @@ class TestAPI(unittest.TestCase):
 
     def test_api_key_authentication(self):
         with patch.dict(os.environ, {"KIRAG_API_KEY": "test-secret-key"}):
+            client = TestClient(app)
             # Test without API key header -> should fail with 401
-            res = self.client.get("/")
+            res = client.get("/")
             self.assertEqual(res.status_code, 401)
 
             # Test with invalid API key header -> 401
-            res = self.client.get("/", headers={"X-API-Key": "wrong-key"})
+            res = client.get("/", headers={"X-API-Key": "wrong-key"})
             self.assertEqual(res.status_code, 401)
 
             # Test with valid X-API-Key header -> 200
-            res = self.client.get("/", headers={"X-API-Key": "test-secret-key"})
+            res = client.get("/", headers={"X-API-Key": "test-secret-key"})
             self.assertEqual(res.status_code, 200)
 
             # Test with valid Bearer token -> 200
-            res = self.client.get("/", headers={"Authorization": "Bearer test-secret-key"})
+            res = client.get("/", headers={"Authorization": "Bearer test-secret-key"})
             self.assertEqual(res.status_code, 200)
+            client.close()
 
     def test_cors_headers(self):
         # OPTIONS preflight request from allowed origin
@@ -485,18 +526,42 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(res.json()["status"], "healthy")
 
     @patch("rag.db.get_corpus_stats")
-    @patch("rag.db.get_indexed_runs")
+    @patch("rag.db.get_runs_with_stats")
     @patch("rag.embedding.get_collection_info")
-    def test_consolidated_case_summary(self, mock_qdrant, mock_runs, mock_stats):
+    @patch("rag.metadata_helper.get_all_cases_metadata")
+    @patch("rag.metadata_helper.get_case_timeline")
+    def test_consolidated_case_summary(
+        self, mock_timeline, mock_metadata, mock_qdrant, mock_runs, mock_stats
+    ):
         mock_stats.return_value = {"indexed_runs": 1, "total_chunks": 10}
-        mock_runs.return_value = [{"run_id": "r1", "display_name": "Run 1", "created_at": "2026-07-22"}]
+        mock_runs.return_value = [
+            {
+                "run_id": "r1",
+                "created_at": "2026-07-22",
+                "total_documents": 2,
+                "total_chunks": 10,
+            }
+        ]
         mock_qdrant.return_value = {"points_count": 10, "status": "green"}
+        mock_metadata.return_value = {
+            "r1": {"names": ["Case One"], "dob": "1980-01-02", "injuries": ["Shoulder"]}
+        }
+        mock_timeline.return_value = [{"date": "2026-07-22", "event": "Indexed"}]
 
         res = self.client.get("/api/case-summary")
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.json()["stats"]["indexed_runs"], 1)
+        self.assertEqual(res.json()["indexed_cases"][0]["client_name"], "Case One")
+        mock_runs.assert_called_once_with()
+
+    @patch("rag.db.get_corpus_stats", side_effect=RuntimeError("database unavailable"))
+    def test_consolidated_case_summary_service_failure_is_non_200(self, _mock_stats):
+        res = self.client.get("/api/case-summary")
+
+        self.assertEqual(res.status_code, 500)
+        self.assertEqual(res.json()["error"]["code"], "internal_error")
+        self.assertNotIn("database unavailable", res.text)
 
 
 if __name__ == "__main__":
     unittest.main()
-

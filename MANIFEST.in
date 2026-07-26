@@ -1,0 +1,4 @@
+include README.md
+include docker-compose.rag.yml
+recursive-include assets *.css *.js
+prune tests
