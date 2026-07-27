@@ -22,8 +22,8 @@ import {
   fetchRagInfraStatus,
   fetchCorpusStats,
   fetchPipelineRuns,
-  indexRun,
-  indexAllRuns,
+  triggerIndexRunSSE,
+  triggerIndexAllRunsSSE,
   exportChatHistory,
   updateSettings,
   fetchSettings,
@@ -145,35 +145,42 @@ export const RagChat: React.FC = () => {
     },
   ]);
 
-  const handleIndexSelectedRun = async () => {
+  const handleIndexSelectedRun = () => {
     const targetDir = selectedRunDir || (availableRuns.length > 0 ? availableRuns[0].run_dir : "");
     if (!targetDir || isIndexing) return;
     setIsIndexing(true);
     setIndexingMsg("⏳ Indexing selected run...");
-    try {
-      const res = await indexRun(targetDir);
-      setIndexingMsg(res.message || "✅ Indexing completed successfully.");
-      await loadInfra();
-    } catch (err) {
-      setIndexingMsg(`❌ Indexing error: ${String(err)}`);
-    } finally {
-      setIsIndexing(false);
-    }
+    triggerIndexRunSSE(
+      targetDir,
+      (message) => setIndexingMsg(message.trim()),
+      (error) => {
+        setIndexingMsg(`❌ Indexing error: ${String(error)}`);
+        setIsIndexing(false);
+      },
+      () => {
+        setIndexingMsg("✅ Indexing completed successfully.");
+        setIsIndexing(false);
+        void loadInfra();
+      },
+    );
   };
 
-  const handleIndexAllRuns = async () => {
+  const handleIndexAllRuns = () => {
     if (isIndexing) return;
     setIsIndexing(true);
     setIndexingMsg("⏳ Indexing all runs...");
-    try {
-      const res = await indexAllRuns();
-      setIndexingMsg(res.message || "✅ Bulk indexing completed successfully.");
-      await loadInfra();
-    } catch (err) {
-      setIndexingMsg(`❌ Bulk indexing error: ${String(err)}`);
-    } finally {
-      setIsIndexing(false);
-    }
+    triggerIndexAllRunsSSE(
+      (message) => setIndexingMsg(message.trim()),
+      (error) => {
+        setIndexingMsg(`❌ Bulk indexing error: ${String(error)}`);
+        setIsIndexing(false);
+      },
+      () => {
+        setIndexingMsg("✅ Bulk indexing completed successfully.");
+        setIsIndexing(false);
+        void loadInfra();
+      },
+    );
   };
 
   useEffect(() => {

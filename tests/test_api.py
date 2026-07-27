@@ -510,12 +510,29 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["success"])
 
+    @patch("indexing_service.CorpusIndexingService.index_run")
+    def test_rag_index_run_streams_progress(self, mock_index):
+        mock_index.return_value = ["Scanning...", "✅ Done"]
+        response = self.client.post("/api/rag/index/stream", json={"run_dir": "run_case"})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.headers["content-type"].startswith("text/event-stream"))
+        self.assertIn('data: {"message": "Scanning..."}', response.text)
+        self.assertTrue(response.text.endswith("data: [DONE]\n\n"))
+
     @patch("indexing_service.CorpusIndexingService.index_all_runs")
     def test_rag_index_all_runs(self, mock_index):
         mock_index.return_value = ["Scanning...", "✅ Done"]
         response = self.client.post("/api/rag/index-all")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["success"])
+
+    @patch("indexing_service.CorpusIndexingService.index_all_runs")
+    def test_rag_index_all_runs_streams_progress(self, mock_index):
+        mock_index.return_value = ["Scanning...", "✅ Done"]
+        response = self.client.post("/api/rag/index-all/stream")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('data: {"message": "Scanning..."}', response.text)
+        self.assertTrue(response.text.endswith("data: [DONE]\n\n"))
 
     @patch("indexing_service.CorpusIndexingService.add_markdown_to_case")
     def test_rag_upload_markdown(self, mock_add):

@@ -469,6 +469,24 @@ def rag_query(req: RAGQueryRequest):
 # ── Indexing ──────────────────────────────────────────────────────────────────
 
 
+def _indexing_event_stream(messages):
+    """Serialize indexing generator updates as promptly flushed SSE events."""
+    try:
+        succeeded = False
+        for message in messages:
+            succeeded = succeeded or "✅" in message or "Done" in message
+            yield f"data: {json.dumps({'message': message})}\n\n"
+        if succeeded:
+            yield "data: [DONE]\n\n"
+        else:
+            envelope = error_envelope("indexing_failed", "Unable to complete indexing")
+            yield f"data: {envelope.model_dump_json(exclude_none=True)}\n\n"
+    except Exception:
+        logger.exception("Streaming indexing operation failed")
+        envelope = error_envelope("indexing_failed", "Indexing operation failed")
+        yield f"data: {envelope.model_dump_json(exclude_none=True)}\n\n"
+
+
 @router.post("/index", summary="Index a specific run", dependencies=[Depends(verify_admin_key)])
 def index_run(req: IndexRunRequest):
     """Index a single OCR run into the RAG corpus."""
@@ -489,6 +507,29 @@ def index_run(req: IndexRunRequest):
 
 
 @router.post(
+    "/index/stream",
+    summary="Index a specific run with progress streaming",
+    dependencies=[Depends(verify_admin_key)],
+)
+def stream_index_run(req: IndexRunRequest):
+    """Index one OCR run while streaming generator progress to the client."""
+    from indexing_service import CorpusIndexingService
+    from settings_manager import WORKSPACE_DIR
+
+    try:
+        run_dir = resolve_run_under(WORKSPACE_DIR, req.run_dir)
+    except PathSecurityError as exc:
+        raise HTTPException(status_code=400, detail="Invalid run name") from exc
+    if not run_dir.is_dir():
+        raise HTTPException(status_code=400, detail="Run not found")
+    return StreamingResponse(
+        _indexing_event_stream(CorpusIndexingService.index_run(str(run_dir), force=True)),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post(
     "/index-all", summary="Index all available runs", dependencies=[Depends(verify_admin_key)]
 )
 def index_all_runs():
@@ -500,6 +541,22 @@ def index_all_runs():
     if not success:
         raise HTTPException(status_code=500, detail="Unable to index runs")
     return MessageResponse(success=True, message="\n".join(messages))
+
+
+@router.post(
+    "/index-all/stream",
+    summary="Index all available runs with progress streaming",
+    dependencies=[Depends(verify_admin_key)],
+)
+def stream_index_all_runs():
+    """Index all OCR runs while streaming generator progress to the client."""
+    from indexing_service import CorpusIndexingService
+
+    return StreamingResponse(
+        _indexing_event_stream(CorpusIndexingService.index_all_runs(force=True)),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/upload-markdown", summary="Upload external markdown files")

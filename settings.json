@@ -8,7 +8,7 @@
   "guided_decoding": true,
   "docker_port": 8000,
   "docker_gpu_mem": 0.8,
-  "docker_max_model_len": 15360,
+  "docker_max_model_len": 131072,
   "docker_tensor_parallel": 1,
   "hf_token": "",
   "analysis_model_name": "Qwen/Qwen3.6-35B-A3B",

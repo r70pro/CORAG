@@ -19,8 +19,8 @@ import {
   saveEmbeddingConfig,
   purgeVectorCache,
   fetchPipelineRuns,
-  indexRun,
-  indexAllRuns,
+  triggerIndexRunSSE,
+  triggerIndexAllRunsSSE,
   uploadMarkdownFiles,
 } from "@/lib/api";
 import { ResizableSplit } from "@/components/ResizableSplit";
@@ -65,6 +65,7 @@ export const EmbeddingPipeline: React.FC = () => {
   const [availableRuns, setAvailableRuns] = useState<{ display_name: string; run_dir: string }[]>([]);
   const [selectedRunDir, setSelectedRunDir] = useState<string>("");
   const [indexingStatus, setIndexingStatus] = useState<string>("");
+  const [isIndexing, setIsIndexing] = useState<boolean>(false);
   const [logMessages, setLogMessages] = useState<string[]>([
     "Ready for dense vector embedding & Qdrant indexing operations.",
   ]);
@@ -158,26 +159,55 @@ export const EmbeddingPipeline: React.FC = () => {
     await loadRuns();
   };
 
-  const handleIndexRun = async () => {
+  const handleIndexRun = () => {
     if (!selectedRunDir) {
       setIndexingStatus("Please select an OCR run to index.");
       return;
     }
+    if (isIndexing) return;
+    setIsIndexing(true);
     setIndexingStatus("Indexing selected run...");
     setLogMessages((prev) => [...prev, `[Indexing] Starting indexing for ${selectedRunDir}...`]);
-    const res = await indexRun(selectedRunDir);
-    setIndexingStatus(res.message || "Indexing completed.");
-    setLogMessages((prev) => [...prev, `[Result] ${res.message || "Done"}`]);
-    await loadTelemetryData();
+    triggerIndexRunSSE(
+      selectedRunDir,
+      (message) => {
+        setIndexingStatus(message.trim());
+        setLogMessages((prev) => [...prev, message.trim()]);
+      },
+      (error) => {
+        setIndexingStatus(`Indexing failed: ${String(error)}`);
+        setLogMessages((prev) => [...prev, `[Error] ${String(error)}`]);
+        setIsIndexing(false);
+      },
+      () => {
+        setIndexingStatus("Indexing completed.");
+        setIsIndexing(false);
+        void loadTelemetryData();
+      },
+    );
   };
 
-  const handleIndexAll = async () => {
+  const handleIndexAll = () => {
+    if (isIndexing) return;
+    setIsIndexing(true);
     setIndexingStatus("Indexing all runs...");
     setLogMessages((prev) => [...prev, "[Indexing] Starting bulk indexing for all OCR runs..."]);
-    const res = await indexAllRuns();
-    setIndexingStatus(res.message || "Bulk indexing completed.");
-    setLogMessages((prev) => [...prev, `[Result] ${res.message || "Done"}`]);
-    await loadTelemetryData();
+    triggerIndexAllRunsSSE(
+      (message) => {
+        setIndexingStatus(message.trim());
+        setLogMessages((prev) => [...prev, message.trim()]);
+      },
+      (error) => {
+        setIndexingStatus(`Bulk indexing failed: ${String(error)}`);
+        setLogMessages((prev) => [...prev, `[Error] ${String(error)}`]);
+        setIsIndexing(false);
+      },
+      () => {
+        setIndexingStatus("Bulk indexing completed.");
+        setIsIndexing(false);
+        void loadTelemetryData();
+      },
+    );
   };
 
   return (
@@ -491,15 +521,17 @@ export const EmbeddingPipeline: React.FC = () => {
                 <div className="flex items-center gap-3">
                   <button
                     type="button"
+                    disabled={isIndexing}
                     onClick={handleIndexRun}
-                    className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs flex items-center gap-2 shadow-md cursor-pointer select-none"
+                    className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs flex items-center gap-2 shadow-md cursor-pointer select-none"
                   >
                     <Play className="w-3.5 h-3.5 pointer-events-none" /> Index Selected Run
                   </button>
                   <button
                     type="button"
+                    disabled={isIndexing}
                     onClick={handleIndexAll}
-                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs flex items-center gap-2 border border-slate-700 cursor-pointer select-none"
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 font-semibold text-xs flex items-center gap-2 border border-slate-700 cursor-pointer select-none"
                   >
                     <Layers className="w-3.5 h-3.5 pointer-events-none" /> Index All Runs
                   </button>

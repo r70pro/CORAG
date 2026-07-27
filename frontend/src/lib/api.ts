@@ -255,6 +255,43 @@ export async function indexAllRuns() {
   }
 }
 
+export function triggerIndexRunSSE(
+  runDir: string,
+  onMessage: (message: string) => void,
+  onError: (error: unknown) => void,
+  onComplete: () => void,
+): ApiRequestHandle {
+  return requestJsonSse<{ message?: string }>(
+    "/api/rag/index/stream",
+    { method: "POST", json: { run_dir: runDir } },
+    {
+      onMessage: (data) => {
+        if (typeof data.message === "string") onMessage(data.message);
+      },
+      onError,
+      onComplete,
+    },
+  );
+}
+
+export function triggerIndexAllRunsSSE(
+  onMessage: (message: string) => void,
+  onError: (error: unknown) => void,
+  onComplete: () => void,
+): ApiRequestHandle {
+  return requestJsonSse<{ message?: string }>(
+    "/api/rag/index-all/stream",
+    { method: "POST" },
+    {
+      onMessage: (data) => {
+        if (typeof data.message === "string") onMessage(data.message);
+      },
+      onError,
+      onComplete,
+    },
+  );
+}
+
 export async function uploadMarkdownFiles(files: File[], caseOption: string, newCaseName: string) {
   const formData = new FormData();
   files.forEach((file) => formData.append("files", file));
