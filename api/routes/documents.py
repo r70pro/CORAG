@@ -64,12 +64,14 @@ def list_runs():
             continue
         md_dir = run_dir / "markdown" / "inputs"
         files = [path.name for path in _safe_files(md_dir, ".md")]
+        has_pdf = bool(_safe_files(run_dir / "inputs", ".pdf"))
         result.append(
             {
                 "display_name": display_name,
                 "run_name": run_name,
                 "file_count": len(files),
                 "files": files,
+                "has_pdf": has_pdf,
             }
         )
     return result

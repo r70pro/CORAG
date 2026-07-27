@@ -157,8 +157,16 @@ A/Prof. Eugene T. Ek
 
     def test_get_analysis_modes(self):
         modes = rag_anal.get_analysis_modes()
-        self.assertTrue("free_qa" in modes)
-        self.assertTrue("timeline" in modes)
+        self.assertEqual(
+            set(modes),
+            {
+                "free_qa",
+                "timeline",
+                "injury_summary",
+                "inconsistency_finder",
+                "medication_tracker",
+            },
+        )
 
     @patch("httpx.post")
     def test_query_llm_success(self, mock_post):

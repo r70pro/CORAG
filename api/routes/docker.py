@@ -110,20 +110,18 @@ async def create_container(req: DockerCreateRequest):
     from docker_manager import create_docker_container
     from settings_manager import load_settings, save_settings
 
-    settings = load_settings()
+    # Keep environment-only credentials in memory. Model recreation must not
+    # copy HF_TOKEN into the tracked settings file unless the request explicitly
+    # asks to save a token.
+    settings = load_settings(include_env_secrets=False)
     model = req.model
     if not model or model == "model":
         model = settings.get("model_name", "allenai/olmOCR-2-7B-1025-FP8")
         if not model or model == "model":
             model = "allenai/olmOCR-2-7B-1025-FP8"
 
-    hf_token = (
-        req.hf_token
-        if req.hf_token and req.hf_token != "********"
-        else settings.get("hf_token", "")
-    )
-    if hf_token == "********":
-        hf_token = os.environ.get("HF_TOKEN", "")
+    explicit_hf_token = req.hf_token if req.hf_token and req.hf_token != "********" else ""
+    hf_token = explicit_hf_token or settings.get("hf_token", "") or os.environ.get("HF_TOKEN", "")
 
     port = req.port if req.port else settings.get("docker_port", 8000)
     gpu_mem = req.gpu_mem if req.gpu_mem else settings.get("docker_gpu_mem", 0.8)
@@ -153,17 +151,22 @@ async def create_container(req: DockerCreateRequest):
         server_url = f"http://localhost:{port}/v1"
         new_settings = {
             "docker_port": port,
-            "model_name": model,
             "docker_gpu_mem": gpu_mem,
             "docker_max_model_len": max_model_len,
             "docker_tensor_parallel": tensor_parallel_size,
-            "server_url": server_url,
-            # Keep analysis settings in sync when model changes
-            "analysis_model_name": model,
-            "analysis_server_url": server_url,
         }
-        if hf_token and hf_token != "********":
-            new_settings["hf_token"] = hf_token
+        # OCR and analysis have independent configured models even though one
+        # managed container serves them at different times.  Persisting an
+        # analysis model as ``model_name`` leaves the ingestion select with an
+        # invalid hidden value and makes the next OCR pre-flight fail.
+        if model == "allenai/olmOCR-2-7B-1025-FP8":
+            new_settings.update({"model_name": model, "server_url": server_url})
+        else:
+            new_settings.update(
+                {"analysis_model_name": model, "analysis_server_url": server_url}
+            )
+        if explicit_hf_token:
+            new_settings["hf_token"] = explicit_hf_token
         settings.update(new_settings)
         save_settings(settings)
     else:

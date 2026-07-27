@@ -5,7 +5,10 @@ Launches the Gradio application inside the test thread to record code coverage o
 """
 
 import os
+import tempfile
 import unittest
+from unittest.mock import patch
+
 from gradio_client import Client
 
 # Disable actual docker controls during startup
@@ -20,6 +23,17 @@ class TestAppE2E(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        # The callback exercised below persists analysis configuration. Keep
+        # that write isolated from the tracked production settings file.
+        cls.settings_directory = tempfile.TemporaryDirectory()
+        cls.settings_patcher = patch(
+            "settings_manager.SETTINGS_FILE",
+            os.path.join(cls.settings_directory.name, "settings.json"),
+        )
+        cls.settings_patcher.start()
+        cls.addClassCleanup(cls.settings_directory.cleanup)
+        cls.addClassCleanup(cls.settings_patcher.stop)
+
         # Auto start RAG infra if it's not running
         from rag_infra_manager import is_rag_infrastructure_ready, start_and_init_rag
         if not is_rag_infrastructure_ready():

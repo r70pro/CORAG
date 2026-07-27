@@ -1,5 +1,5 @@
 import React from "react";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, fireEvent } from "@testing-library/react";
 import { triggerIngestSSE } from "@/lib/api";
 import { IngestionPipeline } from "../IngestionPipeline";
 
@@ -70,5 +70,35 @@ describe("IngestionPipeline Component", () => {
     expect(screen.getByText("✓ Done")).toBeInTheDocument();
     expect(screen.getByText("15")).toBeInTheDocument();
   });
-});
 
+  test("preserves a pre-flight failure when the SSE stream closes", async () => {
+    let sseCallback: (data: unknown) => void = () => {};
+    let completeCallback: () => void = () => {};
+    mockTriggerIngestSSE.mockImplementation(
+      (
+        _opts: unknown,
+        onData: (data: unknown) => void,
+        _onError: (error: unknown) => void,
+        onComplete: () => void,
+      ) => {
+        sseCallback = onData;
+        completeCallback = onComplete;
+      },
+    );
+
+    render(<IngestionPipeline />);
+    fireEvent.click(await screen.findByText("Start Batch Processing"));
+    await act(async () => {
+      sseCallback({
+        log_text: "Pre-flight check failed",
+        status_badge: "<span class='badge-failed'>Model Mismatch</span>",
+      });
+      completeCallback();
+    });
+
+    expect(screen.getByText("● Model Mismatch")).toBeInTheDocument();
+    expect(screen.getByText("[Terminated] Pipeline processing ended with errors.")).toBeInTheDocument();
+    expect(screen.queryByText("[Complete] Pipeline batch processing finished.")).not.toBeInTheDocument();
+    expect(screen.getByText("Failed")).toBeInTheDocument();
+  });
+});

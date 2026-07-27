@@ -59,6 +59,20 @@ describe("RagChat Component", () => {
     expect(screen.queryByText(/Pages 1-3/i)).not.toBeInTheDocument();
   });
 
+  test("exposes every documented analysis mode", () => {
+    render(<RagChat />);
+
+    for (const name of [
+      "💬 Free Q&A",
+      "📋 Timeline",
+      "🏥 Injury Summary",
+      "🔍 Inconsistency Finder",
+      "💊 Medication Tracker",
+    ]) {
+      expect(screen.getByRole("button", { name })).toBeInTheDocument();
+    }
+  });
+
   test("omits empty optional filters from a RAG request", async () => {
     render(<RagChat />);
 

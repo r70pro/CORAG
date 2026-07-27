@@ -12,6 +12,7 @@ import json
 import logging
 import os
 from collections.abc import Generator
+from functools import lru_cache
 from typing import Any
 
 import httpx
@@ -39,10 +40,33 @@ STRUCTURED_MODE_MIN_TOP_K = 50
 STRUCTURED_MODE_SCORE_THRESHOLD = 0.05
 DEFAULT_MAX_OUTPUT_TOKENS = 4096
 CONSERVATIVE_ANALYSIS_CONTEXT_LENGTH = 32768
+# KIRAG's generic token estimator can under-count a served model's native
+# tokenizer, and vLLM then adds that model's chat-template special tokens.
+# Keep a conservative fixed margin so a prompt estimated near the apparent
+# boundary is not rejected by the server after native tokenization.
+NATIVE_CHAT_TEMPLATE_TOKEN_RESERVE = 64
+GENERIC_TOKEN_ESTIMATE_RESERVE = 1024
+# Backward-compatible public name used by validation tests and callers.
+CHAT_TEMPLATE_TOKEN_RESERVE = GENERIC_TOKEN_ESTIMATE_RESERVE
 
 
 class ContextWindowError(ValueError):
     """Raised when a requested generation cannot fit in the analysis context window."""
+
+
+@lru_cache(maxsize=8)
+def _get_local_analysis_tokenizer(model_name: str):
+    """Load a cached model tokenizer without initiating a network download."""
+    try:
+        from transformers import AutoTokenizer
+
+        return AutoTokenizer.from_pretrained(
+            model_name,
+            local_files_only=True,
+            trust_remote_code=False,
+        )
+    except Exception:
+        return None
 
 
 def _analysis_context_length(
@@ -135,6 +159,23 @@ def _resolve_loaded_model(server_url: str, model_name: str):
         fallback,
     )
     return fallback, True
+
+
+def _get_served_model_context_length(server_url: str, model_name: str) -> int | None:
+    """Return the live vLLM context limit when the models endpoint supplies it."""
+    try:
+        response = httpx.get(server_url.rstrip("/") + "/models", timeout=2.0)
+        if response.status_code != 200:
+            return None
+        for model in response.json().get("data", []):
+            if model.get("id") != model_name:
+                continue
+            value = model.get("max_model_len")
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                return value
+    except Exception:
+        pass
+    return None
 
 
 def _is_equivalent(m1: str, m2: str) -> bool:
@@ -276,6 +317,13 @@ def get_analysis_modes():
     }
 
 
+OUTPUT_LIMIT_WARNING = (
+    "\n\n> ⚠️ **Incomplete response:** generation reached the configured output-token "
+    "limit. Increase Maximum Output Tokens and regenerate before relying on or exporting "
+    "this analysis."
+)
+
+
 def build_prompt(
     query: str,
     context: str,
@@ -358,6 +406,20 @@ def query_llm_streaming(
         # exports nor consumes the configured output budget before the answer.
         payload["chat_template_kwargs"] = {"enable_thinking": False}
 
+        # vLLM 0.20's Qwen3 streaming reasoning parser can classify a
+        # non-thinking answer as ``delta.reasoning`` even though the equivalent
+        # non-streaming response correctly places it in ``message.content``.
+        # Never forward that ambiguous field: obtain the safe content envelope
+        # and yield it as one application-level SSE chunk instead.
+        yield query_llm(
+            messages,
+            server_url,
+            model_name,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return
+
     try:
         with httpx.stream(
             "POST",
@@ -370,6 +432,7 @@ def query_llm_streaming(
                 yield "Please ensure the analysis model is loaded in vLLM."
                 return
 
+            hit_output_limit = False
             for line in response.iter_lines():
                 if not line or not line.startswith("data: "):
                     continue
@@ -382,12 +445,17 @@ def query_llm_streaming(
                     data = json.loads(data_str)
                     choices = data.get("choices", [])
                     if choices:
-                        delta = choices[0].get("delta", {})
+                        choice = choices[0]
+                        if choice.get("finish_reason") == "length":
+                            hit_output_limit = True
+                        delta = choice.get("delta", {})
                         content = delta.get("content", "")
                         if content:
                             yield content
                 except json.JSONDecodeError:
                     continue
+            if hit_output_limit:
+                yield OUTPUT_LIMIT_WARNING
 
     except httpx.ConnectError:
         yield "\n\n⚠️ **Error**: Cannot connect to LLM server at "
@@ -449,7 +517,11 @@ def query_llm(
         data = response.json()
         choices = data.get("choices", [])
         if choices:
-            return choices[0].get("message", {}).get("content", "No response generated.")
+            choice = choices[0]
+            content = choice.get("message", {}).get("content", "No response generated.")
+            if choice.get("finish_reason") == "length":
+                return content + OUTPUT_LIMIT_WARNING
+            return content
         return "No response generated."
 
     except httpx.ConnectError:
@@ -693,11 +765,41 @@ def analyze(
         settings.get("analysis_model_name"),
         MODEL_MAX_CONTENT_LENGTHS,
     )
+    if os.environ.get("TESTING") != "true":
+        served_context_length = _get_served_model_context_length(
+            server_url, resolved_model
+        )
+        if served_context_length is not None:
+            max_model_len = served_context_length
     _validate_output_token_request(max_tokens, max_model_len)
-    max_prompt_tokens = max_model_len - max_tokens
+    analysis_tokenizer = _get_local_analysis_tokenizer(resolved_model)
+    token_reserve = (
+        NATIVE_CHAT_TEMPLATE_TOKEN_RESERVE
+        if analysis_tokenizer is not None
+        else GENERIC_TOKEN_ESTIMATE_RESERVE
+    )
+    max_prompt_tokens = max_model_len - max_tokens - token_reserve
+    if max_prompt_tokens < 1:
+        raise ContextWindowError(
+            f"Requested output tokens ({max_tokens}) leave no room for the analysis "
+            "prompt after chat-template overhead"
+        )
 
     # Estimate base prompt and overall tokens
     def estimate_tokens(msgs: list[dict]) -> int:
+        if analysis_tokenizer is not None:
+            try:
+                encoded = analysis_tokenizer.apply_chat_template(
+                    msgs,
+                    tokenize=True,
+                    add_generation_prompt=True,
+                    enable_thinking=False,
+                )
+                input_ids = encoded.get("input_ids", encoded)
+                return len(input_ids)
+            except Exception:
+                pass
+
         try:
             import tiktoken
 
@@ -771,7 +873,9 @@ def analyze(
     # Step 3: Build prompt (using final resolved context)
     messages = build_prompt(query, context, mode, chat_history)
     final_prompt_tokens = estimate_tokens(messages)
-    remaining_context = max_model_len - final_prompt_tokens
+    remaining_context = (
+        max_model_len - final_prompt_tokens - token_reserve
+    )
     if remaining_context < max_tokens:
         raise ContextWindowError(
             f"Requested output tokens ({max_tokens}) exceed the remaining analysis "

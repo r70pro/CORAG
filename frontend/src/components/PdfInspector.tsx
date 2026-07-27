@@ -23,6 +23,7 @@ interface RunItem {
   run_name?: string;
   display_name?: string;
   files?: string[];
+  has_pdf?: boolean;
 }
 
 interface TableCell {
@@ -292,6 +293,7 @@ export const PdfInspector: React.FC = () => {
   const pdfRef = useRef<HTMLDivElement>(null);
   const rawRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
+  const runChangeRequestRef = useRef<number>(0);
 
   useEffect(() => {
     let isMounted = true;
@@ -360,12 +362,18 @@ export const PdfInspector: React.FC = () => {
   }, [selectedRun, selectedFilename]);
 
   const handleRunChange = async (runName: string) => {
+    const requestId = ++runChangeRequestRef.current;
     setSelectedRun(runName);
+    setSelectedFilename("");
+    setRunFiles([]);
+    setRawMarkdown("Loading selected document...");
+    setPagesMarkdown({});
+    setCurrentPage(1);
+    setTotalPages(1);
     const files = await fetchRunFiles(runName);
+    if (requestId !== runChangeRequestRef.current) return;
     setRunFiles(files);
-    if (files.length > 0) {
-      setSelectedFilename(files[0]);
-    }
+    setSelectedFilename(files[0] || "");
   };
 
   const handleCopy = () => {
@@ -415,6 +423,9 @@ export const PdfInspector: React.FC = () => {
 
   const activeMarkdown =
     viewMode === "Page-by-Page" ? pagesMarkdown[String(currentPage)] || rawMarkdown : rawMarkdown;
+  const selectedRunHasPdf = Boolean(
+    runs.find((run) => (run.run_name || run.display_name) === selectedRun)?.has_pdf,
+  );
 
   return (
     <div className="p-4 md:p-6 space-y-4 w-full h-full flex flex-col min-h-0 overflow-hidden">
@@ -628,7 +639,7 @@ export const PdfInspector: React.FC = () => {
               onScroll={() => handleScroll("pdf")}
               className="flex-1 min-h-0 bg-slate-950/80 p-2 rounded-xl border border-slate-800 overflow-hidden flex flex-col"
             >
-              {selectedRun ? (
+              {selectedRun && selectedRunHasPdf ? (
                 <iframe
                   key={`${selectedRun}-${selectedFilename}`}
                   src={`${apiUrl(`/api/documents/runs/${apiPathSegment(selectedRun)}/pdf`)}#page=${currentPage}`}
@@ -642,11 +653,15 @@ export const PdfInspector: React.FC = () => {
                     PDF
                   </div>
                   <div className="text-xs font-semibold text-slate-200">
-                    {selectedFilename || "Docling_test_file.pdf"}
+                    {selectedRun
+                      ? "No original PDF is attached to this Markdown run."
+                      : selectedFilename || "Select a processed document."}
                   </div>
-                  <div className="text-[11px] text-indigo-400 font-mono">
-                    [Page {currentPage} / {totalPages}]
-                  </div>
+                  {selectedRun && (
+                    <div className="text-[11px] text-amber-300 font-mono">
+                      Markdown only; original-PDF page provenance is unavailable.
+                    </div>
+                  )}
                 </div>
               )}
             </div>

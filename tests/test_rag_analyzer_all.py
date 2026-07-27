@@ -4,7 +4,8 @@ Comprehensive unit tests for rag/analyzer.py targeting 100% statement and branch
 
 import os
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 import httpx
 
 # Prevent system operations during import
@@ -32,8 +33,16 @@ class TestRAGAnalyzerAll(unittest.TestCase):
 
     def test_get_analysis_modes(self):
         modes = rag_anz.get_analysis_modes()
-        self.assertIn("free_qa", modes)
-        self.assertIn("timeline", modes)
+        self.assertEqual(
+            set(modes),
+            {
+                "free_qa",
+                "timeline",
+                "injury_summary",
+                "inconsistency_finder",
+                "medication_tracker",
+            },
+        )
 
     def test_build_prompt_basic(self):
         # 1. Basic build without history
@@ -62,7 +71,7 @@ class TestRAGAnalyzerAll(unittest.TestCase):
             "data: [DONE]"
         ]
         mock_stream.return_value = MockStreamResponse(200, lines)
-        
+
         gen = rag_anz.query_llm_streaming([], "http://localhost:8000/v1", "phi-4")
         res = "".join(list(gen))
         self.assertEqual(res, "hello")
@@ -130,6 +139,42 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         self.assertEqual(res, "No response generated.")
 
     @patch("httpx.post")
+    def test_query_llm_marks_output_limit_truncation(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "choices": [
+                {
+                    "message": {"content": "partial table row"},
+                    "finish_reason": "length",
+                }
+            ]
+        }
+        mock_post.return_value = mock_resp
+
+        res = rag_anz.query_llm([], "http://localhost:8000/v1", "phi-4")
+
+        self.assertIn("partial table row", res)
+        self.assertIn("Incomplete response", res)
+        self.assertIn("Maximum Output Tokens", res)
+
+    @patch("httpx.stream")
+    def test_query_llm_streaming_marks_output_limit_truncation(self, mock_stream):
+        mock_stream.return_value = MockStreamResponse(
+            200,
+            [
+                'data: {"choices": [{"delta": {"content": "partial"}}]}',
+                'data: {"choices": [{"delta": {}, "finish_reason": "length"}]}',
+                "data: [DONE]",
+            ],
+        )
+
+        res = "".join(rag_anz.query_llm_streaming([], "http://localhost:8000/v1", "phi-4"))
+
+        self.assertIn("partial", res)
+        self.assertIn("Incomplete response", res)
+
+    @patch("httpx.post")
     def test_query_llm_non_200(self, mock_post):
         mock_resp = MagicMock()
         mock_resp.status_code = 404
@@ -164,7 +209,7 @@ class TestRAGAnalyzerAll(unittest.TestCase):
     def test_analyze_routing(self, mock_query_llm, mock_stream_llm, mock_format, mock_search):
         mock_search.return_value = [{"chunk_id": "c1"}]
         mock_format.return_value = "formatted context"
-        
+
         # 1. Streaming route
         mock_stream_llm.return_value = iter(["stream chunk"])
         res1 = "".join(list(rag_anz.analyze("query", stream=True)))
@@ -199,7 +244,7 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         mock_search.return_value = [{"chunk_id": "c1"}]
         mock_format.return_value = "formatted context"
         mock_stream_llm.return_value = iter(["answer"])
-        
+
         # Mock /models response showing that "phi-4" is not loaded, but "olmocr" is.
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -212,7 +257,7 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         with patch.dict(os.environ, {"TESTING": "false"}):
             gen = rag_anz.analyze("query", model_name="microsoft/Phi-4-reasoning-plus", stream=True)
             res = list(gen)
-            
+
             # Check that it warns the user and falls back
             self.assertTrue(any("not loaded in vLLM. Falling back to" in item for item in res))
             # Verify stream called with resolved model
@@ -226,12 +271,12 @@ class TestRAGAnalyzerAll(unittest.TestCase):
             "data: [DONE]"
         ]
         mock_stream.return_value = MockStreamResponse(200, lines)
-        
+
         # Using a model name that contains "reasoning"
         gen = rag_anz.query_llm_streaming([], "http://localhost:8000/v1", "Phi-4-reasoning-plus")
         res = "".join(list(gen))
         self.assertEqual(res, "hello")
-        
+
         # Verify repetition_penalty was added to payload
         mock_stream.assert_called_once()
         payload = mock_stream.call_args[1]["json"]
@@ -249,24 +294,28 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         # Using a model name containing "reasoning"
         res = rag_anz.query_llm([], "http://localhost:8000/v1", "Phi-4-reasoning-plus")
         self.assertEqual(res, "static answer")
-        
+
         # Verify repetition_penalty was added to payload
         mock_post.assert_called_once()
         payload = mock_post.call_args[1]["json"]
         self.assertEqual(payload["repetition_penalty"], 1.05)
 
-    @patch("httpx.stream")
-    def test_query_llm_streaming_disables_qwen3_thinking(self, mock_stream):
-        mock_stream.return_value = MockStreamResponse(200, ["data: [DONE]"])
-
-        list(
+    @patch("rag.analyzer.query_llm", return_value="safe answer")
+    def test_query_llm_streaming_uses_safe_qwen3_content_envelope(self, mock_query):
+        chunks = list(
             rag_anz.query_llm_streaming(
                 [], "http://localhost:8000/v1", "Qwen/Qwen3.6-35B-A3B"
             )
         )
 
-        payload = mock_stream.call_args.kwargs["json"]
-        self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(chunks, ["safe answer"])
+        mock_query.assert_called_once_with(
+            [],
+            "http://localhost:8000/v1",
+            "Qwen/Qwen3.6-35B-A3B",
+            temperature=0.1,
+            max_tokens=4096,
+        )
 
     @patch("httpx.post")
     def test_query_llm_disables_qwen3_thinking(self, mock_post):
@@ -344,7 +393,7 @@ class TestRAGAnalyzerAll(unittest.TestCase):
             "docker_max_model_len": 5200,
             "analysis_model_name": "nvidia/Phi-4-reasoning-plus-NVFP4",
         }
-        
+
         # Setup 3 chunks of results, each long enough to exceed the 2048 prompt limit
         mock_search.return_value = [
             {"text": "very long text " * 4000, "chunk_id": "c1"},
@@ -352,11 +401,11 @@ class TestRAGAnalyzerAll(unittest.TestCase):
             {"text": "very long text " * 4000, "chunk_id": "c3"},
         ]
         mock_stream.return_value = iter(["answer"])
-        
+
         # Execute analyze
         gen = rag_anz.analyze("query", stream=True)
         res = list(gen)
-        
+
         # Verify it yielded a warning message
         self.assertTrue(any("too large for the model's context window" in item for item in res))
         self.assertIn("answer", res)
@@ -369,18 +418,18 @@ class TestRAGAnalyzerAll(unittest.TestCase):
             "docker_max_model_len": 5200,
             "analysis_model_name": "nvidia/Phi-4-reasoning-plus-NVFP4",
         }
-        
+
         mock_search.return_value = [
             {"text": "very long text " * 4000, "chunk_id": "c1"},
             {"text": "very long text " * 4000, "chunk_id": "c2"},
             {"text": "very long text " * 4000, "chunk_id": "c3"},
         ]
         mock_query.return_value = "answer"
-        
+
         # Execute analyze
         gen = rag_anz.analyze("query", stream=False)
         res = list(gen)
-        
+
         # Yields a single item with warning + answer
         self.assertEqual(len(res), 1)
         self.assertTrue("too large for the model's context window" in res[0])
@@ -396,17 +445,17 @@ class TestRAGAnalyzerAll(unittest.TestCase):
             "docker_max_model_len": 5200,
             "analysis_model_name": "nvidia/Phi-4-reasoning-plus-NVFP4",
         }
-        
+
         mock_search.return_value = [
             {"text": "very long text " * 4000, "chunk_id": "c1"},
             {"text": "very long text " * 4000, "chunk_id": "c2"},
             {"text": "very long text " * 4000, "chunk_id": "c3"},
         ]
         mock_stream.return_value = iter(["answer"])
-        
+
         gen = rag_anz.analyze("query", stream=True)
         res = list(gen)
-        
+
         self.assertTrue(any("too large for the model's context window" in item for item in res))
         self.assertIn("answer", res)
 
@@ -417,16 +466,16 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         mock_load.return_value = {"docker_max_model_len": 131072}
         mock_search.return_value = [{"text": "context fragment", "chunk_id": "c1"}]
         mock_stream.side_effect = lambda *args, **kwargs: iter(["answer"])
-        
+
         chat_hist = [
             {"role": "user", "content": [{"text": "list text"}, "plain text string"], "name": "tester"}
         ]
-        
+
         # 1. With tiktoken working
         gen = rag_anz.analyze("query", chat_history=chat_hist, run_id_filter="run1", stream=True)
         res = list(gen)
         self.assertIn("answer", res)
-        
+
         # 2. With tiktoken failing (fallback token estimation)
         with patch("tiktoken.get_encoding", side_effect=Exception("Disabled")):
             gen = rag_anz.analyze("query", chat_history=chat_hist, run_id_filter="run1", stream=True)
@@ -439,13 +488,13 @@ class TestRAGAnalyzerAll(unittest.TestCase):
     def test_analyze_preflight_server_not_200_or_no_models(self, mock_get, mock_stream_llm, mock_search):
         mock_search.return_value = [{"text": "ok", "chunk_id": "c1"}]
         mock_stream_llm.side_effect = lambda *args, **kwargs: iter(["answer"])
-        
+
         # Case A: status_code is 500
         mock_get.return_value = MagicMock(status_code=500)
         with patch.dict(os.environ, {"TESTING": "false"}):
             res = list(rag_anz.analyze("query", stream=True))
             self.assertIn("answer", res)
-            
+
         # Case B: status_code is 200 but data is empty
         mock_resp = MagicMock(status_code=200)
         mock_resp.json.return_value = {"data": []}
@@ -468,7 +517,7 @@ class TestRAGAnalyzerAll(unittest.TestCase):
             {"text": "very long text " * 10000, "chunk_id": "c3"},
         ]
         mock_stream.return_value = iter(["answer"])
-        
+
         gen = rag_anz.analyze("query", stream=True)
         res = list(gen)
         self.assertTrue(any("too large for the model's context window" in item for item in res))
@@ -570,7 +619,7 @@ class TestRAGAnalyzerAll(unittest.TestCase):
             yield "[unclosed"
             yield "a" * 160 # len > 150 without close bracket (line 495-496)
             yield " leftover" # leftover buffer at the end (line 505)
-        
+
         stream_out = "".join(list(rag_anz.replace_source_tags_streaming(mock_generator(), results)))
         self.assertIn("Dr. Gavin Weekes", stream_out)
         self.assertIn("medical_report.pdf", stream_out)
@@ -611,7 +660,7 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         # Temporarily remove TESTING env var
         with patch.dict(os.environ):
             os.environ.pop("TESTING", None)
-            
+
             # First call: populates cache
             models1 = rag_anz._get_loaded_models("http://localhost:8000")
             self.assertEqual(models1, ["model_x"])
@@ -638,9 +687,9 @@ class TestRAGAnalyzerAll(unittest.TestCase):
                 replacer_fn = replacer
                 return "mocked_result"
             mock_pattern.sub.side_effect = mock_sub
-            
+
             rag_anz.replace_source_tags_in_string("text", [])
-            
+
             # Call replacer_fn directly with mock match
             mock_match = MagicMock()
             mock_match.group.side_effect = lambda idx: None if idx in (1, 2) else "matched_text"
@@ -653,7 +702,7 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         # Call analyze in timeline mode with score_threshold in search_kwargs (line 553->557)
         mock_search.return_value = [{"text": "chunk1", "page_number": 2}]
         mock_query.return_value = "Response"
-        
+
         res = list(rag_anz.analyze(
             query="test",
             mode="timeline",
@@ -686,6 +735,27 @@ class TestRAGAnalyzerAll(unittest.TestCase):
                 "unknown-resolved", "unknown-configured", lengths
             ),
             rag_anz.CONSERVATIVE_ANALYSIS_CONTEXT_LENGTH,
+        )
+
+    @patch("rag.analyzer.httpx.get")
+    def test_served_model_context_length_is_authoritative(self, mock_get):
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "data": [
+                    {
+                        "id": "Qwen/Qwen3.6-35B-A3B",
+                        "max_model_len": 15_360,
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(
+            rag_anz._get_served_model_context_length(
+                "http://localhost:8000/v1", "Qwen/Qwen3.6-35B-A3B"
+            ),
+            15_360,
         )
 
     @patch("rag.analyzer.search_similar")
@@ -740,24 +810,41 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         with self.assertRaises(rag_anz.ContextWindowError):
             list(rag_anz.analyze("query", max_tokens=32_700, stream=True))
 
+        # The served chat template adds special tokens after KIRAG's message
+        # estimate. Requests must retain the explicit overhead reserve even
+        # when the visible prompt and output would otherwise fit exactly.
+        with self.assertRaisesRegex(
+            rag_anz.ContextWindowError, "chat-template overhead"
+        ):
+            list(
+                rag_anz.analyze(
+                    "query",
+                    max_tokens=(
+                        rag_anz.CONSERVATIVE_ANALYSIS_CONTEXT_LENGTH
+                        - rag_anz.CHAT_TEMPLATE_TOKEN_RESERVE
+                    ),
+                    stream=True,
+                )
+            )
+
     @patch("rag.analyzer.search_similar")
     @patch("rag.analyzer.query_llm")
     def test_estimate_tokens_fallback_and_list(self, mock_query, mock_search):
         mock_search.return_value = [{"text": "chunk1", "page_number": 2}]
         mock_query.return_value = "Response"
-        
+
         chat_history = [
             {"role": "user", "name": "Alice", "content": "hello"},
             {"role": "assistant", "content": [{"text": "list content"}, "other string"]}
         ]
-        
+
         # 1. Normal path with name and list content (lines 620-624, 625-626)
         list(rag_anz.analyze(
             query="test",
             stream=False,
             chat_history=chat_history
         ))
-        
+
         # 2. Fallback path (encoding is None) (lines 605-610)
         with patch("tiktoken.get_encoding", side_effect=Exception("no tiktoken")):
             list(rag_anz.analyze(

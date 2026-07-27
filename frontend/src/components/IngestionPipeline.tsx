@@ -50,8 +50,17 @@ function parseManifestHtml(htmlStr: string): string[] {
   return items;
 }
 
+function plainStatus(status: string): string {
+  return status.replace(/<[^>]+>/g, "").trim();
+}
+
+function isFailureStatus(status: string): boolean {
+  return /failed|error|unreachable|mismatch|invalid|not found/i.test(status);
+}
+
 export const IngestionPipeline: React.FC = () => {
   const ingestRequestRef = useRef<ReturnType<typeof triggerIngestSSE> | null>(null);
+  const terminalFailureRef = useRef<boolean>(false);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [activeRunId, setActiveRunId] = useState<string>("");
   const [statusBadge, setStatusBadge] = useState<string>("Idle");
@@ -122,6 +131,7 @@ export const IngestionPipeline: React.FC = () => {
   };
 
   const handleStartPipeline = async () => {
+    terminalFailureRef.current = false;
     setIsProcessing(true);
     setStatusBadge("Processing");
     setProgressPct(0);
@@ -168,6 +178,7 @@ export const IngestionPipeline: React.FC = () => {
       (eventData: unknown) => {
         const data = (eventData || {}) as Record<string, unknown>;
         if (data.error && typeof data.error === "string") {
+          terminalFailureRef.current = true;
           setLogMessages((prev) => [...prev, `[Error] ${data.error}`]);
           setStatusBadge("Failed");
           setIsProcessing(false);
@@ -180,9 +191,14 @@ export const IngestionPipeline: React.FC = () => {
           setLogMessages((prev) => [...prev, data.log_text as string]);
         }
         if (data.status_badge && typeof data.status_badge === "string") {
-          setStatusBadge(data.status_badge);
-          if (data.status_badge.includes("Failed") || data.status_badge.includes("Error") || data.status_badge.includes("Unreachable")) {
+          const status = plainStatus(data.status_badge);
+          setStatusBadge(status);
+          if (isFailureStatus(status)) {
+            terminalFailureRef.current = true;
             setIsProcessing(false);
+            setFileStatuses((prev) =>
+              prev.map((item) => ({ ...item, status: "Failed" }))
+            );
           }
         }
         if (data.run_id && typeof data.run_id === "string") {
@@ -237,6 +253,7 @@ export const IngestionPipeline: React.FC = () => {
         }
       },
       (err) => {
+        terminalFailureRef.current = true;
         ingestRequestRef.current = null;
         setLogMessages((prev) => [...prev, `[Error] ${String(err)}`]);
         setStatusBadge("Error");
@@ -247,8 +264,12 @@ export const IngestionPipeline: React.FC = () => {
       },
       () => {
         ingestRequestRef.current = null;
-        setStatusBadge((prev) => (prev.includes("Error") || prev.includes("Failed") ? prev : "Completed"));
         setIsProcessing(false);
+        if (terminalFailureRef.current) {
+          setLogMessages((prev) => [...prev, "[Terminated] Pipeline processing ended with errors."]);
+          return;
+        }
+        setStatusBadge("Completed");
         setFileStatuses((prev) =>
           prev.map((item) => ({
             ...item,

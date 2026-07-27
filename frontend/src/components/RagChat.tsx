@@ -64,6 +64,14 @@ interface AvailableRunItem {
   is_indexed?: boolean;
 }
 
+const ANALYSIS_MODES = [
+  "💬 Free Q&A",
+  "📋 Timeline",
+  "🏥 Injury Summary",
+  "🔍 Inconsistency Finder",
+  "💊 Medication Tracker",
+] as const;
+
 export const RagChat: React.FC = () => {
   const ragRequestRef = useRef<ReturnType<typeof triggerRagChatSSE> | null>(null);
   const [showControls, setShowControls] = useState<boolean>(true);
@@ -607,7 +615,7 @@ export const RagChat: React.FC = () => {
               <div className="glass-panel p-4 rounded-2xl border border-slate-800 space-y-3 shrink-0 relative z-10">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                    {["💬 Free Q&A", "📋 Timeline", "⚕️ Medical Summary", "⚖️ Injury Audit"].map((m) => (
+                    {ANALYSIS_MODES.map((m) => (
                       <button
                         key={m}
                         type="button"
@@ -789,7 +797,7 @@ export const RagChat: React.FC = () => {
             <div className="glass-panel p-4 rounded-2xl border border-slate-800 space-y-3 shrink-0 relative z-10">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                  {["💬 Free Q&A", "📋 Timeline", "⚕️ Medical Summary", "⚖️ Injury Audit"].map((m) => (
+                  {ANALYSIS_MODES.map((m) => (
                     <button
                       key={m}
                       type="button"

@@ -1,4 +1,5 @@
 import os
+import json
 import unittest
 import subprocess
 from unittest.mock import patch, MagicMock, mock_open
@@ -66,14 +67,14 @@ class TestOLMOCRApp(unittest.TestCase):
         settings = app.load_settings()
         self.assertEqual(settings["server_url"], "http://localhost:8000/v1") # Returns default on fail
 
-    @patch("os.makedirs")
-    @patch("builtins.open", new_callable=mock_open)
-    def test_save_settings_success(self, mock_file, mock_makedirs):
+    def test_save_settings_success(self):
         settings_to_save = {"server_url": "http://custom:123/v1"}
-        res = app.save_settings(settings_to_save)
+        settings_path = os.path.join(self.workspace, "settings.json")
+        with patch("settings_manager.SETTINGS_FILE", settings_path):
+            res = app.save_settings(settings_to_save)
         self.assertEqual(res, "Settings saved successfully.")
-        mock_makedirs.assert_called_once()
-        mock_file().write.assert_called()
+        with open(settings_path, encoding="utf-8") as saved:
+            self.assertEqual(json.load(saved), settings_to_save)
 
     @patch("os.makedirs", side_effect=OSError("Write failure"))
     def test_save_settings_failure(self, mock_makedirs):

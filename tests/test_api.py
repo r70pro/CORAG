@@ -1,9 +1,10 @@
-import os
-import unittest
-import json
 import io
+import json
+import os
 import tempfile
-from unittest.mock import patch, MagicMock, mock_open
+import unittest
+from unittest.mock import MagicMock, patch
+
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 
@@ -11,6 +12,7 @@ from pypdf import PdfWriter
 os.environ["TESTING"] = "true"
 
 from api.main import app
+
 
 class TestAPI(unittest.TestCase):
 
@@ -149,7 +151,7 @@ class TestAPI(unittest.TestCase):
     @patch("settings_manager.load_settings")
     def test_diagnostics_report(self, mock_settings, mock_gen):
         mock_settings.return_value = {}
-        
+
         export_dir = os.path.join(self.workspace, "exports")
         os.makedirs(export_dir)
         tmp_path = os.path.join(export_dir, "diagnostic_report.md")
@@ -268,6 +270,49 @@ class TestAPI(unittest.TestCase):
         self.assertTrue(data["success"])
         mock_save.assert_called_once()
 
+    @patch("docker_manager.create_docker_container")
+    @patch("settings_manager.save_settings")
+    @patch("settings_manager.load_settings")
+    def test_docker_create_does_not_persist_environment_token(
+        self, mock_load, mock_save, mock_create
+    ):
+        mock_load.return_value = {"hf_token": ""}
+        mock_create.return_value = (True, "Container created")
+
+        with patch.dict(os.environ, {"HF_TOKEN": "environment-only-token"}):
+            response = self.client.post(
+                "/api/docker/create",
+                json={"model": "test-model", "port": 8000, "max_model_len": 4096},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        mock_load.assert_called_once_with(include_env_secrets=False)
+        self.assertEqual(mock_create.call_args.args[0], "environment-only-token")
+        saved_settings = mock_save.call_args.args[0]
+        self.assertEqual(saved_settings.get("hf_token", ""), "")
+
+    @patch("docker_manager.create_docker_container")
+    @patch("settings_manager.save_settings")
+    @patch("settings_manager.load_settings")
+    def test_docker_create_keeps_ocr_and_analysis_models_independent(
+        self, mock_load, mock_save, mock_create
+    ):
+        mock_load.return_value = {
+            "model_name": "allenai/olmOCR-2-7B-1025-FP8",
+            "server_url": "http://localhost:8000/v1",
+        }
+        mock_create.return_value = (True, "Container created")
+
+        response = self.client.post(
+            "/api/docker/create",
+            json={"model": "Qwen/Qwen3.6-35B-A3B", "port": 8000},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        saved_settings = mock_save.call_args.args[0]
+        self.assertEqual(saved_settings["model_name"], "allenai/olmOCR-2-7B-1025-FP8")
+        self.assertEqual(saved_settings["analysis_model_name"], "Qwen/Qwen3.6-35B-A3B")
+
     @patch("docker_manager.shutdown_docker_container")
     def test_docker_shutdown(self, mock_shutdown):
         mock_shutdown.return_value = (True, "Container removed")
@@ -291,6 +336,7 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(len(data), 1)
         self.assertEqual(data[0]["run_name"], "run_case")
         self.assertEqual(data[0]["file_count"], 2)
+        self.assertFalse(data[0]["has_pdf"])
 
     def test_list_run_files(self):
         for filename in ("a.md", "b.md"):
@@ -369,7 +415,7 @@ class TestAPI(unittest.TestCase):
         }
         response = self.client.post("/api/pipeline/start", json=payload)
         self.assertEqual(response.status_code, 200)
-        
+
         # Read the event stream
         lines = [line for line in response.iter_lines() if line]
         self.assertTrue(any("run_id" in line for line in lines))
@@ -474,7 +520,7 @@ class TestAPI(unittest.TestCase):
     @patch("indexing_service.CorpusIndexingService.add_markdown_to_case")
     def test_rag_upload_markdown(self, mock_add):
         mock_add.return_value = ["✅ Done"]
-        
+
         # Send a mock file upload
         files = {"files": ("file.md", b"# Markdown content", "text/markdown")}
         data = {"case_option": "new", "new_case_name": "TestCase"}
@@ -485,7 +531,7 @@ class TestAPI(unittest.TestCase):
     @patch("rag.analyzer.analyze")
     def test_rag_query(self, mock_analyze):
         mock_analyze.return_value = ["Answer ", "chunk"]
-        
+
         # Case 1: Streaming
         payload = {"query": "test query", "stream": True}
         response = self.client.post("/api/rag/query", json=payload)

@@ -70,8 +70,17 @@ test("safe controls inside every workspace respond to clicks", async ({ page }) 
   await page.getByRole("button", { name: "💬 RAG Processing", exact: true }).click();
   await page.getByRole("button", { name: "Hide Panel", exact: true }).click();
   await expect(page.getByRole("button", { name: "Show Panel", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "📋 Timeline", exact: true }).click();
-  await expect(page.getByRole("button", { name: "📋 Timeline", exact: true })).toHaveClass(/bg-indigo-600/);
+  for (const mode of [
+    "💬 Free Q&A",
+    "📋 Timeline",
+    "🏥 Injury Summary",
+    "🔍 Inconsistency Finder",
+    "💊 Medication Tracker",
+  ]) {
+    const modeButton = page.getByRole("button", { name: mode, exact: true });
+    await modeButton.click();
+    await expect(modeButton).toHaveClass(/bg-indigo-600/);
+  }
   await page.getByRole("button", { name: "Show Panel", exact: true }).click();
   await expect(page.getByText("📦 Document Indexing", { exact: true })).toBeVisible();
 

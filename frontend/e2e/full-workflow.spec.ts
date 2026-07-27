@@ -1,9 +1,16 @@
 import { expect, test, type Page } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import { basename, extname } from "node:path";
 
 const runFullWorkflow = process.env.KIRAG_RUN_FULL_E2E === "1";
 const sourcePdf =
   process.env.KIRAG_E2E_PDF || "/home/owner/Downloads/Docling_test_file.pdf";
+const sourcePdfName = basename(sourcePdf);
+const sourceStem = basename(sourcePdf, extname(sourcePdf));
+const sourceMarkdownName = `0_${sourceStem}.md`;
+const expectedPageCount = Number(process.env.KIRAG_E2E_EXPECTED_PAGES || "9");
 const reuseLatestOcrRun = process.env.KIRAG_E2E_REUSE_OCR === "1";
+const ocrModel = "allenai/olmOCR-2-7B-1025-FP8";
 const qwenModel =
   process.env.KIRAG_E2E_QWEN_MODEL || "Qwen/Qwen3.6-35B-A3B";
 const reuseReadyQwen = process.env.KIRAG_E2E_REUSE_QWEN === "1";
@@ -36,10 +43,25 @@ test.describe.serial("real medicolegal workflow", () => {
     await page.goto("/", { waitUntil: "networkidle" });
 
     if (!reuseLatestOcrRun) {
+      const inferenceToggle = page.getByRole("button", { name: /Inference Server/ });
+      if (!(await page.getByText("Manage the local GPU inference container.").isVisible())) {
+        await inferenceToggle.click();
+      }
+      await page.getByLabel("Model Name").first().selectOption(ocrModel);
+      await page.getByRole("button", { name: "Recreate & Run", exact: true }).click();
+      await expect(page.getByText(/Container created and started successfully/)).toBeVisible({
+        timeout: 2 * 60 * 1000,
+      });
+      await expect.poll(async () => page.evaluate(async () => {
+        const response = await fetch("/api/docker/status");
+        return response.ok ? ((await response.json()) as { status: string }).status : `http-${response.status}`;
+      }), { timeout: 30 * 60 * 1000, intervals: [2_000, 5_000, 10_000] }).toBe("ready");
+
       await expect(page.getByRole("heading", { name: /Ingestion Pipeline/ })).toBeVisible();
+      await page.locator("#ocr-model").selectOption(ocrModel);
       await page.locator("#pdf-file-input").setInputFiles(sourcePdf);
       await expect(page.getByText("1 file(s) selected", { exact: true })).toBeVisible();
-      await expect(page.getByText(/Docling_test_file\.pdf \(2\.\d+ MB\)/)).toBeVisible();
+      await expect(page.getByText(new RegExp(`${sourcePdfName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\(\\d+(?:\\.\\d+)? MB\\)`))).toBeVisible();
 
       await page.getByRole("button", { name: "Start Batch Processing", exact: true }).click();
       await expect(page.getByText("● Processing", { exact: true })).toBeVisible();
@@ -47,7 +69,7 @@ test.describe.serial("real medicolegal workflow", () => {
         timeout: 45 * 60 * 1000,
       });
       await expect(page.getByText("● Completed", { exact: true })).toBeVisible();
-      await expect(page.getByText("Completed Pages", { exact: true }).locator("..").getByText("9", { exact: true })).toBeVisible();
+      await expect(page.getByText("Completed Pages", { exact: true }).locator("..").getByText(String(expectedPageCount), { exact: true })).toBeVisible();
       await expect(page.getByText("Failed Pages", { exact: true }).locator("..").getByText("0", { exact: true })).toBeVisible();
       await expect(page.getByText("Done", { exact: true })).toBeVisible();
     }
@@ -56,6 +78,15 @@ test.describe.serial("real medicolegal workflow", () => {
     await expect(page.getByRole("heading", { name: /Layout Inspector/ })).toBeVisible();
     const runSelector = page.getByText("📄 Select Processed Document Run", { exact: true }).locator("..").locator("select");
     await expect(runSelector).not.toHaveValue("");
+    const selectedOcrRun = await page.evaluate(async (expectedMarkdownName) => {
+      const response = await fetch("/api/documents/runs");
+      if (!response.ok) throw new Error(`document runs HTTP ${response.status}`);
+      const runs = (await response.json()) as { run_name: string; files: string[] }[];
+      const selected = runs.find((run) => run.files.includes(expectedMarkdownName));
+      if (!selected) throw new Error(`No completed ${expectedMarkdownName} OCR run was found`);
+      return selected.run_name;
+    }, sourceMarkdownName);
+    await runSelector.selectOption(selectedOcrRun);
     await expect(page.locator('iframe[title="Source PDF Viewer"]')).toHaveAttribute("src", /\/api\/documents\/runs\/run_.*\/pdf/);
     const pdfValidation = await page.evaluate(async () => {
       const source = document.querySelector<HTMLIFrameElement>('iframe[title="Source PDF Viewer"]')?.src;
@@ -76,7 +107,7 @@ test.describe.serial("real medicolegal workflow", () => {
     await expect(page.getByRole("button", { name: "Full Document", exact: true })).toHaveClass(/bg-indigo-600/);
     await page.getByRole("button", { name: "Page-by-Page", exact: true }).click();
     await page.getByRole("button", { name: "Next Page ➡️", exact: true }).click();
-    await expect(page.getByText("2 / 9", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText(`2 / ${expectedPageCount}`, { exact: true }).first()).toBeVisible();
 
     const runName = await runSelector.inputValue();
     const runFiles = await page.evaluate(async (name) => {
@@ -84,7 +115,7 @@ test.describe.serial("real medicolegal workflow", () => {
       if (!response.ok) throw new Error(`run files HTTP ${response.status}`);
       return (await response.json()) as string[];
     }, runName);
-    expect(runFiles).toContain("0_Docling_test_file.md");
+    expect(runFiles).toContain(sourceMarkdownName);
     const markdown = await page.evaluate(async ({ name, filename }) => {
       const response = await fetch(
         `/api/documents/runs/${encodeURIComponent(name)}/markdown/${encodeURIComponent(filename)}`,
@@ -100,20 +131,78 @@ test.describe.serial("real medicolegal workflow", () => {
     await page.getByLabel("Embedding Model Name").selectOption("BAAI/bge-large-en-v1.5");
     await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
     await expect(page.getByText(/Embedding configuration saved successfully/)).toBeVisible();
+    await page.getByLabel("Select OCR Run to Index").selectOption(runName);
     await page.getByRole("button", { name: "Index Selected Run", exact: true }).click();
     await expect(page.getByText(/Successfully indexed/).first()).toBeVisible({
       timeout: 30 * 60 * 1000,
     });
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(page.getByText(/\d+ Points/)).not.toHaveText("0 Points");
+    const ocrRunId = await page.evaluate(async (selectedRunName) => {
+      const response = await fetch("/api/pipeline/runs");
+      if (!response.ok) throw new Error(`pipeline runs HTTP ${response.status}`);
+      const runs = (await response.json()) as { run_dir: string; run_id: string }[];
+      const selected = runs.find((run) => run.run_dir === selectedRunName);
+      if (!selected) throw new Error(`Indexed run ${selectedRunName} was not returned by pipeline runs`);
+      return selected.run_id;
+    }, runName);
+
+    const casesBefore = await page.evaluate(async () => {
+      const response = await fetch("/api/case-summary");
+      if (!response.ok) throw new Error(`case summary HTTP ${response.status}`);
+      const data = (await response.json()) as { indexed_cases?: { run_id: string }[] };
+      return (data.indexed_cases || []).map((item) => item.run_id);
+    });
+    await page.getByLabel("Select Markdown Files (.md)").setInputFiles({
+      name: "e2e-deletion-case.md",
+      mimeType: "text/markdown",
+      buffer: Buffer.from(
+        "# E2E Deletion Case\n\nPatient: Production Validation\n\nOn 2026-07-27, Dr Test recorded a temporary validation note.",
+      ),
+    });
+    await page.getByLabel("New Case Name").fill(`E2E Deletion Case ${Date.now()}`);
+    await page.getByRole("button", { name: "Upload & Index Markdown", exact: true }).click();
+    await expect(page.getByText(/Successfully indexed/).last()).toBeVisible({
+      timeout: 30 * 60 * 1000,
+    });
+    let temporaryRunId = "";
+    await expect.poll(async () => {
+      temporaryRunId = await page.evaluate(async (existing) => {
+        const response = await fetch("/api/case-summary");
+        if (!response.ok) return "";
+        const data = (await response.json()) as { indexed_cases?: { run_id: string }[] };
+        return (data.indexed_cases || []).map((item) => item.run_id).find((id) => !existing.includes(id)) || "";
+      }, casesBefore);
+      return temporaryRunId;
+    }, { timeout: 60_000 }).not.toBe("");
 
     await openWorkspace(page, "📊 Case Dashboard");
     await page.getByRole("button", { name: "Refresh Dashboard", exact: true }).click();
-    await expect(page.getByText(/Docling_test_file\.pdf/).first()).toBeVisible();
+    await expect(page.getByText(`📁 ${ocrRunId}`, { exact: true })).toBeVisible();
     await expect(page.getByText(/Active Case/).first()).toBeVisible();
-    await page.getByRole("button", { name: "Select All", exact: true }).click();
-    await expect(page.getByRole("button", { name: /Delete Selected \(1\)/ })).toBeEnabled();
-    await page.getByRole("button", { name: "Clear Selection", exact: true }).click();
+    const temporaryRunIds = await page.evaluate(async () => {
+      const response = await fetch("/api/pipeline/runs");
+      if (!response.ok) throw new Error(`pipeline runs HTTP ${response.status}`);
+      const runs = (await response.json()) as { run_dir: string; run_id: string }[];
+      return runs.filter((run) => run.run_dir.startsWith("run_E2E_Deletion_Case_")).map((run) => run.run_id);
+    });
+    expect(temporaryRunIds).toContain(temporaryRunId);
+    for (const runId of temporaryRunIds) {
+      const temporaryCaseHeader = page.getByText(`📁 ${runId}`, { exact: true }).locator("..").locator("..");
+      await temporaryCaseHeader.getByRole("checkbox").check();
+    }
+    const deleteTemporaryCases = page.getByRole("button", {
+      name: `Delete Selected (${temporaryRunIds.length})`,
+      exact: true,
+    });
+    await expect(deleteTemporaryCases).toBeEnabled();
+    await deleteTemporaryCases.click();
+    await expect.poll(async () => page.evaluate(async (deletedRunIds) => {
+      const response = await fetch("/api/case-summary");
+      if (!response.ok) return true;
+      const data = (await response.json()) as { indexed_cases?: { run_id: string }[] };
+      return (data.indexed_cases || []).some((item) => deletedRunIds.includes(item.run_id));
+    }, temporaryRunIds)).toBe(false);
     await expect(page.getByRole("button", { name: /Delete Selected \(0\)/ })).toBeDisabled();
 
     expect(browserErrors).toEqual([]);
@@ -138,7 +227,7 @@ test.describe.serial("real medicolegal workflow", () => {
         const response = await fetch("/api/docker/status");
         return response.ok ? ((await response.json()) as { status: string }).status : `http-${response.status}`;
       });
-    }, { timeout: 30 * 60 * 1000, intervals: [2_000, 5_000, 10_000] }).toBe("ready");
+    }, { timeout: 90 * 60 * 1000, intervals: [2_000, 5_000, 10_000] }).toBe("ready");
 
     // The full-precision Qwen model occupies most unified GPU memory; keep the
     // embedding and reranking stages deterministic on CPU for this workload.
@@ -164,11 +253,29 @@ test.describe.serial("real medicolegal workflow", () => {
         : `http-${response.status}`;
     })).toBe("cpu");
     await page.getByRole("button", { name: "📋 Timeline", exact: true }).click();
-    await page.getByLabel("Maximum Output Tokens").fill("1024");
+    await page.getByLabel("Maximum Output Tokens").fill("4096");
     const activeCaseSelector = page.locator("select").filter({ has: page.locator("option", { hasText: "Select Active Case Context" }) }).first();
     const caseOptions = await activeCaseSelector.locator("option").count();
     expect(caseOptions).toBeGreaterThan(1);
-    await activeCaseSelector.selectOption({ index: 1 });
+    const indexedOcrCase = await page.evaluate(async (expectedMarkdownName) => {
+      const [documentsResponse, pipelineResponse] = await Promise.all([
+        fetch("/api/documents/runs"),
+        fetch("/api/pipeline/runs"),
+      ]);
+      if (!documentsResponse.ok || !pipelineResponse.ok) {
+        throw new Error("Unable to resolve the indexed OCR case");
+      }
+      const documentRuns = (await documentsResponse.json()) as { run_name: string; files: string[] }[];
+      const pipelineRuns = (await pipelineResponse.json()) as { run_dir: string; run_id: string; is_indexed?: boolean }[];
+      const selectedDocument = documentRuns.find((run) => run.files.includes(expectedMarkdownName));
+      const selectedCase = pipelineRuns.find(
+        (run) => run.run_dir === selectedDocument?.run_name && run.is_indexed !== false,
+      );
+      if (!selectedCase) throw new Error("The completed OCR run is not indexed");
+      return selectedCase.run_id;
+    }, sourceMarkdownName);
+    await activeCaseSelector.selectOption(indexedOcrCase);
+    await expect(activeCaseSelector).toHaveValue(indexedOcrCase);
 
     const prompt = page.getByPlaceholder("Ask a medicolegal question or request an audit...").last();
     await prompt.fill(
@@ -181,17 +288,36 @@ test.describe.serial("real medicolegal workflow", () => {
     await expect(generatingButton).not.toBeVisible({
       timeout: 30 * 60 * 1000,
     });
-    const chatText = await page.locator("main").innerText();
-    expect(chatText).toMatch(/Date|Timeline|No relevant document excerpts/i);
-    expect(chatText).not.toMatch(/thinking process/i);
-    expect(chatText).not.toMatch(/\[Source\s+\d+\]/i);
-    expect(chatText).not.toMatch(/Error processing query/i);
+    const answerText = await page.locator(".whitespace-pre-wrap").last().innerText();
+    expect(answerText).toMatch(/Date/i);
+    expect(answerText).toMatch(/Event/i);
+    expect(answerText).toMatch(/Provider|Author/i);
+    expect(answerText).toMatch(/Source/i);
+    expect(answerText).toContain(sourcePdfName);
+    expect(answerText).toMatch(/\b(?:p\.|pp\.|page(?:s)?)\s*\d+/i);
+    expect(answerText).not.toMatch(/No relevant document excerpts/i);
+    expect(answerText).not.toMatch(/thinking process/i);
+    expect(answerText).not.toMatch(/\[Source\s+\d+\]/i);
+    expect(answerText).not.toMatch(/Error processing query/i);
+    expect(answerText).not.toMatch(/Incomplete response/i);
 
     for (const buttonName of ["Export MD", "TXT", "CSV", "DOCX", "Timeline DOCX"]) {
       const downloadPromise = page.waitForEvent("download");
       await page.getByRole("button", { name: buttonName, exact: true }).last().click();
       const download = await downloadPromise;
-      expect(download.suggestedFilename()).toMatch(/\.(md|txt|csv|docx)$/);
+      const filename = download.suggestedFilename();
+      expect(filename).toMatch(/\.(md|txt|csv|docx)$/);
+      const downloadPath = await download.path();
+      expect(downloadPath).not.toBeNull();
+      const contents = await readFile(downloadPath!);
+      expect(contents.length).toBeGreaterThan(20);
+      if (filename.endsWith(".docx")) {
+        expect(contents.subarray(0, 2).toString()).toBe("PK");
+      } else {
+        const text = contents.toString("utf8");
+        expect(text).toMatch(/Date|Timeline|medicolegal|No relevant/i);
+        if (filename.endsWith(".csv")) expect(text).toContain(",");
+      }
     }
 
     await openWorkspace(page, "🖥️ System Diagnostics");

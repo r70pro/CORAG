@@ -1,10 +1,11 @@
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { PdfInspector } from "../PdfInspector";
 import {
   fetchDocumentInfo,
   fetchDocumentRuns,
   fetchMarkdownContent,
+  fetchRunFiles,
 } from "@/lib/api";
 
 jest.mock("@/lib/api", () => ({
@@ -83,6 +84,42 @@ describe("PdfInspector Component", () => {
       expect(screen.getAllByRole("table").length).toBeGreaterThan(0);
     });
     expect(screen.getAllByText("<text>").length).toBeGreaterThan(0);
+  });
+
+  test("does not request a PDF for an external Markdown-only run", async () => {
+    jest.mocked(fetchDocumentRuns).mockResolvedValue([
+      { run_name: "run_external", files: ["external.md"], has_pdf: false }
+    ]);
+
+    render(<PdfInspector />);
+
+    expect(await screen.findByText("No original PDF is attached to this Markdown run.")).toBeInTheDocument();
+    expect(screen.queryByTitle("Source PDF Viewer")).not.toBeInTheDocument();
+  });
+
+  test("clears the old filename before loading files for a different run", async () => {
+    let resolveFiles: (files: string[]) => void = () => undefined;
+    jest.mocked(fetchDocumentRuns).mockResolvedValue([
+      { run_name: "run_old", display_name: "Old", files: ["old.md"], has_pdf: true },
+      { run_name: "run_new", display_name: "New", files: ["new.md"], has_pdf: true },
+    ]);
+    jest.mocked(fetchRunFiles).mockImplementation(
+      () => new Promise<string[]>((resolve) => { resolveFiles = resolve; }),
+    );
+
+    render(<PdfInspector />);
+    await waitFor(() => {
+      expect(jest.mocked(fetchMarkdownContent)).toHaveBeenCalledWith("run_old", "old.md");
+    });
+    jest.mocked(fetchMarkdownContent).mockClear();
+    const selector = screen.getByLabelText("📄 Select Processed Document Run") as HTMLSelectElement;
+    fireEvent.change(selector, { target: { value: "run_new" } });
+
+    expect(jest.mocked(fetchMarkdownContent)).not.toHaveBeenCalledWith("run_new", "old.md");
+    resolveFiles(["new.md"]);
+    await waitFor(() => {
+      expect(jest.mocked(fetchMarkdownContent)).toHaveBeenCalledWith("run_new", "new.md");
+    });
   });
 
   test("renders line breaks inside otherwise strict OCR table cells", async () => {

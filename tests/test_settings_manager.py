@@ -130,6 +130,20 @@ class TestSettingsManager(unittest.TestCase):
             res = settings_manager.save_settings({"custom": "value"})
             self.assertTrue(res.startswith("Error saving settings:"))
 
+    def test_save_settings_replaces_complete_json_atomically(self):
+        with patch("settings_manager.SETTINGS_FILE", self.settings_file), patch(
+            "settings_manager.os.replace", wraps=os.replace
+        ) as replace:
+            res = settings_manager.save_settings({"custom": "complete"})
+
+        self.assertEqual(res, "Settings saved successfully.")
+        replace.assert_called_once()
+        source, destination = replace.call_args.args
+        self.assertEqual(destination, self.settings_file)
+        self.assertNotEqual(source, destination)
+        with open(self.settings_file, encoding="utf-8") as saved:
+            self.assertEqual(json.load(saved), {"custom": "complete"})
+
     def test_get_available_runs(self):
         # 1. Workspace does not exist
         with patch("settings_manager.WORKSPACE_DIR", "/nonexistent-workspace"):
@@ -303,4 +317,3 @@ class TestSettingsManager(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import sys
+import tempfile
+import threading
 from pathlib import Path
 
 from path_security import (
@@ -96,6 +98,7 @@ if "HF_HOME" not in os.environ:
     os.environ["HF_HOME"] = _resolve_hf_home()
 
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+_SETTINGS_LOCK = threading.RLock()
 
 
 # Use the bundled workspace directory when it is writable; otherwise fall back
@@ -140,7 +143,7 @@ MODEL_MAX_CONTENT_LENGTHS = {
 }
 
 
-def load_settings():
+def load_settings(*, include_env_secrets: bool = True):
     defaults = {
         "server_url": "http://localhost:8000/v1",
         "model_name": "allenai/olmOCR-2-7B-1025-FP8",
@@ -153,7 +156,7 @@ def load_settings():
         "docker_gpu_mem": 0.80,
         "docker_max_model_len": 15360,
         "docker_tensor_parallel": 1,
-        "hf_token": os.environ.get("HF_TOKEN", ""),
+        "hf_token": os.environ.get("HF_TOKEN", "") if include_env_secrets else "",
         # RAG Analysis settings
         "analysis_model_name": "nvidia/Phi-4-reasoning-plus-NVFP4",
         "analysis_server_url": "http://localhost:8000/v1",
@@ -168,20 +171,21 @@ def load_settings():
         "reranker_model": "BAAI/bge-reranker-large",
         "reranker_device": "cuda",
     }
-    if os.path.exists(SETTINGS_FILE):
-        try:
-            with open(SETTINGS_FILE) as f:
-                user_settings = json.load(f)
-                # Avoid overwriting hf_token with an empty string if env has a token
-                if (
-                    "hf_token" in user_settings
-                    and not user_settings["hf_token"]
-                    and defaults.get("hf_token")
-                ):
-                    user_settings.pop("hf_token")
-                defaults.update(user_settings)
-        except Exception as e:
-            logger.error(f"Error loading settings: {e}")
+    with _SETTINGS_LOCK:
+        if os.path.exists(SETTINGS_FILE):
+            try:
+                with open(SETTINGS_FILE) as f:
+                    user_settings = json.load(f)
+                    # Avoid overwriting hf_token with an empty string if env has a token
+                    if (
+                        "hf_token" in user_settings
+                        and not user_settings["hf_token"]
+                        and defaults.get("hf_token")
+                    ):
+                        user_settings.pop("hf_token")
+                    defaults.update(user_settings)
+            except Exception as e:
+                logger.error(f"Error loading settings: {e}")
     # Sync analysis_model_name if empty or missing
     if not defaults.get("analysis_model_name"):
         defaults["analysis_model_name"] = defaults.get("model_name", "allenai/olmOCR-2-7B-1025-FP8")
@@ -189,16 +193,38 @@ def load_settings():
 
 
 def save_settings(settings):
+    temporary_path = None
     try:
-        os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
-        # Ensure analysis_model_name is set if missing
-        if "model_name" in settings and "analysis_model_name" not in settings:
-            settings["analysis_model_name"] = settings["model_name"]
-        with open(SETTINGS_FILE, "w") as f:
-            json.dump(settings, f, indent=2)
+        settings_dir = os.path.dirname(SETTINGS_FILE)
+        os.makedirs(settings_dir, exist_ok=True)
+        with _SETTINGS_LOCK:
+            # Ensure analysis_model_name is set if missing
+            if "model_name" in settings and "analysis_model_name" not in settings:
+                settings["analysis_model_name"] = settings["model_name"]
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=settings_dir,
+                prefix=".settings.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary_file:
+                temporary_path = temporary_file.name
+                json.dump(settings, temporary_file, indent=2)
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            os.chmod(temporary_path, 0o600)
+            os.replace(temporary_path, SETTINGS_FILE)
+            temporary_path = None
         return "Settings saved successfully."
     except Exception as e:
         return f"Error saving settings: {e}"
+    finally:
+        if temporary_path:
+            try:
+                os.unlink(temporary_path)
+            except OSError:
+                pass
 
 
 def delete_run_directory(run_id_or_path: str) -> bool:
