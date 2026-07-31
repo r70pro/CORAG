@@ -1,0 +1,27 @@
+[Unit]
+Description=KIRAG FastAPI service
+Requires=kirag-infrastructure.service
+After=kirag-infrastructure.service network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@KIRAG_USER@
+Group=@KIRAG_GROUP@
+WorkingDirectory=@KIRAG_ROOT@
+EnvironmentFile=@KIRAG_ENV@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@KIRAG_ROOT@/.venv/bin/python -m uvicorn api.main:app --host 127.0.0.1 --port 8001 --workers 1 --limit-concurrency 100 --timeout-keep-alive 15 --timeout-graceful-shutdown 120 --no-access-log
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=150
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@KIRAG_ROOT@/workspace @KIRAG_ROOT@/logs @KIRAG_ROOT@/settings.json
+
+[Install]
+WantedBy=multi-user.target

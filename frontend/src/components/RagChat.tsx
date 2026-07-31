@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Download,
   RefreshCw,
+  Trash2,
   FileCheck,
   Terminal,
 } from "lucide-react";
@@ -126,13 +127,13 @@ export const RagChat: React.FC = () => {
   const [saveConfigStatus, setSaveConfigStatus] = useState<string>("");
 
   // Search filters
-  const [filterDocType] = useState<string>("");
-  const [filterAuthor] = useState<string>("");
-  const [filterDateFrom] = useState<string>("");
-  const [filterDateTo] = useState<string>("");
+  const [filterDocType, setFilterDocType] = useState<string>("");
+  const [filterAuthor, setFilterAuthor] = useState<string>("");
+  const [filterDateFrom, setFilterDateFrom] = useState<string>("");
+  const [filterDateTo, setFilterDateTo] = useState<string>("");
 
   // Log console
-  const [logMessages] = useState<string[]>([
+  const [logMessages, setLogMessages] = useState<string[]>([
     "RAG processing workstation ready.",
   ]);
 
@@ -350,6 +351,40 @@ export const RagChat: React.FC = () => {
       }
     );
   };
+
+  const handleStop = useCallback(() => {
+    if (!isStreaming) return;
+    ragRequestRef.current?.cancel("RAG generation stopped by user");
+    ragRequestRef.current = null;
+    setIsStreaming(false);
+    setLogMessages((previous) => [...previous, "RAG chat and model inference stopped by user."]);
+  }, [isStreaming]);
+
+  const handleClearChat = useCallback(() => {
+    if (isStreaming) {
+      ragRequestRef.current?.cancel("RAG chat cleared by user");
+      ragRequestRef.current = null;
+      setIsStreaming(false);
+    }
+    setMessages([]);
+  }, [isStreaming]);
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        handleClearChat();
+      } else if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "c") {
+        const lastBotMessage = [...messages].reverse().find((message) => message.sender === "bot");
+        if (lastBotMessage?.text) {
+          event.preventDefault();
+          void navigator.clipboard.writeText(lastBotMessage.text);
+        }
+      }
+    };
+    document.addEventListener("keydown", handleShortcut);
+    return () => document.removeEventListener("keydown", handleShortcut);
+  }, [handleClearChat, messages]);
 
   const handleExport = async (format: string) => {
     const historyPayload = messages.map((m) => ({
@@ -614,6 +649,53 @@ export const RagChat: React.FC = () => {
                   {saveConfigStatus && <p className="text-[10px] font-mono text-emerald-400 text-center">{saveConfigStatus}</p>}
                 </div>
               </div>
+
+              <div className="border border-slate-800 rounded-xl overflow-hidden">
+                <div className="px-3 py-2 bg-slate-900/80 text-xs font-bold text-slate-200">
+                  📋 Metadata Filters
+                </div>
+                <div className="p-3 space-y-2 text-xs">
+                  <div>
+                    <label htmlFor="rag-document-type" className="block text-slate-400 text-[10px] mb-0.5">Document Type</label>
+                    <select
+                      id="rag-document-type"
+                      value={filterDocType}
+                      onChange={(event) => setFilterDocType(event.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-[11px]"
+                    >
+                      <option value="">All Types</option>
+                      <option value="specialist_letter">Specialist Letter</option>
+                      <option value="clinical_notes">Clinical Notes</option>
+                      <option value="radiology_report">Radiology Report</option>
+                      <option value="physiotherapy_report">Physiotherapy Report</option>
+                      <option value="medicolegal_report">Medicolegal Report</option>
+                      <option value="referral_letter">Referral Letter</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="rag-author" className="block text-slate-400 text-[10px] mb-0.5">Author</label>
+                    <input
+                      id="rag-author"
+                      type="text"
+                      value={filterAuthor}
+                      onChange={(event) => setFilterAuthor(event.target.value)}
+                      placeholder="All authors"
+                      className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-[11px]"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label htmlFor="rag-date-from" className="block text-slate-400 text-[10px] mb-0.5">Date From</label>
+                      <input id="rag-date-from" type="date" value={filterDateFrom} onChange={(event) => setFilterDateFrom(event.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded px-1 py-1 text-slate-200 text-[10px]" />
+                    </div>
+                    <div>
+                      <label htmlFor="rag-date-to" className="block text-slate-400 text-[10px] mb-0.5">Date To</label>
+                      <input id="rag-date-to" type="date" value={filterDateTo} onChange={(event) => setFilterDateTo(event.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded px-1 py-1 text-slate-200 text-[10px]" />
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-slate-500">Filters apply to the next query.</p>
+                </div>
+              </div>
             </div>
 
             {/* Right Main Chat Area */}
@@ -654,6 +736,13 @@ export const RagChat: React.FC = () => {
 
                 {/* Export Buttons */}
                 <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleClearChat}
+                    className="px-2.5 py-1 rounded-lg bg-rose-950/40 hover:bg-rose-900/50 text-rose-300 font-semibold text-[11px] flex items-center gap-1 border border-rose-800/60 cursor-pointer select-none"
+                  >
+                    <Trash2 className="w-3 h-3 pointer-events-none" /> Clear Chat
+                  </button>
                   <button
                     type="button"
                     onClick={() => handleExport("md")}
@@ -760,22 +849,32 @@ export const RagChat: React.FC = () => {
                         placeholder="Ask a medicolegal question or request an audit..."
                         value={prompt}
                         onChange={(e) => setPrompt(e.target.value)}
-                        onKeyDown={(e) => e.key === "Enter" && handleSend()}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && (!isStreaming || e.ctrlKey)) handleSend();
+                        }}
+                        aria-keyshortcuts="Control+Enter"
                         className="flex-1 bg-slate-900 border border-slate-700/80 rounded-xl px-4 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
                       />
                       <button
                         type="button"
                         onClick={handleSend}
                         disabled={isStreaming || !prompt.trim()}
+                        aria-label="Send Query"
                         suppressHydrationWarning
                         className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs flex items-center gap-2 shadow-lg shadow-indigo-500/20 cursor-pointer select-none"
                       >
-                        {isStreaming ? (
-                          <RefreshCw className="w-4 h-4 animate-spin pointer-events-none" />
-                        ) : (
-                          <Send className="w-4 h-4 pointer-events-none" />
-                        )}
+                        {isStreaming ? <RefreshCw className="w-4 h-4 animate-spin pointer-events-none" /> : <Send className="w-4 h-4 pointer-events-none" />}
                         <span>{isStreaming ? "Generating…" : "Send Query"}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleStop}
+                        disabled={!isStreaming}
+                        aria-label="Stop generating"
+                        className="px-4 py-2.5 rounded-xl bg-rose-950/70 hover:bg-rose-900/70 disabled:opacity-40 text-rose-200 font-semibold text-xs flex items-center gap-2 border border-rose-800/70 cursor-pointer select-none"
+                      >
+                        <Square className="w-4 h-4 pointer-events-none" />
+                        <span>Stop</span>
                       </button>
                     </div>
                   </div>
@@ -836,6 +935,13 @@ export const RagChat: React.FC = () => {
 
               {/* Export Buttons */}
               <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleClearChat}
+                  className="px-2.5 py-1 rounded-lg bg-rose-950/40 hover:bg-rose-900/50 text-rose-300 font-semibold text-[11px] flex items-center gap-1 border border-rose-800/60 cursor-pointer select-none"
+                >
+                  <Trash2 className="w-3 h-3 pointer-events-none" /> Clear Chat
+                </button>
                 <button
                   type="button"
                   onClick={() => handleExport("md")}
@@ -942,21 +1048,31 @@ export const RagChat: React.FC = () => {
                       placeholder="Ask a medicolegal question or request an audit..."
                       value={prompt}
                       onChange={(e) => setPrompt(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && handleSend()}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && (!isStreaming || e.ctrlKey)) handleSend();
+                      }}
+                      aria-keyshortcuts="Control+Enter"
                       className="flex-1 bg-slate-900 border border-slate-700/80 rounded-xl px-4 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
                     />
                     <button
                       type="button"
                       onClick={handleSend}
                       disabled={isStreaming || !prompt.trim()}
+                      aria-label="Send Query"
                       className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs flex items-center gap-2 shadow-lg shadow-indigo-500/20 cursor-pointer select-none"
                     >
-                      {isStreaming ? (
-                        <RefreshCw className="w-4 h-4 animate-spin pointer-events-none" />
-                      ) : (
-                        <Send className="w-4 h-4 pointer-events-none" />
-                      )}
+                      {isStreaming ? <RefreshCw className="w-4 h-4 animate-spin pointer-events-none" /> : <Send className="w-4 h-4 pointer-events-none" />}
                       <span>{isStreaming ? "Generating…" : "Send Query"}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleStop}
+                      disabled={!isStreaming}
+                      aria-label="Stop generating"
+                      className="px-4 py-2.5 rounded-xl bg-rose-950/70 hover:bg-rose-900/70 disabled:opacity-40 text-rose-200 font-semibold text-xs flex items-center gap-2 border border-rose-800/70 cursor-pointer select-none"
+                    >
+                      <Square className="w-4 h-4 pointer-events-none" />
+                      <span>Stop</span>
                     </button>
                   </div>
                 </div>

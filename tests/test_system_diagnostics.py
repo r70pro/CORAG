@@ -182,15 +182,18 @@ class TestSystemDiagnostics(unittest.TestCase):
             (True, 2.0, None),   # redis
             (True, 3.0, None),   # minio
             (True, 4.0, None),   # qdrant
-            (False, 0.0, None),  # vllm (down)
+            (False, 0.0, None),  # OCR vLLM (down)
+            (True, 6.0, "analysis-model"),  # analysis vLLM
         ]
         mock_progress.return_value = {"pct": 50, "shards_loaded": 1, "shards_total": 2, "eta": "10s"}
 
         history = {}
         res = system_diagnostics.check_backing_services_data(history)
         self.assertFalse(res["all_healthy"])
-        self.assertEqual(res["failed_services"], ["vllm"])
-        self.assertEqual(res["vllm_progress"], {"pct": 50, "shards_loaded": 1, "shards_total": 2, "eta": "10s"})
+        self.assertEqual(res["failed_services"], ["vllm_ocr"])
+        self.assertEqual(res["vllm_progress"]["ocr"], {"pct": 50, "shards_loaded": 1, "shards_total": 2, "eta": "10s"})
+        self.assertIsNone(res["vllm_progress"]["analysis"])
+        self.assertEqual(res["vllm_models"]["analysis"], "analysis-model")
 
         # History collection check: should populate up to 8 slots
         mock_latency.side_effect = None
@@ -613,5 +616,4 @@ class TestSystemDiagnostics(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
 

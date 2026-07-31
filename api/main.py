@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import urllib.request
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -26,9 +27,19 @@ from api.auth import requested_api_bind_host, require_safe_bind, verify_api_key
 from api.errors import default_error_code, error_response
 from api.models import ErrorEnvelope, PipelineStartRequest, RAGQueryRequest
 from api.upload_security import UploadRequestLimitMiddleware
+from runtime_logging import configure_runtime_logging
 from settings_manager import VERSION
 
+configure_runtime_logging("api")
 logger = logging.getLogger(__name__)
+
+
+def _inference_endpoint_ready(server_url: str) -> bool:
+    try:
+        with urllib.request.urlopen(server_url.rstrip("/") + "/models", timeout=2) as response:
+            return response.status == 200
+    except (OSError, ValueError):
+        return False
 
 
 @asynccontextmanager
@@ -105,7 +116,7 @@ app.add_middleware(UploadRequestLimitMiddleware)
 def _authentication_error(request: Request):
     """Return a typed authentication error, or ``None`` when access is allowed."""
 
-    if request.url.path == "/health" or request.method == "OPTIONS":
+    if request.url.path in {"/health", "/livez", "/readyz"} or request.method == "OPTIONS":
         return None
 
     auth_header = request.headers.get("authorization", "")
@@ -279,6 +290,42 @@ def health_check():
     return {"status": "ok"}
 
 
+@app.get("/livez", include_in_schema=False, dependencies=[])
+def liveness_check():
+    """Process liveness only; safe for a supervisor restart probe."""
+    return {"status": "alive", "version": VERSION}
+
+
+@app.get("/readyz", include_in_schema=False, dependencies=[])
+def readiness_check():
+    """Return 503 until all dependencies, including vLLM, are usable."""
+    from settings_manager import load_settings
+    from system_diagnostics import check_backing_services_data
+
+    backing = check_backing_services_data()
+    settings = load_settings()
+    inference_endpoints = {
+        "vllm_ocr": settings.get("server_url", "http://127.0.0.1:8000/v1"),
+        "vllm_analysis": settings.get("analysis_server_url", "http://127.0.0.1:8002/v1"),
+    }
+    failed_inference = [
+        name
+        for name, endpoint in inference_endpoints.items()
+        if not _inference_endpoint_ready(endpoint)
+    ]
+    if not backing.get("all_healthy", False) or failed_inference:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "not_ready",
+                "failed_services": sorted(
+                    set(backing.get("failed_services", [])) | set(failed_inference)
+                ),
+            },
+        )
+    return {"status": "ready"}
+
+
 @app.get(
     "/api/health", summary="System & backing services health check", tags=["Phase 1 Core Endpoints"]
 )
@@ -321,13 +368,20 @@ def api_health():
 
         all_healthy = backing.get("all_healthy", True) if isinstance(backing, dict) else True
         vllm_model = backing.get("vllm_model") if isinstance(backing, dict) else None
+        vllm_models = backing.get("vllm_models", {}) if isinstance(backing, dict) else {}
         vllm_progress = backing.get("vllm_progress") if isinstance(backing, dict) else None
         failed_services = backing.get("failed_services", []) if isinstance(backing, dict) else []
 
         status_str = (
             "healthy"
             if all_healthy
-            else ("loading" if failed_services == ["vllm"] and vllm_progress else "degraded")
+            else (
+                "loading"
+                if failed_services
+                and all(name.startswith("vllm_") for name in failed_services)
+                and any((vllm_progress or {}).values())
+                else "degraded"
+            )
         )
 
         return {
@@ -335,6 +389,7 @@ def api_health():
             "all_healthy": all_healthy,
             "failed_services": failed_services,
             "vllm_model": vllm_model,
+            "vllm_models": vllm_models,
             "vllm_progress": vllm_progress,
             "services": services,
             "gpu": gpu,

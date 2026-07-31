@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import re
+import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pypdf import PdfReader
 
 from path_security import (
@@ -97,6 +99,32 @@ def get_markdown(run_name: str, filename: str):
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     return PlainTextResponse(file_path.read_text(encoding="utf-8"))
+
+
+@router.get("/runs/{run_name}/markdown.zip", summary="Download all Markdown files")
+def download_run_markdown(run_name: str):
+    """Return a ZIP containing every safe Markdown output in a selected run."""
+    run_dir = _run_dir(run_name)
+    if not run_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Run not found")
+    markdown_files = _safe_files(run_dir / "markdown" / "inputs", ".md")
+    if not markdown_files:
+        raise HTTPException(status_code=404, detail="No Markdown files found")
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        for markdown_file in markdown_files:
+            zip_file.write(markdown_file, arcname=markdown_file.name)
+    archive.seek(0)
+    safe_download_name = re.sub(r"[^A-Za-z0-9_.-]", "_", run_name)
+    return StreamingResponse(
+        archive,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_download_name}_markdown.zip"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/runs/{run_name}/pdf", summary="Get source PDF file")

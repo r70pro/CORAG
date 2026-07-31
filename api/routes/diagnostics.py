@@ -37,7 +37,7 @@ def health_check():
     settings = load_settings()
     port = settings.get("docker_port", 8000)
 
-    backing = check_backing_services_data({}, vllm_port=port)
+    backing = check_backing_services_data({}, vllm_port=port, analysis_vllm_port=8002)
     gpu = get_gpu_metrics_data()
 
     services = []
@@ -92,7 +92,7 @@ def services_status():
 
     settings = load_settings()
     port = settings.get("docker_port", 8000)
-    data = check_backing_services_data({}, vllm_port=port)
+    data = check_backing_services_data({}, vllm_port=port, analysis_vllm_port=8002)
     return data
 
 

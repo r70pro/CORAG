@@ -15,6 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from api.auth import (
     authentication_configured,
     requested_api_bind_host,
+    require_remote_lifecycle_enabled,
     require_safe_bind,
     verify_admin_key,
     verify_api_key,
@@ -127,6 +128,21 @@ def test_api_authentication_fails_closed_and_uses_admin_key(monkeypatch):
         )
         == "admin-secret"
     )
+
+
+def test_remote_lifecycle_is_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("TESTING", raising=False)
+    monkeypatch.delenv("KIRAG_ENABLE_REMOTE_LIFECYCLE", raising=False)
+    with pytest.raises(HTTPException) as exc:
+        require_remote_lifecycle_enabled()
+    assert exc.value.status_code == 403
+
+    monkeypatch.setenv("KIRAG_ENABLE_REMOTE_LIFECYCLE", "true")
+    assert require_remote_lifecycle_enabled() is None
+
+    monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setenv("KIRAG_ENABLE_REMOTE_LIFECYCLE", "false")
+    assert require_remote_lifecycle_enabled() is None
 
 
 def test_unauthenticated_mutation_request_is_rejected(monkeypatch):

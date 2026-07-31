@@ -8,6 +8,7 @@ venv/
 .ruff_cache/
 *.log
 logs/audit*.jsonl
+logs/*.jsonl
 .env
 .env.*
 !.env.example

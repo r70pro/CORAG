@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
-from api.auth import verify_admin_key
+from api.auth import require_remote_lifecycle_enabled, verify_admin_key
 from api.errors import error_envelope
 from api.models import (
     CaseInfo,
@@ -333,7 +333,12 @@ def export_chat_session(req: ExportChatRequest):
 # ── Infrastructure ────────────────────────────────────────────────────────────
 
 
-@router.post("/infra/start", response_model=MessageResponse, summary="Start RAG infrastructure")
+@router.post(
+    "/infra/start",
+    response_model=MessageResponse,
+    summary="Start RAG infrastructure",
+    dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
+)
 def start_infra():
     """Start PostgreSQL, Redis, MinIO, Qdrant via Docker Compose and initialize schemas."""
     from rag_infra_manager import start_and_init_rag
@@ -348,7 +353,7 @@ def start_infra():
     "/infra/stop",
     response_model=MessageResponse,
     summary="Stop RAG infrastructure",
-    dependencies=[Depends(verify_admin_key)],
+    dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
 )
 def stop_infra():
     """Stop all RAG infrastructure services."""

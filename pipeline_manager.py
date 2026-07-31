@@ -29,6 +29,7 @@ from path_security import (
     validate_filename,
 )
 from pdf_manager import make_zip
+from rag.upstream import request_with_retry
 from settings_manager import WORKSPACE_DIR
 
 logger = logging.getLogger(__name__)
@@ -217,11 +218,15 @@ def process_pdfs(
 
     try:
         try:
-            preflight = httpx.get(server_url.rstrip("/") + "/models", timeout=5.0)
+            preflight = request_with_retry(
+                lambda: httpx.get(server_url.rstrip("/") + "/models", timeout=5.0)
+            )
         except Exception:
             if "localhost" in server_url:
                 alt_url = server_url.replace("localhost", "127.0.0.1")
-                preflight = httpx.get(alt_url.rstrip("/") + "/models", timeout=5.0)
+                preflight = request_with_retry(
+                    lambda: httpx.get(alt_url.rstrip("/") + "/models", timeout=5.0)
+                )
                 server_url = alt_url
             else:
                 raise

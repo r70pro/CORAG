@@ -33,7 +33,6 @@ from cleanup_manager import format_size, get_dir_size, perform_reset_cleanup  # 
 # Docker Container operations
 from docker_manager import (  # noqa: F401
     check_server_ready,
-    cleanup_docker,
     create_docker_container,
     get_docker_status,
     get_docker_status_str,
@@ -69,6 +68,7 @@ from process_state import active_runs, active_runs_lock  # noqa: F401
 
 # RAG Document Analysis UI
 from rag_ui import build_case_dashboard_ui, build_rag_chat_ui  # noqa: F401
+from runtime_logging import configure_runtime_logging
 from secrets_config import credentials_are_default
 
 # Settings
@@ -92,9 +92,11 @@ from ui_adapters import file_selection_to_gradio, pipeline_result_to_gradio
 from ui_theme import custom_css, dark_theme  # noqa: F401
 
 logger = logging.getLogger(__name__)
+configure_runtime_logging("gradio")
 
-# Register exit hooks
-atexit.register(cleanup_docker)
+# The UI does not own persistent infrastructure.  In particular, never attach
+# Docker shutdown to interpreter exit: reloads, crashes, tests, and service
+# restarts must not take databases or inference offline.
 atexit.register(cleanup_active_runs)
 
 

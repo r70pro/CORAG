@@ -62,8 +62,8 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
   const [services, setServices] = useState<ServiceHealthInfo[]>([]);
   const [failedServices, setFailedServices] = useState<string[]>([]);
   const [gpuInfo, setGpuInfo] = useState<GpuInfo | null>(null);
-  const [vllmModel, setVllmModel] = useState<string>("allenai/olmOCR-2-7B-1025-FP8");
-  const [vllmProgress, setVllmProgress] = useState<{ pct: number; shards_loaded: number; shards_total: number; eta: string } | null>(null);
+  const [vllmModels, setVllmModels] = useState<Record<"ocr" | "analysis", string>>({ ocr: "Unknown", analysis: "Unknown" });
+  const [vllmProgress, setVllmProgress] = useState<Record<string, { pct: number; shards_loaded: number; shards_total: number; eta: string } | null>>({});
   
   // Case list state
   const [casesList, setCasesList] = useState<{ id: string; name: string }[]>([]);
@@ -85,10 +85,11 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
         setServices(Array.isArray(healthData.services) ? healthData.services : []);
         setFailedServices(Array.isArray(healthData.failed_services) ? healthData.failed_services : []);
         setGpuInfo(healthData.gpu || healthData.gpu_metrics || null);
-        if (healthData.vllm_model) {
-          setVllmModel(healthData.vllm_model);
-        }
-        setVllmProgress(healthData.vllm_progress || null);
+        setVllmModels({
+          ocr: healthData.vllm_models?.ocr || healthData.vllm_model || "Offline",
+          analysis: healthData.vllm_models?.analysis || "Offline",
+        });
+        setVllmProgress(healthData.vllm_progress || {});
       }
 
       // Fetch Cases for Quick Jump
@@ -191,7 +192,8 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
     return { text: "Best suited for RAG processing", color: "text-sky-400" };
   };
 
-  const suitability = getModelSuitability(vllmModel);
+  const ocrHealth = services.find((service) => service.name === "vllm_ocr");
+  const analysisHealth = services.find((service) => service.name === "vllm_analysis");
 
   // Nav Items configuration
   const navItems = [
@@ -328,15 +330,21 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
           )}
         </div>
 
-        {/* Loaded LLM Info Widget */}
-        <div className="hidden lg:flex flex-col text-right justify-center bg-slate-900/90 border border-slate-800 rounded-xl px-2.5 py-1 text-[11px] leading-tight">
-          <div className="flex items-center justify-end space-x-1 font-mono text-[10px]">
-            <span className="text-slate-400">Model:</span>
-            <span className="text-slate-100 font-semibold truncate max-w-[140px]">{vllmModel}</span>
-          </div>
-          <span className={`font-semibold text-[10px] ${suitability.color}`}>
-            ● {suitability.text}
-          </span>
+        {/* Dedicated inference role indicators */}
+        <div className="hidden lg:flex items-center gap-1.5">
+          {(["ocr", "analysis"] as const).map((role) => {
+            const health = role === "ocr" ? ocrHealth : analysisHealth;
+            const port = role === "ocr" ? 8000 : 8002;
+            return (
+              <div key={role} title={vllmModels[role]} className="flex flex-col bg-slate-900/90 border border-slate-800 rounded-xl px-2.5 py-1 text-[10px] leading-tight max-w-[170px]">
+                <span className="font-mono text-slate-400 uppercase">{role} vLLM :{port}</span>
+                <span className={`font-semibold truncate ${health?.is_up ? "text-emerald-300" : vllmProgress[role] ? "text-amber-300" : "text-rose-300"}`}>
+                  <span>{health?.is_up ? "● " : vllmProgress[role] ? "◐ " : "○ "}</span><span>{vllmModels[role]}</span>
+                </span>
+                {role === "ocr" && <span className={getModelSuitability(vllmModels.ocr).color}>● {getModelSuitability(vllmModels.ocr).text}</span>}
+              </div>
+            );
+          })}
         </div>
 
         {/* System Health Badge (Matching Gradio screenshot & popover) */}
@@ -352,15 +360,15 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                 ✓ System Healthy
               </span>
-            ) : vllmProgress && vllmProgress.pct === -1 ? (
+            ) : Object.values(vllmProgress).some((p) => p?.pct === -1) ? (
               <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-rose-950/80 text-rose-300 border border-rose-500/40">
                 <AlertTriangle className="w-3 h-3 text-rose-400" />
-                ✗ Load Failed: {vllmProgress.eta}
+                ✗ vLLM Load Failed
               </span>
-            ) : vllmProgress ? (
+            ) : Object.values(vllmProgress).some(Boolean) ? (
               <span className="badge-running inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-amber-950/80 text-amber-300 border border-amber-500/40 animate-pulse">
                 <Loader2 className="w-3 h-3 animate-spin text-amber-400" />
-                ⚡ Model Loading ({vllmProgress.pct}%)
+                ⚡ vLLM Model Loading
               </span>
             ) : (
               <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-rose-950/80 text-rose-300 border border-rose-500/40">
@@ -407,18 +415,18 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
                 ))}
               </div>
 
-              {vllmProgress && (
-                <div className="bg-amber-950/40 border border-amber-800/50 rounded p-2 text-[10px] text-amber-200 space-y-1">
+              {Object.entries(vllmProgress).filter(([, progress]) => progress).map(([role, progress]) => progress && (
+                <div key={role} className="bg-amber-950/40 border border-amber-800/50 rounded p-2 text-[10px] text-amber-200 space-y-1">
                   <div className="font-bold flex items-center justify-between">
-                    <span>Model Shards Loading:</span>
-                    <span>{vllmProgress.shards_loaded} / {vllmProgress.shards_total}</span>
+                    <span>{role.toUpperCase()} Model Loading:</span>
+                    <span>{progress.shards_loaded} / {progress.shards_total}</span>
                   </div>
                   <div className="w-full bg-slate-950 h-1.5 rounded-full overflow-hidden">
-                    <div className="bg-amber-400 h-full transition-all" style={{ width: `${vllmProgress.pct}%` }} />
+                    <div className="bg-amber-400 h-full transition-all" style={{ width: `${Math.max(0, progress.pct)}%` }} />
                   </div>
-                  <div className="text-slate-400 text-right">ETA: {vllmProgress.eta}</div>
+                  <div className="text-slate-400 text-right">ETA: {progress.eta}</div>
                 </div>
-              )}
+              ))}
             </div>
           )}
         </div>

@@ -2,12 +2,12 @@
 Unit tests for settings_manager.py targeting 100% statement and branch coverage.
 """
 
-import os
 import json
+import os
 import shutil
 import tempfile
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 # Prevent system operations during import
 os.environ["TESTING"] = "true"
@@ -16,7 +16,6 @@ import settings_manager
 
 
 class TestSettingsManager(unittest.TestCase):
-
     def setUp(self):
         self.tmp_dir = tempfile.mkdtemp()
         self.settings_file = os.path.join(self.tmp_dir, "settings.json")
@@ -31,14 +30,14 @@ class TestSettingsManager(unittest.TestCase):
         # Create a mock .env file in a temporary folder
         temp_env_dir = tempfile.mkdtemp()
         env_file_path = os.path.join(temp_env_dir, ".env")
-        
+
         with open(env_file_path, "w", encoding="utf-8") as f:
             f.write("# This is a comment\n")
-            f.write("\n") # empty line
+            f.write("\n")  # empty line
             f.write("TEST_KEY_1 = val1 \n")
             f.write("TEST_KEY_2='val2'\n")
-            f.write("TEST_KEY_3=\"val3\"\n")
-            f.write("TEST_KEY_4\n") # no '='
+            f.write('TEST_KEY_3="val3"\n')
+            f.write("TEST_KEY_4\n")  # no '='
 
         # Patch os.path.dirname/os.path.abspath to point to temp_env_dir
         with patch("os.path.dirname") as mock_dir:
@@ -50,6 +49,7 @@ class TestSettingsManager(unittest.TestCase):
                         del os.environ[key]
 
                 import importlib
+
                 importlib.reload(settings_manager)
 
                 self.assertEqual(os.environ.get("TEST_KEY_1"), "val1")
@@ -70,9 +70,14 @@ class TestSettingsManager(unittest.TestCase):
         with patch("os.path.dirname", return_value=temp_env_dir):
             with patch("settings_manager.logger.error") as mock_log:
                 import importlib
+
                 importlib.reload(settings_manager)
                 mock_log.assert_called()
-                self.assertTrue(any("Error loading .env file:" in call[0][0] for call in mock_log.call_args_list))
+                self.assertTrue(
+                    any(
+                        "Error loading .env file:" in call[0][0] for call in mock_log.call_args_list
+                    )
+                )
 
         shutil.rmtree(temp_env_dir)
 
@@ -83,10 +88,11 @@ class TestSettingsManager(unittest.TestCase):
             with patch.dict(os.environ, {}):
                 if "HF_HOME" in os.environ:
                     del os.environ["HF_HOME"]
-                
+
                 import importlib
+
                 importlib.reload(settings_manager)
-                
+
                 self.assertIn("workspace/huggingface", os.environ["HF_HOME"])
         shutil.rmtree(temp_dir)
 
@@ -103,7 +109,9 @@ class TestSettingsManager(unittest.TestCase):
         with patch("settings_manager.SETTINGS_FILE", self.settings_file):
             settings = settings_manager.load_settings()
             self.assertEqual(settings.get("server_url"), "http://custom-url:9000")
-            self.assertEqual(settings.get("model_name"), "allenai/olmOCR-2-7B-1025-FP8") # default preserved
+            self.assertEqual(
+                settings.get("model_name"), "allenai/olmOCR-2-7B-1025-FP8"
+            )  # default preserved
 
         # 3. Exception in json load (invalid file)
         with open(self.settings_file, "w") as f:
@@ -112,8 +120,38 @@ class TestSettingsManager(unittest.TestCase):
         with patch("settings_manager.SETTINGS_FILE", self.settings_file):
             with patch("settings_manager.logger.error") as mock_log:
                 settings = settings_manager.load_settings()
-                self.assertEqual(settings.get("server_url"), "http://localhost:8000/v1") # fallback to defaults
+                self.assertEqual(
+                    settings.get("server_url"), "http://localhost:8000/v1"
+                )  # fallback to defaults
                 mock_log.assert_called()
+
+    def test_production_inference_environment_overrides_saved_ui_state(self):
+        saved = {
+            "server_url": "http://old:8000/v1",
+            "model_name": "old-ocr",
+            "analysis_server_url": "http://old:8001/v1",
+            "analysis_model_name": "old-analysis",
+        }
+        with open(self.settings_file, "w") as settings_file:
+            json.dump(saved, settings_file)
+
+        environment = {
+            "TESTING": "false",
+            "KIRAG_OCR_SERVER_URL": "http://127.0.0.1:8000/v1",
+            "KIRAG_OCR_MODEL": "pinned-ocr",
+            "KIRAG_ANALYSIS_SERVER_URL": "http://127.0.0.1:8002/v1",
+            "KIRAG_ANALYSIS_MODEL": "pinned-analysis",
+        }
+        with (
+            patch("settings_manager.SETTINGS_FILE", self.settings_file),
+            patch.dict(os.environ, environment),
+        ):
+            settings = settings_manager.load_settings()
+
+        self.assertEqual(settings["server_url"], environment["KIRAG_OCR_SERVER_URL"])
+        self.assertEqual(settings["model_name"], "pinned-ocr")
+        self.assertEqual(settings["analysis_server_url"], environment["KIRAG_ANALYSIS_SERVER_URL"])
+        self.assertEqual(settings["analysis_model_name"], "pinned-analysis")
 
     def test_save_settings_success_and_exception(self):
         # 1. Success
@@ -121,7 +159,7 @@ class TestSettingsManager(unittest.TestCase):
             res = settings_manager.save_settings({"custom": "value"})
             self.assertEqual(res, "Settings saved successfully.")
             self.assertTrue(os.path.exists(self.settings_file))
-            with open(self.settings_file, "r") as f:
+            with open(self.settings_file) as f:
                 data = json.load(f)
                 self.assertEqual(data.get("custom"), "value")
 
@@ -131,9 +169,10 @@ class TestSettingsManager(unittest.TestCase):
             self.assertTrue(res.startswith("Error saving settings:"))
 
     def test_save_settings_replaces_complete_json_atomically(self):
-        with patch("settings_manager.SETTINGS_FILE", self.settings_file), patch(
-            "settings_manager.os.replace", wraps=os.replace
-        ) as replace:
+        with (
+            patch("settings_manager.SETTINGS_FILE", self.settings_file),
+            patch("settings_manager.os.replace", wraps=os.replace) as replace,
+        ):
             res = settings_manager.save_settings({"custom": "complete"})
 
         self.assertEqual(res, "Settings saved successfully.")
@@ -152,7 +191,7 @@ class TestSettingsManager(unittest.TestCase):
 
         # 2. Workspace exists with runs
         os.makedirs(self.workspace_dir)
-        
+
         # Ok run
         run_ok = os.path.join(self.workspace_dir, "run_case_1")
         os.makedirs(os.path.join(run_ok, "markdown", "inputs"))
@@ -186,6 +225,7 @@ class TestSettingsManager(unittest.TestCase):
         class MockOriginal:
             def __init__(self):
                 self.mode = "w"
+
             def write(self, data):
                 if data == "errno5":
                     err = OSError()
@@ -198,6 +238,7 @@ class TestSettingsManager(unittest.TestCase):
                 elif data == "error":
                     raise Exception("generic error")
                 return len(data)
+
             def flush(self):
                 if getattr(self, "flush_fail", None) == 5:
                     err = OSError()
@@ -209,6 +250,7 @@ class TestSettingsManager(unittest.TestCase):
                     raise err
                 elif getattr(self, "flush_fail", None) == "err":
                     raise Exception("generic error")
+
             def isatty(self):
                 if getattr(self, "isatty_fail", False):
                     raise Exception("isatty error")

@@ -1,0 +1,126 @@
+name: kirag
+
+# Production overlay. Use with docker-compose.rag.yml so persistent backing
+# services and vLLM are started, health-gated, and supervised as one stack.
+services:
+  postgres:
+    stop_grace_period: 60s
+    logging: &rotated-logs
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  redis:
+    stop_grace_period: 60s
+    logging: *rotated-logs
+
+  minio:
+    stop_grace_period: 60s
+    logging: *rotated-logs
+
+  qdrant:
+    stop_grace_period: 60s
+    logging: *rotated-logs
+
+  vllm:
+    image: ${OLMOCR_VLLM_IMAGE:?Set OLMOCR_VLLM_IMAGE to a digest-pinned image}
+    container_name: olmocr
+    labels:
+      com.kirag.managed: "true"
+      com.kirag.component: vllm
+    restart: unless-stopped
+    init: true
+    stop_grace_period: ${KIRAG_VLLM_STOP_TIMEOUT:-120s}
+    gpus: all
+    shm_size: ${KIRAG_VLLM_SHM_SIZE:-8gb}
+    environment:
+      NVIDIA_DISABLE_REQUIRE: "1"
+      HF_HOME: /root/.cache/huggingface
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      TORCH_AOT_AUTOGRAD_CACHE: "0"
+    ports:
+      - "127.0.0.1:${KIRAG_OCR_VLLM_PORT:-8000}:8000"
+    volumes:
+      - ${KIRAG_HF_HOME:-./workspace/huggingface}:/root/.cache/huggingface:ro
+    entrypoint: ["vllm"]
+    command:
+      - serve
+      - ${KIRAG_OCR_MODEL:-allenai/olmOCR-2-7B-1025-FP8}
+      - --revision
+      - ${KIRAG_OCR_MODEL_REVISION:?Set KIRAG_OCR_MODEL_REVISION to the verified model commit SHA}
+      - --host
+      - 0.0.0.0
+      - --enforce-eager
+      - --gpu-memory-utilization
+      - ${KIRAG_OCR_GPU_MEMORY_UTILIZATION:-0.28}
+      - --max-model-len
+      - ${KIRAG_OCR_MAX_MODEL_LEN:-15360}
+      - --max-num-batched-tokens
+      - ${KIRAG_OCR_MAX_BATCHED_TOKENS:-4096}
+      - --tensor-parallel-size
+      - ${KIRAG_VLLM_TENSOR_PARALLEL_SIZE:-1}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=5)"
+      interval: 15s
+      timeout: 6s
+      start_period: ${KIRAG_VLLM_HEALTH_START_PERIOD:-30m}
+      retries: 5
+    logging: *rotated-logs
+
+  vllm-analysis:
+    image: ${OLMOCR_VLLM_IMAGE:?Set OLMOCR_VLLM_IMAGE to a digest-pinned image}
+    container_name: kirag_vllm_analysis
+    labels:
+      com.kirag.managed: "true"
+      com.kirag.component: vllm-analysis
+    restart: unless-stopped
+    depends_on:
+      vllm:
+        condition: service_healthy
+    init: true
+    stop_grace_period: ${KIRAG_VLLM_STOP_TIMEOUT:-120s}
+    gpus: all
+    shm_size: ${KIRAG_VLLM_SHM_SIZE:-8gb}
+    environment:
+      NVIDIA_DISABLE_REQUIRE: "1"
+      HF_HOME: /root/.cache/huggingface
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      TORCH_AOT_AUTOGRAD_CACHE: "0"
+    ports:
+      - "127.0.0.1:${KIRAG_ANALYSIS_VLLM_PORT:-8002}:8000"
+    volumes:
+      - ${KIRAG_HF_HOME:-./workspace/huggingface}:/root/.cache/huggingface:ro
+    entrypoint: ["vllm"]
+    command:
+      - serve
+      - ${KIRAG_ANALYSIS_MODEL:-Qwen/Qwen3.6-35B-A3B}
+      - --revision
+      - ${KIRAG_ANALYSIS_MODEL_REVISION:?Set KIRAG_ANALYSIS_MODEL_REVISION to the verified model commit SHA}
+      - --host
+      - 0.0.0.0
+      - --enforce-eager
+      - --language-model-only
+      - --gpu-memory-utilization
+      - ${KIRAG_ANALYSIS_GPU_MEMORY_UTILIZATION:-0.57}
+      - --max-model-len
+      - ${KIRAG_ANALYSIS_MAX_MODEL_LEN:-32768}
+      - --max-num-batched-tokens
+      - ${KIRAG_ANALYSIS_MAX_BATCHED_TOKENS:-8192}
+      - --tensor-parallel-size
+      - ${KIRAG_VLLM_TENSOR_PARALLEL_SIZE:-1}
+      - --reasoning-parser
+      - qwen3
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=5)"
+      interval: 15s
+      timeout: 6s
+      start_period: ${KIRAG_VLLM_HEALTH_START_PERIOD:-30m}
+      retries: 5
+    logging: *rotated-logs

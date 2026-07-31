@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 
 from rag.retriever import format_context_for_llm, search_similar
+from rag.upstream import CircuitOpenError, request_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ def _get_loaded_models(server_url: str) -> list[str]:
         return cached[1]
 
     url = server_url.rstrip("/") + "/models"
-    response = httpx.get(url, timeout=2.0)
+    response = request_with_retry(lambda: httpx.get(url, timeout=2.0))
     if response.status_code != 200:
         loaded: list[str] = []
     else:
@@ -164,7 +165,9 @@ def _resolve_loaded_model(server_url: str, model_name: str):
 def _get_served_model_context_length(server_url: str, model_name: str) -> int | None:
     """Return the live vLLM context limit when the models endpoint supplies it."""
     try:
-        response = httpx.get(server_url.rstrip("/") + "/models", timeout=2.0)
+        response = request_with_retry(
+            lambda: httpx.get(server_url.rstrip("/") + "/models", timeout=2.0)
+        )
         if response.status_code != 200:
             return None
         for model in response.json().get("data", []):
@@ -505,10 +508,12 @@ def query_llm(
         payload["chat_template_kwargs"] = {"enable_thinking": False}
 
     try:
-        response = httpx.post(
-            url,
-            json=payload,
-            timeout=httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0),
+        response = request_with_retry(
+            lambda: httpx.post(
+                url,
+                json=payload,
+                timeout=httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0),
+            )
         )
 
         if response.status_code != 200:
@@ -526,6 +531,8 @@ def query_llm(
 
     except httpx.ConnectError:
         return f"⚠️ Error: Cannot connect to LLM server at {server_url}."
+    except CircuitOpenError:
+        return "⚠️ Error: LLM service is temporarily unavailable; retry after the recovery window."
     except Exception as e:
         return f"⚠️ Error: {str(e)}"
 
@@ -766,9 +773,7 @@ def analyze(
         MODEL_MAX_CONTENT_LENGTHS,
     )
     if os.environ.get("TESTING") != "true":
-        served_context_length = _get_served_model_context_length(
-            server_url, resolved_model
-        )
+        served_context_length = _get_served_model_context_length(server_url, resolved_model)
         if served_context_length is not None:
             max_model_len = served_context_length
     _validate_output_token_request(max_tokens, max_model_len)
@@ -873,9 +878,7 @@ def analyze(
     # Step 3: Build prompt (using final resolved context)
     messages = build_prompt(query, context, mode, chat_history)
     final_prompt_tokens = estimate_tokens(messages)
-    remaining_context = (
-        max_model_len - final_prompt_tokens - token_reserve
-    )
+    remaining_context = max_model_len - final_prompt_tokens - token_reserve
     if remaining_context < max_tokens:
         raise ContextWindowError(
             f"Requested output tokens ({max_tokens}) exceed the remaining analysis "

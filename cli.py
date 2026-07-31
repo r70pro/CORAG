@@ -226,6 +226,14 @@ def cmd_rag_infra_status(_args: argparse.Namespace) -> None:
     _print_json(get_rag_service_status())
 
 
+def cmd_rag_infra_init(_args: argparse.Namespace) -> None:
+    from rag_infra_manager import initialize_rag_services
+
+    success, msg = initialize_rag_services()
+    print(msg)
+    sys.exit(0 if success else 1)
+
+
 # ── Diagnostics commands ──────────────────────────────────────────────────────
 
 
@@ -390,6 +398,7 @@ def main() -> None:
     r_infra = rag_sub.add_parser("infra", help="RAG infrastructure management")
     r_infra_sub = r_infra.add_subparsers(dest="infra_cmd")
     r_infra_sub.add_parser("start", help="Start RAG infrastructure")
+    r_infra_sub.add_parser("init", help="Initialize schemas and storage idempotently")
     r_infra_sub.add_parser("stop", help="Stop RAG infrastructure")
     r_infra_sub.add_parser("status", help="Infrastructure status")
 
@@ -441,6 +450,7 @@ def main() -> None:
     if args.command == "rag" and getattr(args, "subcommand", None) == "infra":
         infra_dispatch = {
             "start": cmd_rag_infra_start,
+            "init": cmd_rag_infra_init,
             "stop": cmd_rag_infra_stop,
             "status": cmd_rag_infra_status,
         }

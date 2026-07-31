@@ -19,7 +19,7 @@ import {
   fetchDockerStatus,
   fetchDockerLogs,
   fetchSettings,
-  stopDockerContainer,
+  setVllmRoleRunning,
   createDockerContainer,
   executeCleanup,
   downloadDiagnosticReport,
@@ -89,7 +89,8 @@ const SERVICE_DESCRIPTIONS: Record<string, string> = {
   REDIS: "Redis Cache (Port 6379)",
   MINIO: "MinIO S3 Storage (Port 9000)",
   QDRANT: "Qdrant Vector DB (Port 6333)",
-  VLLM: "vLLM Inference Server (Port 8000)",
+  VLLM_OCR: "OCR vLLM (Port 8000)",
+  VLLM_ANALYSIS: "Analysis vLLM (Port 8002)",
 };
 
 export const SystemDiagnostics: React.FC = () => {
@@ -105,7 +106,8 @@ export const SystemDiagnostics: React.FC = () => {
   const [gpuProcesses, setGpuProcesses] = useState<GPUProcessItem[]>([]);
 
   // Docker server status & live logs
-  const [dockerStatusStr, setDockerStatusStr] = useState<string>("checking");
+  const [dockerStatuses, setDockerStatuses] = useState<Record<"ocr" | "analysis", string>>({ ocr: "checking", analysis: "checking" });
+  const [selectedVllmRole, setSelectedVllmRole] = useState<"ocr" | "analysis">("ocr");
   const [containerLogs, setContainerLogs] = useState<string>("Fetching live vLLM container logs...");
   const [activeConsoleTab, setActiveConsoleTab] = useState<"docker" | "system">("docker");
   const [autoRefreshLogs, setAutoRefreshLogs] = useState<boolean>(true);
@@ -210,16 +212,16 @@ export const SystemDiagnostics: React.FC = () => {
     setLogMessages((prev) => [...prev, msg]);
   };
 
-  const loadContainerLogs = async () => {
+  const loadContainerLogs = useCallback(async () => {
     try {
-      const res = await fetchDockerLogs(200);
+      const res = await fetchDockerLogs(200, selectedVllmRole);
       if (res && typeof res.logs === "string") {
         setContainerLogs(res.logs);
       }
     } catch (err) {
       setContainerLogs(`Error loading container logs: ${String(err)}`);
     }
-  };
+  }, [selectedVllmRole]);
 
   const parseHealthServices = useCallback((rawServices: RawServiceItem[] | HealthServicesMap | { services?: RawServiceItem[] | HealthServicesMap } | undefined): ServiceStatus[] => {
     if (!rawServices) return [];
@@ -289,10 +291,8 @@ export const SystemDiagnostics: React.FC = () => {
     const timeStr = new Date().toLocaleTimeString();
     try {
       const health = await fetchSystemHealth();
-      const docStatus = await fetchDockerStatus();
-      if (docStatus && docStatus.status) {
-        setDockerStatusStr(docStatus.status);
-      }
+      const [ocrStatus, analysisStatus] = await Promise.all([fetchDockerStatus("ocr"), fetchDockerStatus("analysis")]);
+      setDockerStatuses({ ocr: ocrStatus?.status || "unknown", analysis: analysisStatus?.status || "unknown" });
       processHealthData(health);
       await loadContainerLogs();
       addLogMessage(`[${timeStr}] [Refresh] Live system health & container status updated.`);
@@ -308,12 +308,10 @@ export const SystemDiagnostics: React.FC = () => {
     const init = async () => {
       setLoading(true);
       const health = await fetchSystemHealth();
-      const docStatus = await fetchDockerStatus();
+      const [ocrStatus, analysisStatus] = await Promise.all([fetchDockerStatus("ocr"), fetchDockerStatus("analysis")]);
       await loadContainerLogs();
       if (!isMounted) return;
-      if (docStatus && docStatus.status) {
-        setDockerStatusStr(docStatus.status);
-      }
+      setDockerStatuses({ ocr: ocrStatus?.status || "unknown", analysis: analysisStatus?.status || "unknown" });
       processHealthData(health);
       setLoading(false);
     };
@@ -329,7 +327,7 @@ export const SystemDiagnostics: React.FC = () => {
       isMounted = false;
       clearInterval(interval);
     };
-  }, [autoRefreshLogs, processHealthData]);
+  }, [autoRefreshLogs, processHealthData, loadContainerLogs]);
 
   useEffect(() => {
     if (autoScrollLogs && logContainerRef.current) {
@@ -337,12 +335,12 @@ export const SystemDiagnostics: React.FC = () => {
     }
   }, [containerLogs, activeConsoleTab, autoScrollLogs]);
 
-  const handleDockerStop = async () => {
+  const handleRoleAction = async (role: "ocr" | "analysis", running: boolean) => {
     setLoading(true);
     const timeStr = new Date().toLocaleTimeString();
-    addLogMessage(`[${timeStr}] [Docker] Triggering stop operation for vLLM container...`);
-    const res = await stopDockerContainer();
-    addLogMessage(`[${timeStr}] [Docker Result] ${res.message || "Stop request complete."}`);
+    addLogMessage(`[${timeStr}] [Docker] ${running ? "Starting" : "Stopping"} ${role.toUpperCase()} vLLM...`);
+    const res = await setVllmRoleRunning(role, running);
+    addLogMessage(`[${timeStr}] [Docker Result] ${res.message || "Lifecycle request complete."}`);
     await loadHealth();
   };
 
@@ -451,8 +449,11 @@ export const SystemDiagnostics: React.FC = () => {
           </div>
 
           <div className="flex items-center space-x-1.5 bg-slate-950/80 border border-slate-800 rounded-xl px-2.5 py-1 text-xs font-mono text-slate-300">
-            <span className="text-slate-500">vLLM Server:</span>
-            <span className="text-indigo-300 font-bold capitalize">{dockerStatusStr}</span>
+            <span className="text-slate-500">OCR :8000:</span>
+            <span className="text-indigo-300 font-bold capitalize">{dockerStatuses.ocr}</span>
+            <span className="text-slate-600">|</span>
+            <span className="text-slate-500">Analysis :8002:</span>
+            <span className="text-cyan-300 font-bold capitalize">{dockerStatuses.analysis}</span>
           </div>
 
           <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -465,20 +466,20 @@ export const SystemDiagnostics: React.FC = () => {
               <span>Report</span>
             </button>
 
-            <button
-              type="button"
-              onClick={handleDockerStop}
-              className="px-2.5 py-1 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 font-semibold border border-slate-700 cursor-pointer select-none"
-            >
-              Stop Container
-            </button>
+            {(["ocr", "analysis"] as const).map((role) => (
+              <div key={role} className="flex items-center rounded-xl border border-slate-700 overflow-hidden">
+                <span className="px-2 text-slate-400 uppercase font-mono">{role}</span>
+                <button type="button" onClick={() => handleRoleAction(role, true)} className="px-2 py-1 bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300">Start</button>
+                <button type="button" onClick={() => handleRoleAction(role, false)} className="px-2 py-1 bg-rose-950/60 hover:bg-rose-900/60 text-rose-300">Stop</button>
+              </div>
+            ))}
 
             <button
               type="button"
               onClick={handleDockerRecreate}
               className="px-2.5 py-1 rounded-xl bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 font-semibold border border-indigo-500/40 cursor-pointer select-none"
             >
-              Recreate
+              Recreate OCR
             </button>
           </div>
         </div>
@@ -1015,7 +1016,7 @@ export const SystemDiagnostics: React.FC = () => {
                       : "bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800"
                   }`}
                 >
-                  🐳 Live Container Logs ({dockerStatusStr.toUpperCase()})
+                  🐳 {selectedVllmRole.toUpperCase()} vLLM Logs ({dockerStatuses[selectedVllmRole].toUpperCase()})
                 </button>
                 <button
                   type="button"
@@ -1034,6 +1035,15 @@ export const SystemDiagnostics: React.FC = () => {
               <div className="flex items-center space-x-2 text-[11px]">
                 {activeConsoleTab === "docker" && (
                   <>
+                    <select
+                      aria-label="vLLM log role"
+                      value={selectedVllmRole}
+                      onChange={(e) => setSelectedVllmRole(e.target.value as "ocr" | "analysis")}
+                      className="bg-slate-900 text-slate-200 border border-slate-700 rounded px-2 py-1"
+                    >
+                      <option value="ocr">OCR :8000</option>
+                      <option value="analysis">Analysis :8002</option>
+                    </select>
                     <label className="flex items-center space-x-1.5 text-slate-400 cursor-pointer select-none">
                       <input
                         type="checkbox"
@@ -1087,7 +1097,7 @@ export const SystemDiagnostics: React.FC = () => {
                 containerLogs ? (
                   containerLogs
                 ) : (
-                  <span className="text-slate-500 italic">No logs available for container &apos;olmocr&apos;.</span>
+                  <span className="text-slate-500 italic">No logs available for the {selectedVllmRole} vLLM container.</span>
                 )
               ) : (
                 logMessages.map((msg, i) => (

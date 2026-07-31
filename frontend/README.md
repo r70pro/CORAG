@@ -119,3 +119,6 @@ npm run lint
 npm test
 npm run build
 ```
+
+The reliable single-host systemd/Compose deployment, production preflight, and
+offline model staging procedure are documented in [`../deploy/README.md`](../deploy/README.md).

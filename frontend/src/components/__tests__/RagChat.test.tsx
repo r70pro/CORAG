@@ -97,6 +97,31 @@ describe("RagChat Component", () => {
     });
   });
 
+  test("forwards metadata filters to the next RAG request", async () => {
+    render(<RagChat />);
+    fireEvent.change(screen.getByLabelText("Document Type"), { target: { value: "radiology_report" } });
+    fireEvent.change(screen.getByLabelText("Author"), { target: { value: "Capital Radiology" } });
+    fireEvent.change(screen.getByLabelText("Date From"), { target: { value: "2024-01-01" } });
+    fireEvent.change(screen.getByLabelText("Date To"), { target: { value: "2024-12-31" } });
+    const input = screen.getByPlaceholderText(/Ask a medicolegal question or request an audit.../i);
+    fireEvent.change(input, { target: { value: "Find imaging" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send Query" }));
+
+    await waitFor(() => {
+      expect(triggerRagChatSSE).toHaveBeenCalledWith(
+        expect.objectContaining({
+          doc_type: "radiology_report",
+          author: "Capital Radiology",
+          date_from: "2024-01-01",
+          date_to: "2024-12-31",
+        }),
+        expect.any(Function),
+        expect.any(Function),
+        expect.any(Function),
+      );
+    });
+  });
+
   test("flushes streamed text and leaves the cleared composer settled when DONE completes", async () => {
     jest.mocked(triggerRagChatSSE).mockImplementation(
       (_payload, onChunk, _onError, onComplete) => {
@@ -117,5 +142,27 @@ describe("RagChat Component", () => {
       expect(send).toHaveAccessibleName("Send Query");
       expect(send).toBeDisabled();
     });
+  });
+
+  test("exposes Gradio-equivalent stop and clear controls", async () => {
+    const cancel = jest.fn();
+    jest.mocked(triggerRagChatSSE).mockReturnValue({ cancel });
+    render(<RagChat />);
+
+    const stop = screen.getByRole("button", { name: "Stop generating" });
+    expect(stop).toBeVisible();
+    expect(stop).toBeDisabled();
+
+    const input = screen.getByPlaceholderText(/Ask a medicolegal question or request an audit.../i);
+    fireEvent.change(input, { target: { value: "Build a timeline" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send Query" }));
+
+    await waitFor(() => expect(stop).toBeEnabled());
+    fireEvent.click(stop);
+    expect(cancel).toHaveBeenCalledWith("RAG generation stopped by user");
+    expect(screen.getByText(/stopped by user/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /Clear Chat/i })[0]);
+    expect(screen.queryByText("Build a timeline")).not.toBeInTheDocument();
   });
 });

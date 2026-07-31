@@ -20,12 +20,11 @@ import {
 import {
   fetchDockerStatus,
   fetchDockerModels,
-  startDockerContainer,
-  stopDockerContainer,
   createDockerContainer,
   shutdownDockerContainer,
   fetchSettings,
   updateSettings,
+  setVllmRoleRunning,
 } from "@/lib/api";
 
 export type ViewType =
@@ -86,7 +85,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [dockerPort, setDockerPort] = useState<number>(8000);
   const [gpuMem, setGpuMem] = useState<number>(0.8);
   const [maxLen, setMaxLen] = useState<number>(15360);
-  const [dockerStatus, setDockerStatus] = useState<string>("Checking...");
+  const [tensorParallel, setTensorParallel] = useState<number>(1);
+  const [dockerStatuses, setDockerStatuses] = useState<Record<"ocr" | "analysis", string>>({ ocr: "checking", analysis: "checking" });
   const [dockerMsg, setDockerMsg] = useState<string>("");
   const [saveStatus, setSaveStatus] = useState<string>("");
 
@@ -110,11 +110,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   ];
 
   const loadDockerState = async () => {
-    const statusRes = await fetchDockerStatus();
-    if (statusRes) {
-      setDockerStatus(statusRes.status || "Unknown");
-      setDockerMsg(statusRes.message || "");
-    }
+    const [ocrStatus, analysisStatus] = await Promise.all([fetchDockerStatus("ocr"), fetchDockerStatus("analysis")]);
+    setDockerStatuses({ ocr: ocrStatus?.status || "unknown", analysis: analysisStatus?.status || "unknown" });
+    setDockerMsg(ocrStatus?.message || analysisStatus?.message || "");
     const modelsRes = await fetchDockerModels();
     if (modelsRes) {
       if (modelsRes.models && modelsRes.models.length > 0) {
@@ -131,16 +129,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
       if (settings.docker_port) setDockerPort(settings.docker_port);
       if (settings.docker_gpu_mem) setGpuMem(settings.docker_gpu_mem);
       if (settings.docker_max_model_len) setMaxLen(settings.docker_max_model_len);
+      if (settings.docker_tensor_parallel) setTensorParallel(settings.docker_tensor_parallel);
     }
   };
 
   useEffect(() => {
     let isMounted = true;
     const init = async () => {
-      const statusRes = await fetchDockerStatus();
+      const [statusRes, analysisStatus] = await Promise.all([fetchDockerStatus("ocr"), fetchDockerStatus("analysis")]);
       if (!isMounted) return;
       if (statusRes) {
-        setDockerStatus(statusRes.status || "Unknown");
+        setDockerStatuses({ ocr: statusRes.status || "unknown", analysis: analysisStatus?.status || "unknown" });
         setDockerMsg(statusRes.message || "");
       }
       const modelsRes = await fetchDockerModels();
@@ -160,6 +159,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         if (settings.docker_port) setDockerPort(settings.docker_port);
         if (settings.docker_gpu_mem) setGpuMem(settings.docker_gpu_mem);
         if (settings.docker_max_model_len) setMaxLen(settings.docker_max_model_len);
+        if (settings.docker_tensor_parallel) setTensorParallel(settings.docker_tensor_parallel);
       }
     };
     init();
@@ -173,9 +173,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
     let attempts = 0;
     const interval = setInterval(async () => {
       attempts++;
-      const statusRes = await fetchDockerStatus();
+      const statusRes = await fetchDockerStatus("ocr");
       if (statusRes) {
-        setDockerStatus(statusRes.status || "Unknown");
+        setDockerStatuses((prev) => ({ ...prev, ocr: statusRes.status || "unknown" }));
         setDockerMsg(statusRes.message || "");
         if (
           statusRes.status === "ready" ||
@@ -191,28 +191,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const handleStartDocker = async () => {
     setDockerMsg("Starting container...");
-    setDockerStatus("starting");
-    const res = await startDockerContainer({});
+    setDockerStatuses((prev) => ({ ...prev, ocr: "starting" }));
+    const res = await setVllmRoleRunning("ocr", true);
     setDockerMsg(res.message || "Started");
     pollStatusUntilDone(15);
   };
 
   const handleStopDocker = async () => {
     setDockerMsg("Stopping container...");
-    const res = await stopDockerContainer();
+    const res = await setVllmRoleRunning("ocr", false);
     setDockerMsg(res.message || "Stopped");
     await loadDockerState();
   };
 
   const handleRecreateDocker = async () => {
     setDockerMsg("Recreating container & loading model...");
-    setDockerStatus("starting");
+    setDockerStatuses((prev) => ({ ...prev, ocr: "starting" }));
     const res = await createDockerContainer({
       hf_token: hfToken && hfToken !== "********" ? hfToken : undefined,
       port: dockerPort,
       model: dockerModel,
       gpu_mem: gpuMem,
       max_model_len: maxLen,
+      tensor_parallel_size: tensorParallel,
     });
     setDockerMsg(res.message || "Recreated");
     if (res.success) {
@@ -220,6 +221,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
     } else {
       await loadDockerState();
     }
+  };
+
+  const handleAnalysisLifecycle = async (running: boolean) => {
+    setDockerStatuses((prev) => ({ ...prev, analysis: running ? "starting" : "stopping" }));
+    const res = await setVllmRoleRunning("analysis", running);
+    setDockerMsg(res.message || `Analysis vLLM ${running ? "start" : "stop"} requested.`);
+    await loadDockerState();
   };
 
 
@@ -238,6 +246,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       docker_port: dockerPort,
       docker_gpu_mem: gpuMem,
       docker_max_model_len: maxLen,
+      docker_tensor_parallel: tensorParallel,
     });
     setSaveStatus(res.message || "Saved");
   };
@@ -285,13 +294,28 @@ export const Sidebar: React.FC<SidebarProps> = ({
             onClick={() => setDockerOpen(!dockerOpen)}
             className="w-full px-3 py-2 bg-slate-900/80 flex items-center justify-between text-xs font-bold text-slate-200 cursor-pointer select-none"
           >
-            <span>🐳 Inference Server ({dockerStatus})</span>
+            <span>🐳 Dedicated vLLM Roles</span>
             {dockerOpen ? <ChevronUp className="w-3.5 h-3.5 text-slate-400 pointer-events-none" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-400 pointer-events-none" />}
           </button>
 
           {dockerOpen && (
             <div className="p-3 space-y-2.5 text-[11px]">
-              <div className="text-[10px] text-slate-400">Manage the local GPU inference container.</div>
+              <div className="space-y-1.5">
+                {(["ocr", "analysis"] as const).map((role) => (
+                  <div key={role} className="rounded-lg border border-slate-800 bg-slate-950/70 p-2 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-slate-200 uppercase">{role} vLLM <span className="text-slate-500 font-mono">:{role === "ocr" ? "8000" : "8002"}</span></span>
+                      <span className={`font-mono ${dockerStatuses[role] === "ready" ? "text-emerald-400" : dockerStatuses[role] === "starting" ? "text-amber-400" : "text-rose-300"}`}>{dockerStatuses[role]}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <button type="button" onClick={() => role === "ocr" ? handleStartDocker() : handleAnalysisLifecycle(true)} className="px-2 py-1 rounded bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 border border-emerald-800/50 flex items-center justify-center gap-1"><Play className="w-3 h-3" /> Start</button>
+                      <button type="button" onClick={() => role === "ocr" ? handleStopDocker() : handleAnalysisLifecycle(false)} className="px-2 py-1 rounded bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 border border-rose-800/50 flex items-center justify-center gap-1"><Square className="w-3 h-3" /> Stop</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="text-[10px] text-slate-400 border-t border-slate-800 pt-2">OCR provisioning settings (analysis is managed independently by the production stack).</div>
 
               <div>
                 <label htmlFor="docker-hf-token" className="block text-slate-400 mb-0.5">Hugging Face Token</label>
@@ -302,6 +326,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   onChange={(e) => setHfToken(e.target.value)}
                   placeholder="hf_..."
                   className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-[11px]"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between text-slate-400 mb-0.5">
+                  <span>Tensor Parallel GPUs</span>
+                  <span className="font-mono text-indigo-300">{tensorParallel}</span>
+                </div>
+                <input
+                  type="range"
+                  min={1}
+                  max={8}
+                  step={1}
+                  value={tensorParallel}
+                  onChange={(e) => setTensorParallel(Number(e.target.value))}
+                  aria-label="Tensor Parallel GPUs"
+                  className="w-full accent-indigo-500 cursor-pointer"
                 />
               </div>
 
@@ -368,37 +409,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </div>
 
 
-              <div className="grid grid-cols-2 gap-1.5 pt-1">
-                <button
-                  type="button"
-                  onClick={handleStartDocker}
-                  className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] font-semibold flex items-center justify-center gap-1 border border-slate-700 cursor-pointer select-none"
-                >
-                  <Play className="w-3 h-3 text-emerald-400 pointer-events-none" /> Start
-                </button>
-                <button
-                  type="button"
-                  onClick={handleStopDocker}
-                  className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] font-semibold flex items-center justify-center gap-1 border border-slate-700 cursor-pointer select-none"
-                >
-                  <Square className="w-3 h-3 text-amber-400 pointer-events-none" /> Stop
-                </button>
-              </div>
-
               <div className="grid grid-cols-2 gap-1.5">
                 <button
                   type="button"
                   onClick={handleRecreateDocker}
                   className="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-semibold flex items-center justify-center gap-1 shadow-sm cursor-pointer select-none"
                 >
-                  <RotateCw className="w-3 h-3 pointer-events-none" /> Recreate & Run
+                  <RotateCw className="w-3 h-3 pointer-events-none" /> Recreate OCR
                 </button>
                 <button
                   type="button"
                   onClick={handleShutdownDocker}
                   className="px-2 py-1 rounded bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 text-[10px] font-semibold flex items-center justify-center gap-1 border border-rose-800/60 cursor-pointer select-none"
                 >
-                  <Power className="w-3 h-3 pointer-events-none" /> Shut Down
+                  <Power className="w-3 h-3 pointer-events-none" /> Remove OCR
                 </button>
               </div>
 

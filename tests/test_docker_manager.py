@@ -14,7 +14,6 @@ import docker_manager
 
 
 class TestDockerManager(unittest.TestCase):
-
     def setUp(self):
         self.env_patcher = patch.dict(
             os.environ,
@@ -64,7 +63,6 @@ class TestDockerManager(unittest.TestCase):
         self.assertIsInstance(models, list)
         self.assertIn("allenai/olmOCR-2-7B-1025-FP8", models)
         self.assertIn("nvidia/Phi-4-reasoning-plus-NVFP4", models)
-
 
     @patch("httpx.get")
     def test_check_server_ready_success(self, mock_get):
@@ -141,7 +139,9 @@ class TestDockerManager(unittest.TestCase):
         self.assertTrue(success)
 
         # Case: exited (failure on docker start)
-        mock_run.side_effect = subprocess.CalledProcessError(1, "docker start", stderr=b"daemon down")
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1, "docker start", stderr=b"daemon down"
+        )
         success, msg = docker_manager.start_docker_container()
         self.assertFalse(success)
         self.assertTrue("Failed to start container" in msg)
@@ -168,9 +168,19 @@ class TestDockerManager(unittest.TestCase):
         self.assertTrue(success)
 
         # Case: running (failure)
-        mock_run.side_effect = subprocess.CalledProcessError(1, "docker stop", stderr=b"cannot kill")
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1, "docker stop", stderr=b"cannot kill"
+        )
         success, msg = docker_manager.stop_docker_container()
         self.assertFalse(success)
+
+    @patch("rag_infra_manager.stop_rag_infrastructure")
+    @patch("docker_manager.get_docker_status", return_value="running")
+    @patch("subprocess.run", return_value=MagicMock(returncode=0))
+    def test_stop_vllm_never_stops_persistent_rag(self, _run, _status, stop_rag):
+        success, _msg = docker_manager.stop_docker_container()
+        self.assertTrue(success)
+        stop_rag.assert_not_called()
 
     @patch("docker_manager.get_docker_status")
     @patch("subprocess.run")
@@ -201,7 +211,9 @@ class TestDockerManager(unittest.TestCase):
         # Case: running (failure on stop)
         mock_status.return_value = "running"
         mock_run.reset_mock()
-        mock_run.side_effect = subprocess.CalledProcessError(1, "docker stop", stderr=b"failed to stop")
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1, "docker stop", stderr=b"failed to stop"
+        )
         success, msg = docker_manager.shutdown_docker_container()
         self.assertFalse(success)
         self.assertIn("failed to stop", msg.lower())
@@ -217,13 +229,18 @@ class TestDockerManager(unittest.TestCase):
         self.assertTrue(success)
 
         # Case: remove failed
-        mock_run.side_effect = subprocess.CalledProcessError(1, "docker stop", stderr=b"permission error")
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1, "docker stop", stderr=b"permission error"
+        )
         success, msg = docker_manager.create_docker_container("token", 8000, "model", 0.8, 16000)
         self.assertFalse(success)
         self.assertTrue("Failed to remove existing container" in msg)
 
         # Case: create command failed
-        mock_run.side_effect = [MagicMock(returncode=0), subprocess.CalledProcessError(1, "docker run", stderr=b"bad flag")]
+        mock_run.side_effect = [
+            MagicMock(returncode=0),
+            subprocess.CalledProcessError(1, "docker run", stderr=b"bad flag"),
+        ]
         success, msg = docker_manager.create_docker_container("token", 8000, "model", 0.8, 16000)
         self.assertFalse(success)
 
@@ -240,7 +257,9 @@ class TestDockerManager(unittest.TestCase):
         mock_status.return_value = "not_found"
         mock_run.reset_mock()
         mock_run.return_value = MagicMock(returncode=0)
-        success, msg = docker_manager.create_docker_container("token", 8000, "model", 0.8, 16000, tensor_parallel_size=4)
+        success, msg = docker_manager.create_docker_container(
+            "token", 8000, "model", 0.8, 16000, tensor_parallel_size=4
+        )
         self.assertTrue(success)
         self.assertEqual(mock_run.call_count, 1)
         executed_cmd = mock_run.call_args[0][0]
@@ -259,14 +278,20 @@ class TestDockerManager(unittest.TestCase):
         mock_run.assert_not_called()
 
         # Toggle environment
-        with patch.dict(os.environ, {"TESTING": "false"}):
+        with patch.dict(
+            os.environ,
+            {"TESTING": "false", "KIRAG_ALLOW_APP_INFRA_SHUTDOWN": "true"},
+        ):
             docker_manager.cleanup_docker()
             self.assertTrue(mock_run.called)
 
         # Toggle environment exception
         mock_run.reset_mock()
         mock_run.side_effect = Exception("Docker shutdown failed")
-        with patch.dict(os.environ, {"TESTING": "false"}):
+        with patch.dict(
+            os.environ,
+            {"TESTING": "false", "KIRAG_ALLOW_APP_INFRA_SHUTDOWN": "true"},
+        ):
             docker_manager.cleanup_docker()
             self.assertTrue(mock_run.called)
 
@@ -281,12 +306,14 @@ class TestDockerManager(unittest.TestCase):
 
         # 2. Non-numeric port in create_docker_container (line 81-82)
         mock_run.return_value = MagicMock(returncode=0)
-        success, msg = docker_manager.create_docker_container("token", "invalid_port", "model", 0.8, 16000)
+        success, msg = docker_manager.create_docker_container(
+            "token", "invalid_port", "model", 0.8, 16000
+        )
         self.assertTrue(success)
 
-        # 3. Toggle KEEP_CONTAINERS_ON_EXIT env var (line 159)
+        # 3. Persistent infrastructure is preserved by default.
         mock_run.reset_mock()
-        with patch.dict(os.environ, {"TESTING": "false", "KEEP_CONTAINERS_ON_EXIT": "true"}):
+        with patch.dict(os.environ, {"TESTING": "false"}, clear=True):
             docker_manager.cleanup_docker()
             mock_run.assert_not_called()
 
@@ -336,9 +363,7 @@ class TestDockerManager(unittest.TestCase):
             returncode=0, stdout="c123\tforeign-api\t0.0.0.0:8000->8000/tcp\n"
         )
         with patch.dict(os.environ, {"TESTING": "false"}):
-            self.assertEqual(
-                docker_manager.free_host_port(8000), ("c123", "foreign-api")
-            )
+            self.assertEqual(docker_manager.free_host_port(8000), ("c123", "foreign-api"))
             self.assertEqual(mock_run.call_count, 1)
             self.assertEqual(mock_run.call_args.args[0][:3], ["docker", "ps", "-a"])
 
@@ -358,23 +383,30 @@ class TestDockerManager(unittest.TestCase):
     @patch("subprocess.run")
     def test_create_docker_container_dotenv_token_and_port_conflict(self, mock_run):
         # 1. Test dotenv token fallback (lines 359-371)
-        with patch("docker_manager.get_docker_status", return_value="not_found"), patch(
-            "docker_manager.find_port_occupant", return_value=None
-        ), patch(
-            "docker_manager.wait_for_port_free", return_value=True
+        with (
+            patch("docker_manager.get_docker_status", return_value="not_found"),
+            patch("docker_manager.find_port_occupant", return_value=None),
+            patch("docker_manager.wait_for_port_free", return_value=True),
         ):
             with patch("os.path.exists", return_value=True):
-                with patch("builtins.open", unittest.mock.mock_open(read_data="HF_TOKEN=dotenv_token_123\n")):
+                with patch(
+                    "builtins.open",
+                    unittest.mock.mock_open(read_data="HF_TOKEN=dotenv_token_123\n"),
+                ):
                     with patch.dict(os.environ, {}, clear=True):
                         mock_run.return_value = MagicMock(returncode=0)
-                        ok, _ = docker_manager.create_docker_container("********", 8000, "model", 0.8, 16000)
+                        ok, _ = docker_manager.create_docker_container(
+                            "********", 8000, "model", 0.8, 16000
+                        )
                         self.assertTrue(ok)
                         self.assertEqual(os.environ.get("HF_TOKEN"), "dotenv_token_123")
 
         # 2. A race-time port conflict fails closed and never retries/deletes.
         mock_run.reset_mock()
         with patch("docker_manager.get_docker_status", return_value="not_found"):
-            with patch("docker_manager.find_port_occupant", side_effect=[None, ("f123", "foreign")]):
+            with patch(
+                "docker_manager.find_port_occupant", side_effect=[None, ("f123", "foreign")]
+            ):
                 mock_run.side_effect = subprocess.CalledProcessError(
                     1, "docker run", stderr="port is already allocated"
                 )
@@ -393,7 +425,10 @@ class TestDockerManager(unittest.TestCase):
             ok, msg = docker_manager.shutdown_docker_container()
             self.assertIn("RAG Infra shutdown error", msg)
 
-        with patch.dict(os.environ, {"TESTING": "false"}):
+        with patch.dict(
+            os.environ,
+            {"TESTING": "false", "KIRAG_ALLOW_APP_INFRA_SHUTDOWN": "true"},
+        ):
             with patch("subprocess.run"):
                 docker_manager.cleanup_docker()
 
@@ -408,7 +443,7 @@ class TestDockerManager(unittest.TestCase):
                     model="model",
                     gpu_mem="invalid_gpu",
                     max_model_len="-500",
-                    tensor_parallel_size="invalid_tp"
+                    tensor_parallel_size="invalid_tp",
                 )
                 self.assertTrue(ok)
 
@@ -534,9 +569,7 @@ class TestDockerManager(unittest.TestCase):
     @patch("docker_manager.get_docker_status", return_value="not_found")
     @patch("docker_manager._validate_remote_network")
     @patch("subprocess.run")
-    def test_remote_code_uses_restricted_profile(
-        self, mock_run, mock_network, _mock_status
-    ):
+    def test_remote_code_uses_restricted_profile(self, mock_run, mock_network, _mock_status):
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         remote_env = {
             "KIRAG_ENABLE_REMOTE_CODE": "true",
@@ -576,9 +609,7 @@ class TestDockerManager(unittest.TestCase):
     def test_remote_code_rejects_uncontrolled_network_before_container_removal(
         self, mock_run, _mock_status
     ):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="false\tfalse\n", stderr=""
-        )
+        mock_run.return_value = MagicMock(returncode=0, stdout="false\tfalse\n", stderr="")
         remote_env = {
             "KIRAG_ENABLE_REMOTE_CODE": "true",
             "KIRAG_REMOTE_CODE_NETWORK": "uncontrolled-network",

@@ -21,6 +21,7 @@ jest.mock("@/lib/api", () => ({
     page_ranges: [[0, 10, 1], [10, 20, 2]],
     pages_markdown: { "1": "# Page 1 Content", "2": "# Page 2 Content" },
   }),
+  downloadRunMarkdownZip: jest.fn().mockResolvedValue({ success: true }),
 }));
 
 describe("PdfInspector Component", () => {
@@ -42,6 +43,7 @@ describe("PdfInspector Component", () => {
     expect(screen.getByText("📄 Select Processed Document Run")).toBeInTheDocument();
     await waitFor(() => {
       expect(screen.getByText("Sync Scroll")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Download All \(ZIP\)/i })).toBeInTheDocument();
     });
   });
 

@@ -327,6 +327,21 @@ def init_rag_vector_store():
         return False, f"Failed to initialize vector store: {e}"
 
 
+def initialize_rag_services() -> tuple[bool, str]:
+    """Idempotently initialize schemas, buckets, and the vector collection."""
+    messages = []
+
+    success, msg = init_rag_database()
+    messages.append(f"Database: {msg}")
+
+    success2, msg2 = init_rag_storage()
+    messages.append(f"Storage: {msg2}")
+
+    success3, msg3 = init_rag_vector_store()
+    messages.append(f"Vector Store: {msg3}")
+    return success and success2 and success3, "\n".join(messages)
+
+
 def start_and_init_rag() -> tuple[bool, str]:
     """Start RAG infrastructure and initialize all services.
 
@@ -346,17 +361,6 @@ def start_and_init_rag() -> tuple[bool, str]:
     # Wait a moment for services to stabilize
     time.sleep(2)
 
-    # Initialize database
-    success, msg = init_rag_database()
-    messages.append(f"Database: {msg}")
-
-    # Initialize storage
-    success2, msg2 = init_rag_storage()
-    messages.append(f"Storage: {msg2}")
-
-    # Initialize vector store
-    success3, msg3 = init_rag_vector_store()
-    messages.append(f"Vector Store: {msg3}")
-
-    all_ok = success and success2 and success3
-    return all_ok, "\n".join(messages)
+    initialized, init_message = initialize_rag_services()
+    messages.append(init_message)
+    return initialized, "\n".join(messages)

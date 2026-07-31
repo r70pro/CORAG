@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -15,7 +16,6 @@ from api.main import app
 
 
 class TestAPI(unittest.TestCase):
-
     def setUp(self):
         self.temp_directory = tempfile.TemporaryDirectory()
         self.workspace = os.path.join(self.temp_directory.name, "workspace")
@@ -111,14 +111,14 @@ class TestAPI(unittest.TestCase):
             "vram_pct": 6.6,
             "vram_free": 14000.0,
             "vram_reclaimable": 0.0,
-            "processes": []
+            "processes": [],
         }
         mock_backing.return_value = {
             "all_healthy": True,
             "services": {
                 "postgres": {"is_up": True, "latency": 15.0},
-                "redis": {"is_up": True, "latency": 2.0}
-            }
+                "redis": {"is_up": True, "latency": 2.0},
+            },
         }
 
         response = self.client.get("/api/diagnostics/health")
@@ -197,13 +197,13 @@ class TestAPI(unittest.TestCase):
     @patch("system_diagnostics.delete_installed_models")
     def test_delete_diagnostics_models(self, mock_delete):
         mock_delete.return_value = (True, "Successfully deleted 1 model(s).", ["old/model"], 5000)
-        response = self.client.request("DELETE", "/api/diagnostics/models", json={"model_ids": ["old/model"]})
+        response = self.client.request(
+            "DELETE", "/api/diagnostics/models", json={"model_ids": ["old/model"]}
+        )
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertTrue(data["success"])
         self.assertEqual(data["deleted_models"], ["old/model"])
-
-
 
     # ── Docker ────────────────────────────────────────────────────────────────
 
@@ -262,7 +262,7 @@ class TestAPI(unittest.TestCase):
             "port": 8000,
             "model": "test-model",
             "gpu_mem": 0.8,
-            "max_model_len": 4096
+            "max_model_len": 4096,
         }
         response = self.client.post("/api/docker/create", json=payload)
         self.assertEqual(response.status_code, 200)
@@ -363,6 +363,18 @@ class TestAPI(unittest.TestCase):
         response = self.client.get("/api/documents/runs/run_case/markdown/file.pdf")
         self.assertEqual(response.status_code, 400)
 
+    def test_download_run_markdown_zip(self):
+        for filename, content in (("a.md", "Alpha"), ("b.md", "Beta")):
+            with open(os.path.join(self.markdown_dir, filename), "w", encoding="utf-8") as markdown:
+                markdown.write(content)
+
+        response = self.client.get("/api/documents/runs/run_case/markdown.zip")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "application/zip")
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            self.assertEqual(archive.namelist(), ["a.md", "b.md"])
+            self.assertEqual(archive.read("a.md"), b"Alpha")
+
     # ── Pipeline ──────────────────────────────────────────────────────────────
 
     @patch("settings_manager.get_available_runs")
@@ -406,12 +418,28 @@ class TestAPI(unittest.TestCase):
             pdf.write(self.pdf_bytes)
         with open(f"{stored_pdf}.metadata.json", "w", encoding="utf-8") as metadata:
             json.dump({"original_name": "original report.pdf"}, metadata)
-        mock_process.return_value = [("log", "badge", "progress", None, None, None, None, None, None, "run_id", "status", "manifest", "stop")]
+        mock_process.return_value = [
+            (
+                "log",
+                "badge",
+                "progress",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                "run_id",
+                "status",
+                "manifest",
+                "stop",
+            )
+        ]
 
         payload = {
             "file_paths": ["stored.pdf"],
             "server_url": "http://localhost",
-            "model_name": "test-model"
+            "model_name": "test-model",
         }
         response = self.client.post("/api/pipeline/start", json=payload)
         self.assertEqual(response.status_code, 200)
@@ -594,7 +622,9 @@ class TestAPI(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers.get("access-control-allow-origin"), "http://localhost:3000")
+        self.assertEqual(
+            response.headers.get("access-control-allow-origin"), "http://localhost:3000"
+        )
 
     # ── Consolidated Phase 1 Core Endpoints ─────────────────────────────────────
 
@@ -606,6 +636,24 @@ class TestAPI(unittest.TestCase):
         res = self.client.get("/api/health")
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.json()["status"], "healthy")
+
+    @patch("api.main._inference_endpoint_ready", return_value=True)
+    @patch("system_diagnostics.check_backing_services_data")
+    def test_readiness_reflects_dependencies(self, mock_backing, mock_inference):
+        mock_backing.return_value = {"all_healthy": True, "failed_services": []}
+        self.assertEqual(self.client.get("/readyz").status_code, 200)
+
+        mock_backing.return_value = {
+            "all_healthy": False,
+            "failed_services": ["vllm"],
+        }
+        response = self.client.get("/readyz")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["code"], "service_unavailable")
+
+        mock_backing.return_value = {"all_healthy": True, "failed_services": []}
+        mock_inference.return_value = False
+        self.assertEqual(self.client.get("/readyz").status_code, 503)
 
     @patch("rag.db.get_corpus_stats")
     @patch("rag.db.get_runs_with_stats")

@@ -94,9 +94,9 @@ export async function fetchPipelineRuns() {
   }
 }
 
-export async function fetchDockerStatus() {
+export async function fetchDockerStatus(role: "ocr" | "analysis" = "ocr") {
   try {
-    return await requestJson<ApiResult>("/api/docker/status");
+    return await requestJson<ApiResult>(`/api/docker/status?role=${role}`);
   } catch {
     return { status: "unknown", is_ready: false };
   }
@@ -110,12 +110,20 @@ export async function fetchDockerModels() {
   }
 }
 
-export async function fetchDockerLogs(tail: number = 200) {
-  const query = new URLSearchParams({ tail: String(tail) });
+export async function fetchDockerLogs(tail: number = 200, role: "ocr" | "analysis" = "ocr") {
+  const query = new URLSearchParams({ tail: String(tail), role });
   try {
     return await requestJson<ApiResult>(`/api/docker/logs?${query}`);
   } catch (error) {
     return { logs: getErrorMessage(error), container_status: "error" };
+  }
+}
+
+export async function setVllmRoleRunning(role: "ocr" | "analysis", running: boolean) {
+  try {
+    return await jsonPost(`/api/docker/roles/${role}/${running ? "start" : "stop"}`);
+  } catch (error) {
+    return failedResult(error);
   }
 }
 
@@ -340,6 +348,7 @@ export async function createDockerContainer(payload: {
   model?: string;
   gpu_mem?: number;
   max_model_len?: number;
+  tensor_parallel_size?: number;
 }) {
   try {
     return await jsonPost("/api/docker/create", payload);
@@ -413,6 +422,19 @@ export async function fetchMarkdownContent(runName: string, filename: string) {
     );
   } catch {
     return "";
+  }
+}
+
+export async function downloadRunMarkdownZip(runName: string) {
+  try {
+    const blob = await requestBlob(
+      `/api/documents/runs/${apiPathSegment(runName)}/markdown.zip`,
+      { timeoutMs: API_TIMEOUTS.download },
+    );
+    downloadBlob(blob, `${runName}_markdown.zip`);
+    return { success: true };
+  } catch (error) {
+    return failedResult(error);
   }
 }
 

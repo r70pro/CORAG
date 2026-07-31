@@ -189,6 +189,18 @@ def load_settings(*, include_env_secrets: bool = True):
     # Sync analysis_model_name if empty or missing
     if not defaults.get("analysis_model_name"):
         defaults["analysis_model_name"] = defaults.get("model_name", "allenai/olmOCR-2-7B-1025-FP8")
+    # Production can pin OCR and analysis to separate, continuously available
+    # inference services. Environment values intentionally override UI state.
+    env_overrides = {
+        "server_url": "KIRAG_OCR_SERVER_URL",
+        "model_name": "KIRAG_OCR_MODEL",
+        "analysis_server_url": "KIRAG_ANALYSIS_SERVER_URL",
+        "analysis_model_name": "KIRAG_ANALYSIS_MODEL",
+    }
+    if os.environ.get("TESTING") != "true":
+        for setting_key, environment_key in env_overrides.items():
+            if os.environ.get(environment_key, "").strip():
+                defaults[setting_key] = os.environ[environment_key].strip()
     return defaults
 
 

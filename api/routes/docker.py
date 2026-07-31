@@ -8,7 +8,7 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from api.auth import verify_admin_key
+from api.auth import require_remote_lifecycle_enabled, verify_admin_key
 from api.models import (
     DockerCreateRequest,
     DockerLogsResponse,
@@ -30,14 +30,16 @@ def get_models():
 
 
 @router.get("/status", response_model=DockerStatusResponse, summary="Get container status")
-def get_status():
+def get_status(role: str = Query("ocr", pattern="^(ocr|analysis)$")):
     """Return the current vLLM inference container status."""
     from docker_manager import get_docker_status_str
     from settings_manager import load_settings
 
     settings = load_settings()
-    port = settings.get("docker_port", 8000)
-    status_text, badge_html = get_docker_status_str(port)
+    is_analysis = role == "analysis"
+    port = 8002 if is_analysis else settings.get("docker_port", 8000)
+    container = "kirag_vllm_analysis" if is_analysis else "olmocr"
+    status_text, badge_html = get_docker_status_str(port, container)
     # Derive a machine-readable status from the badge
     status = "unknown"
     if "Ready" in badge_html or "badge-success" in badge_html:
@@ -56,12 +58,16 @@ def get_status():
 
 
 @router.get("/logs", response_model=DockerLogsResponse, summary="Get container logs")
-def get_logs(tail: int = Query(200, ge=1, le=10_000)):
+def get_logs(
+    tail: int = Query(200, ge=1, le=10_000),
+    role: str = Query("ocr", pattern="^(ocr|analysis)$"),
+):
     """Return stdout/stderr logs from the vLLM container."""
     from docker_manager import get_docker_logs, get_docker_status
 
-    logs = get_docker_logs(tail=tail)
-    status = get_docker_status()
+    container = "kirag_vllm_analysis" if role == "analysis" else "olmocr"
+    logs = get_docker_logs(tail=tail, container_name=container)
+    status = get_docker_status(container)
     return DockerLogsResponse(logs=logs, container_status=status)
 
 
@@ -69,7 +75,7 @@ def get_logs(tail: int = Query(200, ge=1, le=10_000)):
     "/start",
     response_model=MessageResponse,
     summary="Start container",
-    dependencies=[Depends(verify_admin_key)],
+    dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
 )
 async def start_container():
     """Start the existing vLLM inference container."""
@@ -82,10 +88,38 @@ async def start_container():
 
 
 @router.post(
+    "/roles/{role}/start",
+    response_model=MessageResponse,
+    dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
+)
+async def start_role_container(role: str):
+    from docker_manager import set_vllm_role_running
+
+    success, msg = await asyncio.to_thread(set_vllm_role_running, role, True)
+    if not success:
+        raise HTTPException(status_code=503, detail=msg)
+    return MessageResponse(success=True, message=msg)
+
+
+@router.post(
+    "/roles/{role}/stop",
+    response_model=MessageResponse,
+    dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
+)
+async def stop_role_container(role: str):
+    from docker_manager import set_vllm_role_running
+
+    success, msg = await asyncio.to_thread(set_vllm_role_running, role, False)
+    if not success:
+        raise HTTPException(status_code=503, detail=msg)
+    return MessageResponse(success=True, message=msg)
+
+
+@router.post(
     "/stop",
     response_model=MessageResponse,
     summary="Stop container",
-    dependencies=[Depends(verify_admin_key)],
+    dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
 )
 async def stop_container():
     """Stop the running vLLM inference container."""
@@ -101,7 +135,7 @@ async def stop_container():
     "/create",
     response_model=MessageResponse,
     summary="Create/recreate container",
-    dependencies=[Depends(verify_admin_key)],
+    dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
 )
 async def create_container(req: DockerCreateRequest):
     """Create or recreate the vLLM inference container with the given parameters."""
@@ -162,9 +196,7 @@ async def create_container(req: DockerCreateRequest):
         if model == "allenai/olmOCR-2-7B-1025-FP8":
             new_settings.update({"model_name": model, "server_url": server_url})
         else:
-            new_settings.update(
-                {"analysis_model_name": model, "analysis_server_url": server_url}
-            )
+            new_settings.update({"analysis_model_name": model, "analysis_server_url": server_url})
         if explicit_hf_token:
             new_settings["hf_token"] = explicit_hf_token
         settings.update(new_settings)
@@ -178,7 +210,7 @@ async def create_container(req: DockerCreateRequest):
     "/shutdown",
     response_model=MessageResponse,
     summary="Shutdown and remove",
-    dependencies=[Depends(verify_admin_key)],
+    dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
 )
 async def shutdown_container():
     """Stop and remove the vLLM inference container."""

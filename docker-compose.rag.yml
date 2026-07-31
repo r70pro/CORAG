@@ -23,6 +23,12 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    stop_grace_period: 60s
+    logging: &rotated-logs
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
   redis:
     image: redis@sha256:dfa18828cbc07b3ae6a95ec7343f6c214fdee2d836197b4be8e9904420762cd8
@@ -41,6 +47,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    stop_grace_period: 60s
+    logging: *rotated-logs
 
   minio:
     image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
@@ -63,6 +71,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    stop_grace_period: 60s
+    logging: *rotated-logs
 
   qdrant:
     image: qdrant/qdrant@sha256:6a34a799bed69c7c25c4e87ab04092005e4579062a9bf0e82a75d0b21f030006
@@ -83,6 +93,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    stop_grace_period: 60s
+    logging: *rotated-logs
 
 networks:
   default:

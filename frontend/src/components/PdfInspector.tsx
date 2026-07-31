@@ -14,6 +14,7 @@ import {
   fetchRunFiles,
   fetchMarkdownContent,
   fetchDocumentInfo,
+  downloadRunMarkdownZip,
   apiPathSegment,
   apiUrl,
 } from "@/lib/api";
@@ -621,6 +622,14 @@ export const PdfInspector: React.FC = () => {
               className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold flex items-center gap-1.5 border border-slate-700 text-xs cursor-pointer select-none"
             >
               <Download className="w-3.5 h-3.5 pointer-events-none" /> Markdown
+            </button>
+            <button
+              type="button"
+              onClick={() => selectedRun && void downloadRunMarkdownZip(selectedRun)}
+              disabled={!selectedRun || runFiles.length === 0}
+              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 font-semibold flex items-center gap-1.5 border border-slate-700 text-xs cursor-pointer select-none"
+            >
+              <Download className="w-3.5 h-3.5 pointer-events-none" /> Download All (ZIP)
             </button>
           </div>
         </div>

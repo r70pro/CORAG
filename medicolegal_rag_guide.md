@@ -13,7 +13,9 @@ and test commands, see [`README.md`](README.md).
 KIRAG is **local-first**, not unconditionally offline:
 
 - The supplied Docker services and managed vLLM port bind to `127.0.0.1`.
-- Model downloads contact Hugging Face.
+- Model preparation contacts Hugging Face. The supervised production runtime
+  uses immutable snapshots from `$KIRAG_HF_HOME/hub` with network downloads
+  disabled.
 - OCR and analysis URLs are configurable. A remote URL sends prompts, images,
   or document-derived context to that service.
 - PostgreSQL, Redis, MinIO, and Qdrant hosts are also configurable.
@@ -25,22 +27,30 @@ Use full-disk encryption, restricted filesystem permissions, protected backups,
 separate API/admin secrets, and a documented retention policy. Do not expose
 the backing-service ports publicly.
 
+For reliable single-machine production, systemd is the sole lifecycle owner.
+The browser, Gradio process, API process, and application exit handlers must not
+stop databases or inference services. Keep remote lifecycle operations disabled
+and use host-level systemd commands for planned starts, stops, and restarts.
+
 ## The implemented workflow
 
 ```mermaid
 flowchart TD
-    START[Start four-service RAG stack] --> MODEL[Start/recreate vLLM container]
-    MODEL --> OCR[Upload one matter and run OCR]
+    START[systemd starts persistent infrastructure] --> OCRMODEL[OCR vLLM :8000 healthy]
+    OCRMODEL --> ANALYSISMODEL[Analysis vLLM :8002 healthy]
+    OCRMODEL --> OCR[Upload one matter and run OCR]
     OCR --> VERIFY[Compare PDF and Markdown]
     VERIFY --> INDEX[Chunk, embed, index, archive]
     EXT[External Markdown] --> INDEX
     INDEX --> SCOPE[Select one active case and filters]
-    SCOPE --> ASK[Retrieve, rerank, analyse]
-    ASK --> CHECK[Verify cited pages and metadata]
-    CHECK --> EXPORT[Export and retain per policy]
+    SCOPE --> ASK[Retrieve and rerank]
+    ASK --> ANALYSISMODEL
+    ANALYSISMODEL --> CHECK[Generate answer]
+    CHECK --> VERIFYCLAIMS[Verify cited pages and metadata]
+    VERIFYCLAIMS --> EXPORT[Export and retain per policy]
 ```
 
-The four RAG services are distinct from the `olmocr` vLLM inference container:
+The four data services are distinct from the two production inference roles:
 
 | Service | Loopback port | Role |
 |---|---:|---|
@@ -48,42 +58,118 @@ The four RAG services are distinct from the `olmocr` vLLM inference container:
 | Redis | 6379 | Active embedding cache and counters; query/chat cache helpers also exist |
 | MinIO | 9000/9001 | PDF and Markdown object storage/console |
 | Qdrant | 6333/6334 | Dense vectors and payload filters |
-| vLLM (`olmocr`) | 8000 by default | OCR and analysis model endpoint |
+| OCR vLLM (`olmocr`) | 8000 | Vision/OCR model endpoint |
+| Analysis vLLM (`kirag_vllm_analysis`) | 8002 | Language-only RAG analysis endpoint |
 
-The Compose images are digest-pinned in
-[`docker-compose.rag.yml`](docker-compose.rag.yml). Persistent service data is
-stored beneath `workspace/` in a checkout deployment.
+The Compose images are digest-pinned in [`docker-compose.rag.yml`](docker-compose.rag.yml)
+and the production overlay is [`docker-compose.production.yml`](docker-compose.production.yml).
+Persistent service data is stored beneath `workspace/` in a checkout deployment.
 
 ## 1. Start and initialise the RAG services
 
-Preferred options:
+### Supervised production
+
+The installed dependency chain is:
+
+```text
+kirag-infrastructure -> kirag-api -> kirag-frontend
+```
+
+Start the frontend target; systemd starts required dependencies in order:
+
+```bash
+sudo systemctl start kirag-frontend.service
+sudo systemctl status kirag-infrastructure kirag-api kirag-frontend
+curl --fail http://127.0.0.1:8001/readyz
+```
+
+`kirag-infrastructure` verifies both immutable model snapshots offline, starts
+Compose with health gates, then initialises the PostgreSQL schema, the
+`olmocr-pdfs` and `olmocr-markdown` MinIO buckets, and the active embedding
+model's Qdrant collection. `active (exited)` is the normal infrastructure unit
+state: its startup transaction completed and Docker continues supervising the
+containers. `/readyz` is the operational acceptance gate and stays HTTP 503
+until all four data services and both vLLM roles are usable.
+
+Restart only the failed layer when possible:
+
+```bash
+sudo systemctl restart kirag-api
+sudo systemctl restart kirag-frontend
+```
+
+Recycling `kirag-infrastructure` interrupts both inference roles and may incur
+a long model cold start. Use it only for infrastructure/configuration changes.
+Keep `KIRAG_ENABLE_REMOTE_LIFECYCLE=false`; API lifecycle endpoints intentionally
+return 403 even with an admin key.
+
+### Interactive workstation
+
+When the supervised profile is not installed, the available options are:
 
 - Gradio: RAG Processing → **RAG Infrastructure** → **Start**.
 - CLI: `kirag rag infra start`.
-- API: `POST /api/rag/infra/start` with a configured API key.
+- API: `POST /api/rag/infra/start` only when an administrator has explicitly
+  enabled remote lifecycle and supplied the admin key.
 
 KIRAG runs `docker compose up -d --wait`, then initialises the PostgreSQL
 schema, the `olmocr-pdfs` and `olmocr-markdown` MinIO buckets, and the active
 embedding model's Qdrant collection. Starting Compose directly does not invoke
 those application initialisers.
 
-API example:
+Remote lifecycle example for a deliberately enabled non-production deployment:
 
 ```bash
-curl -H "X-API-Key: $KIRAG_API_KEY" \
+curl -H "X-Admin-API-Key: $KIRAG_ADMIN_API_KEY" \
   -X POST http://127.0.0.1:8001/api/rag/infra/start
 curl -H "X-API-Key: $KIRAG_API_KEY" \
   http://127.0.0.1:8001/api/rag/infra/status
 ```
 
-Infrastructure **stop** is an admin-authorised API action. Infrastructure
-**start** currently requires general API authentication but not the additional
-admin dependency.
+Both infrastructure start and stop require the admin key and the explicit
+remote-lifecycle feature flag. Do not enable that flag merely to work around a
+systemd failure; inspect the host journal and repair the service instead.
 
 ## 2. Start the inference model
 
-The Gradio sidebar manages one labelled Docker container named `olmocr`. The
-default model is `allenai/olmOCR-2-7B-1025-FP8`. The manager:
+### Production inference roles
+
+Production does not swap models during a matter workflow. It keeps:
+
+- `allenai/olmOCR-2-7B-1025-FP8` on `http://127.0.0.1:8000/v1` for PDF OCR;
+- `Qwen/Qwen3.6-35B-A3B` on `http://127.0.0.1:8002/v1` for text analysis.
+
+The models and vLLM image are pinned to immutable revisions. Model preparation
+is a controlled online deployment step; runtime mounts `$KIRAG_HF_HOME`
+read-only and sets Hugging Face and Transformers offline. OCR starts first and
+must pass its health check before analysis starts, preventing concurrent model
+profiling from exhausting unified GPU memory. The analysis role uses
+`--language-model-only`, because OCR owns all document-image processing.
+
+The supplied 128 GiB GB10 profile uses OCR/analysis memory high-water marks of
+0.28/0.57, context limits of 15,360/32,768, and batch limits of 4,096/8,192
+tokens. These are measured hardware settings, not universal recommendations.
+On different hardware, require successful cold-start, representative inference,
+adequate OS memory, and zero OOM/restart events before accepting new values.
+
+Verify the roles rather than relying on a UI label:
+
+```bash
+curl --fail http://127.0.0.1:8000/v1/models
+curl --fail http://127.0.0.1:8002/v1/models
+docker inspect -f '{{.State.Health.Status}} restarts={{.RestartCount}} oom={{.State.OOMKilled}}' olmocr
+docker inspect -f '{{.State.Health.Status}} restarts={{.RestartCount}} oom={{.State.OOMKilled}}' kirag_vllm_analysis
+```
+
+Environment inference URLs override saved UI settings in production. Do not
+press **Recreate & Run**, **Stop**, or **Shut Down** in the Gradio/sidebar
+lifecycle panel; systemd and Compose own these containers.
+
+### Interactive single-container mode
+
+Outside the supervised profile, the Gradio sidebar manages one labelled Docker
+container named `olmocr`. The default model is
+`allenai/olmOCR-2-7B-1025-FP8`. The manager:
 
 - requires an allowlisted model unless the advanced override is enabled;
 - requires an immutable digest-pinned image;
@@ -97,7 +183,8 @@ default model is `allenai/olmOCR-2-7B-1025-FP8`. The manager:
 
 In Gradio, choose the model and resource settings, then use **Recreate & Run**.
 Use **Start** only when a managed container already exists. API create/start,
-stop, and shutdown operations require the dedicated admin key.
+stop, and shutdown operations require the dedicated admin key and explicit
+remote-lifecycle enablement.
 
 One managed container can serve the selected OCR or analysis model at a time.
 If the requested analysis model is not loaded, the analyser probes `/models`,
@@ -330,14 +417,15 @@ provenance is required.
 
 ## 8. Scope and run a RAG query
 
-In RAG Processing:
+In supervised production, the analysis endpoint/model are pinned by environment
+to port 8002 and `Qwen/Qwen3.6-35B-A3B`; saved UI values cannot silently redirect
+the role. KIRAG disables thinking in its RAG chat requests so responses and
+exports contain only the user-facing answer. vLLM enables the `qwen3` reasoning
+parser for advanced direct callers that explicitly opt into reasoning. The
+incompatible NVIDIA NVFP4 checkpoint is intentionally excluded from the managed
+selector.
 
-For Qwen3-family analysis models, KIRAG disables thinking in its chat requests so
-responses and exports contain only the user-facing answer. The managed vLLM
-container also enables the `qwen3` reasoning parser for advanced callers that
-explicitly opt into reasoning. Use the verified `Qwen/Qwen3.6-35B-A3B` model;
-the incompatible NVIDIA NVFP4 checkpoint is intentionally excluded from the
-managed selector.
+In **RAG Processing**:
 
 1. Select a specific **Active Case**. “All Cases” deliberately removes the
    `run_id` filter and can mix matters.
@@ -449,8 +537,66 @@ Qdrant, or MinIO data. It can also clear `/tmp/gradio`, repository
 causes later downloads. These operations are destructive and not an archival
 workflow.
 
+## Production health, recovery, and evidence preservation
+
+Use separate liveness and readiness semantics:
+
+- `/livez` confirms only that FastAPI is alive;
+- `/readyz` confirms PostgreSQL, Redis, MinIO, Qdrant, OCR vLLM, and analysis
+  vLLM are usable;
+- the frontend returning HTTP 200 confirms page delivery, not dependency
+  readiness or correctness of a medicolegal answer.
+
+Quiet acceptance probes:
+
+```bash
+curl --fail http://127.0.0.1:8001/readyz
+curl --fail --silent --output /dev/null \
+  --write-out 'Frontend HTTP %{http_code}\n' http://127.0.0.1:3000/
+docker compose -f docker-compose.rag.yml \
+  -f docker-compose.production.yml ps
+```
+
+For failures, preserve evidence before changing state:
+
+```bash
+sudo systemctl status kirag-infrastructure kirag-api kirag-frontend
+sudo journalctl -u kirag-infrastructure -u kirag-api -u kirag-frontend \
+  --since today --no-pager
+docker logs --tail 200 olmocr
+docker logs --tail 200 kirag_vllm_analysis
+```
+
+An infrastructure state of `active (exited)` is normal. A model may remain
+`starting` for several minutes during a legitimate cold load; the production
+health grace period is 30 minutes. Restart loops, exit 137, `OOMKilled=true`,
+negative KV-cache memory, or a requested-memory/free-memory error require root
+cause analysis. Do not repeatedly recreate containers: confirm whether the
+process received a supervisor signal, exceeded its high-water mark, competed
+with the other model during profiling, or encountered incomplete artifacts.
+
+If infrastructure startup fails, repair the cause, run
+`sudo systemctl reset-failed kirag-infrastructure`, and start infrastructure
+alone while the current application remains available where possible. Confirm
+it is active before transitioning API/frontend ownership. Stopping an
+interactive transient service before a replacement system unit is validated
+creates avoidable downtime.
+
+Application JSON logs rotate under `KIRAG_LOG_DIR`; Docker logs are capped at
+five 20 MiB files per container. Preserve relevant journal, audit JSONL,
+configuration revision, model/image digests, and diagnostic output with the
+matter/release incident record according to policy. Logs may themselves contain
+sensitive matter information.
+
+Backups must cover PostgreSQL, MinIO, Qdrant, local `workspace/`, exports,
+`settings.json`, the protected environment file, audit logs, and release/model
+identifiers. A successful backup command is not proof of recoverability;
+periodically restore to a disposable host and require schema initialisation,
+`/readyz`, a representative retrieval query, and source-provenance inspection.
+
 ## Daily close-out checklist
 
+- Confirm `/readyz` is healthy and both pinned model identities are expected.
 - Confirm the active case was correct for every saved query.
 - Verify each material claim against the original PDF page(s).
 - Remove raw `[Source N]` text and unsupported/invented metadata.
@@ -459,5 +605,7 @@ workflow.
 - Confirm required MinIO objects exist if MinIO is part of the retention plan.
 - Apply the matter's retention/deletion policy to run files, indexes, exports,
   audit logs, model caches, and backups.
+- Leave persistent production services under systemd ownership; do not use UI
+  shutdown controls as a workstation close-out step.
 - Do not treat UI roles, case filters, database registration, or an audit JSONL
   record as a complete authorisation or chain-of-custody system.

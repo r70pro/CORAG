@@ -1,0 +1,30 @@
+[Unit]
+Description=KIRAG production Next.js frontend
+Requires=kirag-api.service
+After=kirag-api.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@KIRAG_USER@
+Group=@KIRAG_GROUP@
+WorkingDirectory=@KIRAG_ROOT@/frontend
+EnvironmentFile=@KIRAG_ENV@
+Environment=NODE_ENV=production
+Environment=PATH=@NODE_BIN_DIR@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
+ExecStartPre=@KIRAG_ROOT@/.venv/bin/python @KIRAG_ROOT@/scripts/wait-for-http.py http://127.0.0.1:8001/readyz --timeout 300
+ExecStartPre=/usr/bin/test -f @KIRAG_ROOT@/frontend/.next/BUILD_ID
+ExecStart=@NPM_BIN@ run start -- --hostname 127.0.0.1 --port 3000
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=60
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@KIRAG_ROOT@/frontend/.next
+
+[Install]
+WantedBy=multi-user.target

@@ -30,6 +30,24 @@ def test_integration_compose_uses_only_disposable_storage():
             assert str(port).startswith("127.0.0.1::"), service_name
 
 
+def test_production_compose_supervises_offline_vllm():
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.production.yml").read_text())
+    for service_name in ("vllm", "vllm-analysis"):
+        vllm = compose["services"][service_name]
+        assert vllm["restart"] == "unless-stopped"
+        assert vllm["init"] is True
+        assert vllm["healthcheck"]["start_period"]
+        assert vllm["environment"]["HF_HUB_OFFLINE"] == "1"
+        assert vllm["environment"]["TRANSFORMERS_OFFLINE"] == "1"
+        assert str(vllm["volumes"][0]).endswith(":ro")
+        assert "--revision" in vllm["command"]
+        assert vllm["logging"]["options"]["max-file"] == "5"
+
+    assert "8000" in str(compose["services"]["vllm"]["ports"])
+    assert "8002" in str(compose["services"]["vllm-analysis"]["ports"])
+    assert "--language-model-only" in compose["services"]["vllm-analysis"]["command"]
+
+
 def test_model_deletion_emits_audit_event(tmp_path):
     model_dir = tmp_path / "models--example--unused"
     model_dir.mkdir()

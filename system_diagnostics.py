@@ -75,7 +75,7 @@ def get_service_latency(
         return False, 0.0, None
 
 
-def get_vllm_loading_progress() -> dict[str, Any] | None:
+def get_vllm_loading_progress(container_name: str = "olmocr") -> dict[str, Any] | None:
     # Fatal error patterns that indicate vLLM has crashed or failed to load.
     # Checked before positive progress indicators so failures are surfaced
     # instead of showing "loading" indefinitely.
@@ -92,7 +92,7 @@ def get_vllm_loading_progress() -> dict[str, Any] | None:
 
     try:
         res = subprocess.run(
-            ["docker", "logs", "--tail", "50", "olmocr"],
+            ["docker", "logs", "--tail", "50", container_name],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -264,19 +264,23 @@ def get_vllm_loading_progress() -> dict[str, Any] | None:
 
 
 def check_backing_services_data(
-    service_history: dict[str, list[float]] | None = None, vllm_port: int = 8000
+    service_history: dict[str, list[float]] | None = None,
+    vllm_port: int = 8000,
+    analysis_vllm_port: int = 8002,
 ) -> dict[str, Any]:
     if service_history is None:
         service_history = {}
     services_data = {}
     all_healthy = True
     failed_services = []
-    vllm_model = None
+    vllm_models: dict[str, str | None] = {"ocr": None, "analysis": None}
 
-    services = ["postgres", "redis", "minio", "qdrant", "vllm"]
+    services = ["postgres", "redis", "minio", "qdrant", "vllm_ocr", "vllm_analysis"]
     for s in services:
-        if s == "vllm":
-            is_up, latency, extra_info = get_service_latency(s, port=vllm_port)
+        if s == "vllm_ocr":
+            is_up, latency, extra_info = get_service_latency("vllm", port=vllm_port)
+        elif s == "vllm_analysis":
+            is_up, latency, extra_info = get_service_latency("vllm", port=analysis_vllm_port)
         else:
             is_up, latency, extra_info = get_service_latency(s)
 
@@ -287,8 +291,10 @@ def check_backing_services_data(
             if len(service_history[s]) > 8:
                 service_history[s].pop(0)
 
-            if s == "vllm":
-                vllm_model = extra_info
+            if s == "vllm_ocr":
+                vllm_models["ocr"] = extra_info
+            elif s == "vllm_analysis":
+                vllm_models["analysis"] = extra_info
         else:
             all_healthy = False
             failed_services.append(s)
@@ -300,15 +306,17 @@ def check_backing_services_data(
             "latency_history": list(service_history.get(s, [])),
         }
 
-    vllm_progress = None
-    if not services_data["vllm"]["is_up"]:
-        vllm_progress = get_vllm_loading_progress()
+    vllm_progress = {
+        "ocr": None if services_data["vllm_ocr"]["is_up"] else get_vllm_loading_progress("olmocr"),
+        "analysis": None if services_data["vllm_analysis"]["is_up"] else get_vllm_loading_progress("kirag_vllm_analysis"),
+    }
 
     return {
         "all_healthy": all_healthy,
         "services": services_data,
         "failed_services": failed_services,
-        "vllm_model": vllm_model,
+        "vllm_model": vllm_models["ocr"],  # legacy consumers
+        "vllm_models": vllm_models,
         "vllm_progress": vllm_progress,
     }
 

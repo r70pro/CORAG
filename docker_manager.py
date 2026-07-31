@@ -33,7 +33,7 @@ def _decode_stderr(error: subprocess.CalledProcessError) -> str:
     return str(error.stderr or "").strip()
 
 
-def get_docker_status():
+def get_docker_status(container_name: str = CONTAINER_NAME):
     try:
         res = subprocess.run(
             [
@@ -41,7 +41,7 @@ def get_docker_status():
                 "inspect",
                 "-f",
                 f'{{{{.State.Status}}}}\t{{{{index .Config.Labels "{MANAGED_LABEL}"}}}}',
-                CONTAINER_NAME,
+                container_name,
             ],
             capture_output=True,
             text=True,
@@ -70,11 +70,11 @@ def check_server_ready(port):
         return False
 
 
-def get_docker_restart_count() -> int:
+def get_docker_restart_count(container_name: str = CONTAINER_NAME) -> int:
     """Return the managed container's restart count, or zero when unavailable."""
     try:
         result = subprocess.run(
-            ["docker", "inspect", "-f", "{{.RestartCount}}", CONTAINER_NAME],
+            ["docker", "inspect", "-f", "{{.RestartCount}}", container_name],
             capture_output=True,
             text=True,
             check=False,
@@ -86,14 +86,14 @@ def get_docker_restart_count() -> int:
     return 0
 
 
-def get_docker_status_str(port):
+def get_docker_status_str(port, container_name: str = CONTAINER_NAME):
     # Defensively coerce the port so an empty/non-numeric value (e.g. a cleared
     # Gradio Number widget) cannot raise TypeError in check_server_ready.
     try:
         port = int(port)
     except (TypeError, ValueError):
         port = 8000
-    status = get_docker_status()
+    status = get_docker_status(container_name)
     if status == "not_found":
         return "not_found", "<span class='badge-idle'>Docker: Not Created</span>"
     elif status == "foreign":
@@ -105,7 +105,7 @@ def get_docker_status_str(port):
     elif status == "running":
         if check_server_ready(port):
             return "ready", "<span class='badge-success'>Inference Server: Ready</span>"
-        elif get_docker_restart_count() > 0:
+        elif get_docker_restart_count(container_name) > 0:
             return "error", "<span class='badge-failed'>Inference Server: Startup Failed</span>"
         else:
             return "starting", "<span class='badge-running'>Server: Starting / Loading Model</span>"
@@ -113,11 +113,11 @@ def get_docker_status_str(port):
         return "error", "<span class='badge-failed'>Docker: Error</span>"
 
 
-def get_docker_logs(tail: int = 200) -> str:
+def get_docker_logs(tail: int = 200, container_name: str = CONTAINER_NAME) -> str:
     """Fetch stdout/stderr logs from the vLLM docker container."""
     try:
         res = subprocess.run(
-            ["docker", "logs", "--tail", str(int(tail)), "olmocr"],
+            ["docker", "logs", "--tail", str(int(tail)), container_name],
             capture_output=True,
             text=True,
             check=False,
@@ -266,6 +266,11 @@ def start_docker_container():
 
 
 def stop_docker_container():
+    """Stop only the managed vLLM container.
+
+    RAG databases have an independent lifecycle and must remain available when
+    inference is deliberately restarted or reconfigured.
+    """
     status = get_docker_status()
     msg_parts = []
     success = True
@@ -292,17 +297,35 @@ def stop_docker_container():
     else:
         msg_parts.append("Container 'olmocr' is not running.")
 
-    try:
-        from rag_infra_manager import stop_rag_infrastructure
-
-        rag_ok, rag_msg = stop_rag_infrastructure()
-        if not rag_ok:
-            success = False
-        msg_parts.append(f"RAG Infra: {rag_msg}")
-    except Exception as e:
-        msg_parts.append(f"RAG Infra stop error: {e}")
-
     return success, " ".join(msg_parts)
+
+
+def set_vllm_role_running(role: str, running: bool) -> tuple[bool, str]:
+    """Start or stop one of the two managed production vLLM role containers."""
+    containers = {"ocr": "olmocr", "analysis": "kirag_vllm_analysis"}
+    container_name = containers.get(role)
+    if not container_name:
+        return False, f"Unknown vLLM role: {role}"
+    status = get_docker_status(container_name)
+    if status == "foreign":
+        return False, f"Refusing to control unmanaged container '{container_name}'."
+    if status == "not_found":
+        return False, f"Managed {role} vLLM container '{container_name}' is not installed."
+    if status == "error":
+        return False, f"Unable to inspect {role} vLLM container '{container_name}'."
+    if running and status in {"running", "restarting"}:
+        return True, f"{role.upper()} vLLM is already running."
+    if not running and status not in {"running", "restarting"}:
+        return True, f"{role.upper()} vLLM is already stopped."
+    action = "start" if running else "stop"
+    try:
+        subprocess.run(["docker", action, container_name], check=True, capture_output=True)
+        audit_event(f"container_{action}", "success", container=container_name, role=role)
+        return True, f"{role.upper()} vLLM container {action}ed successfully."
+    except subprocess.CalledProcessError as exc:
+        error = _decode_stderr(exc)
+        audit_event(f"container_{action}", "failure", container=container_name, role=role, error=error)
+        return False, f"Failed to {action} {role} vLLM: {error}"
 
 
 def resolve_vllm_image() -> str:
@@ -628,6 +651,23 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tenso
             "com.kirag.component=vllm",
             "--restart",
             "unless-stopped",
+            "--init",
+            "--stop-timeout",
+            os.environ.get("KIRAG_VLLM_STOP_TIMEOUT", "120").removesuffix("s"),
+            "--health-cmd",
+            "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=5)\"",
+            "--health-interval",
+            "15s",
+            "--health-timeout",
+            "6s",
+            "--health-start-period",
+            os.environ.get("KIRAG_VLLM_HEALTH_START_PERIOD", "30m"),
+            "--health-retries",
+            "5",
+            "--log-opt",
+            "max-size=20m",
+            "--log-opt",
+            "max-file=5",
             "--gpus",
             "all",
             "-e",
@@ -828,10 +868,11 @@ def cleanup_docker():
     if os.environ.get("TESTING") == "true":
         audit_event("docker_cleanup", "skipped", reason="testing")
         return
-    # Allow operators to keep the GPU container running across app restarts
-    # (e.g. in a persistent deployment) by setting KEEP_CONTAINERS_ON_EXIT.
-    if os.environ.get("KEEP_CONTAINERS_ON_EXIT") == "true":
-        audit_event("docker_cleanup", "skipped", reason="keep_containers_on_exit")
+    # Persistent services are never owned by an application process.  This
+    # legacy cleanup entry point is fail-closed and requires an explicit opt-in
+    # for old workstation integrations that call it directly.
+    if os.environ.get("KIRAG_ALLOW_APP_INFRA_SHUTDOWN") != "true":
+        audit_event("docker_cleanup", "skipped", reason="persistent_infrastructure")
         return
     status = get_docker_status()
     audit_event("docker_cleanup", "attempt", container=CONTAINER_NAME, status=status)

@@ -71,6 +71,17 @@ def verify_admin_key(
     return provided_key or ""
 
 
+def require_remote_lifecycle_enabled() -> None:
+    """Keep host/container lifecycle control off the normal API surface."""
+    if os.environ.get("TESTING") == "true":
+        return
+    if os.environ.get("KIRAG_ENABLE_REMOTE_LIFECYCLE") != "true":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Remote lifecycle operations are disabled; use systemd on the host",
+        )
+
+
 def require_safe_bind(host: str, *, authenticated: bool | None = None) -> str:
     """Reject non-loopback server binding unless authentication is configured."""
 

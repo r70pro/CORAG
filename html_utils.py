@@ -253,7 +253,8 @@ def make_backing_services_html(data: dict[str, Any]) -> str:
         "redis": "Redis 7.2",
         "minio": "MinIO S3",
         "qdrant": "Qdrant 1.10",
-        "vllm": "vLLM Engine",
+        "vllm_ocr": "vLLM Engine (OCR)",
+        "vllm_analysis": "vLLM Engine (Analysis)",
     }
 
     service_descs = {
@@ -261,12 +262,13 @@ def make_backing_services_html(data: dict[str, Any]) -> str:
         "redis": "port: 6379 | db: 0",
         "minio": "port: 9000 | bucket: pdfs",
         "qdrant": "port: 6333 | collection: cases",
-        "vllm": "port: 8000 | model: ",
+        "vllm_ocr": "port: 8000 | model: ",
+        "vllm_analysis": "port: 8002 | model: ",
     }
 
     html_parts = []
 
-    for s in ["postgres", "qdrant", "redis", "minio", "vllm"]:
+    for s in ["postgres", "qdrant", "redis", "minio", "vllm_ocr", "vllm_analysis"]:
         info = data["services"].get(
             s, {"is_up": False, "latency": 0.0, "extra_info": None, "latency_history": []}
         )
@@ -276,10 +278,12 @@ def make_backing_services_html(data: dict[str, Any]) -> str:
         latency_history = info["latency_history"]
 
         desc = service_descs[s]
-        if s == "vllm":
+        role = s.removeprefix("vllm_") if s.startswith("vllm_") else None
+        role_progress = (data.get("vllm_progress") or {}).get(role) if role else None
+        if role:
             if is_up and extra_info:
                 desc += extra_info
-            elif not is_up and data.get("vllm_progress"):
+            elif not is_up and role_progress:
                 desc += "Loading weights..."
             else:
                 desc += "None Loaded"
@@ -289,11 +293,11 @@ def make_backing_services_html(data: dict[str, Any]) -> str:
         badge_text = "UP" if is_up else "DOWN"
         latency_str = f"{latency:.1f} ms" if is_up else "N/A"
 
-        if not is_up and s == "vllm" and data.get("vllm_progress"):
+        if not is_up and role_progress:
             status_class = "warning"
             badge_class = "warning"
             badge_text = "LOADING"
-            progress = data["vllm_progress"]
+            progress = role_progress
             latency_str = f"Progress: {progress['pct']}%"
 
         sparkline = get_simulated_sparkline(is_up, latency_history)
@@ -341,13 +345,15 @@ def make_backing_services_html(data: dict[str, Any]) -> str:
         if os.path.exists("/.dockerenv") or os.environ.get("IS_DOCKER")
         else "Host OS"
     )
-    vllm_model_name = data.get("vllm_model", "None Loaded")
+    vllm_model_name = data.get("vllm_models", {}).get("ocr") or data.get("vllm_model", "None Loaded")
+    analysis_model_name = data.get("vllm_models", {}).get("analysis") or "None Loaded"
     if not vllm_model_name:
         vllm_model_name = "None Loaded"
 
     metadata_desc = f"""Redis memory: {_html(redis_mem_used)} / {_html(redis_max_mem)}<br>
 Redis query cache TTL: 3600 s<br>
 Multi-modal: {_html(vllm_model_name)}<br>
+Analysis: {_html(analysis_model_name)}<br>
 Environment: {_html(env_str)}"""
 
     html_parts.append(f"""
@@ -379,14 +385,16 @@ def make_system_health_badge_html(data: dict[str, Any]) -> str:
         "redis": "Redis",
         "minio": "MinIO",
         "qdrant": "Qdrant",
-        "vllm": "vLLM",
+        "vllm_ocr": "OCR vLLM",
+        "vllm_analysis": "Analysis vLLM",
     }
     fixes = {
         "postgres": "Start PostgreSQL service/container.",
         "redis": "Start Redis service/container.",
         "minio": "Start MinIO service/container.",
         "qdrant": "Start Qdrant service/container.",
-        "vllm": "Start vLLM service/container.",
+        "vllm_ocr": "Start the OCR vLLM service/container.",
+        "vllm_analysis": "Start the analysis vLLM service/container.",
     }
 
     all_healthy = data["all_healthy"]
@@ -421,8 +429,11 @@ def make_system_health_badge_html(data: dict[str, Any]) -> str:
         fix_instructions = [fixes[s] for s in failed_services]
         fix_str = " ".join(fix_instructions)
 
-        if failed_services == ["vllm"] and vllm_progress:
-            progress = vllm_progress
+        loading_roles = [s for s in failed_services if s.startswith("vllm_")]
+        role_progresses = [vllm_progress.get(s.removeprefix("vllm_")) for s in loading_roles]
+        role_progresses = [progress for progress in role_progresses if progress]
+        if len(loading_roles) == len(failed_services) and role_progresses:
+            progress = role_progresses[0]
             # Distinguish between loading progress and load failure
             if progress.get("failed"):
                 error_label = progress.get("eta", "Unknown Error")
