@@ -49,6 +49,20 @@ from path_security import (
 router = APIRouter(route_class=LimitedUploadRoute)
 logger = logging.getLogger(__name__)
 
+
+@router.delete("/chat/history/{session_id}", response_model=MessageResponse, summary="Delete RAG chat history")
+def delete_chat_history(session_id: str):
+    """Permanently remove the server-side cache for one browser chat thread."""
+    if not session_id or len(session_id) > 128 or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in session_id):
+        raise HTTPException(status_code=422, detail="Invalid chat session ID")
+    try:
+        from rag.cache import clear_chat_history
+
+        clear_chat_history(session_id)
+        return MessageResponse(success=True, message="Chat thread deleted")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Unable to delete chat thread") from exc
+
 # ── Case Management & Deletion ────────────────────────────────────────────────
 
 
@@ -405,9 +419,35 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
     from rag.analyzer import ANALYSIS_MODE_MAP, ContextWindowError, analyze
 
     mode_key = ANALYSIS_MODE_MAP.get(req.mode, req.mode)
+    is_general_knowledge = mode_key == "general_knowledge"
     expose_reasoning = bool(is_admin and req.reasoning_audit)
     date_from = req.date_from.isoformat() if req.date_from else None
     date_to = req.date_to.isoformat() if req.date_to else None
+
+    chat_history: list[dict] = []
+    if req.session_id:
+        try:
+            from rag.cache import get_chat_history
+
+            chat_history = get_chat_history(req.session_id)
+            if is_general_knowledge:
+                # Do not expose case-grounded answers from a previous mode to
+                # the no-document conversation. Preserve only the latest
+                # contiguous General Knowledge exchange.
+                matching_history = []
+                for message in reversed(chat_history):
+                    if message.get("mode") != "general_knowledge":
+                        break
+                    matching_history.append(message)
+                chat_history = list(reversed(matching_history))
+            chat_history = [
+                {"role": message["role"], "content": message["content"]}
+                for message in chat_history
+                if message.get("role") in {"user", "assistant"}
+                and isinstance(message.get("content"), str)
+            ]
+        except Exception:
+            logger.exception("Unable to load RAG chat history")
 
     if req.stream:
 
@@ -444,6 +484,7 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
                         server_url=req.model_url,
                         model_name=req.model_name,
                         top_k=req.top_k,
+                        chat_history=chat_history,
                         run_id_filter=req.case_id,
                         doc_type_filter=req.doc_type,
                         author_filter=req.author,
@@ -462,8 +503,14 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
                         try:
                             from rag.cache import get_chat_history, save_chat_history
                             saved = get_chat_history(req.session_id)
-                            saved.append({"role": "user", "content": req.query})
-                            assistant_message = {"role": "assistant", "content": "".join(answer_parts)}
+                            saved.append(
+                                {"role": "user", "content": req.query, "mode": mode_key}
+                            )
+                            assistant_message = {
+                                "role": "assistant",
+                                "content": "".join(answer_parts),
+                                "mode": mode_key,
+                            }
                             if expose_reasoning and reasoning_audit_parts:
                                 assistant_message["reasoning"] = "".join(reasoning_audit_parts)
                             saved.append(assistant_message)
@@ -485,7 +532,12 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
                     events.put(("error", exc))
 
             threading.Thread(target=produce, name="rag-query-stream", daemon=True).start()
-            yield f"data: {json.dumps({'type': 'status', 'stage': 'starting', 'message': 'Starting RAG analysis…', 'progress': 0.0})}\n\n"
+            starting_message = (
+                "Starting general-knowledge chat without document retrieval…"
+                if is_general_knowledge
+                else "Starting RAG analysis…"
+            )
+            yield f"data: {json.dumps({'type': 'status', 'stage': 'starting', 'message': starting_message, 'progress': 0.0})}\n\n"
 
             while True:
                 try:
@@ -537,6 +589,7 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
                 server_url=req.model_url,
                 model_name=req.model_name,
                 top_k=req.top_k,
+                chat_history=chat_history,
                 run_id_filter=req.case_id,
                 doc_type_filter=req.doc_type,
                 author_filter=req.author,
@@ -576,8 +629,12 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
             try:
                 from rag.cache import get_chat_history, save_chat_history
                 saved = get_chat_history(req.session_id)
-                saved.append({"role": "user", "content": req.query})
-                assistant_message = {"role": "assistant", "content": full_response}
+                saved.append({"role": "user", "content": req.query, "mode": mode_key})
+                assistant_message = {
+                    "role": "assistant",
+                    "content": full_response,
+                    "mode": mode_key,
+                }
                 if expose_reasoning and full_reasoning:
                     assistant_message["reasoning"] = full_reasoning
                 saved.append(assistant_message)

@@ -82,6 +82,12 @@ class AnalysisContextModeRequest(BaseModel):
     extended: bool
 
 
+class StartupModeRequest(BaseModel):
+    """Select and persist the model profile used for this and future sessions."""
+
+    mode: str = Field(pattern="^(analysis_262k|dual_32k|ocr_only)$")
+
+
 class DockerStatusResponse(BaseModel):
     """vLLM container status."""
 
@@ -207,6 +213,9 @@ class SettingsUpdateRequest(BaseModel):
     chunk_overlap: int | None = Field(None, ge=0, le=99_999)
     retrieval_top_k: int | None = Field(None, ge=1, le=100)
     rag_auto_start_infra: bool | None = None
+    startup_mode: str | None = Field(
+        None, pattern="^(analysis_262k|dual_32k|ocr_only)$"
+    )
     use_reranker: bool | None = None
     reranker_model: str | None = Field(None, min_length=1, max_length=512)
     reranker_device: str | None = Field(None, min_length=1, max_length=32)

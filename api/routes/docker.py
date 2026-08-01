@@ -16,6 +16,7 @@ from api.models import (
     DockerModelsResponse,
     DockerStatusResponse,
     MessageResponse,
+    StartupModeRequest,
 )
 
 router = APIRouter()
@@ -34,7 +35,38 @@ async def set_analysis_context_mode(req: AnalysisContextModeRequest):
     success, msg = await asyncio.to_thread(set_extended_analysis_context, req.extended)
     if not success:
         raise HTTPException(status_code=503, detail=msg)
+    from settings_manager import load_settings, save_settings
+    settings = load_settings()
+    settings["startup_mode"] = "analysis_262k" if req.extended else "dual_32k"
+    save_settings(settings)
     return MessageResponse(success=True, message=msg)
+
+
+@router.post(
+    "/startup-mode",
+    response_model=MessageResponse,
+    summary="Select and persist an inference operating mode",
+    dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
+)
+async def set_startup_mode(req: StartupModeRequest):
+    """Apply a workflow-oriented model profile and restore it next launch."""
+    from docker_manager import set_extended_analysis_context, set_vllm_role_running
+    from settings_manager import load_settings, save_settings
+
+    if req.mode == "analysis_262k":
+        success, msg = await asyncio.to_thread(set_extended_analysis_context, True)
+    elif req.mode == "dual_32k":
+        success, msg = await asyncio.to_thread(set_extended_analysis_context, False)
+    else:
+        analysis_ok, analysis_msg = await asyncio.to_thread(set_vllm_role_running, "analysis", False)
+        ocr_ok, ocr_msg = await asyncio.to_thread(set_vllm_role_running, "ocr", True)
+        success, msg = analysis_ok and ocr_ok, f"{analysis_msg} {ocr_msg}"
+    if not success:
+        raise HTTPException(status_code=503, detail=msg)
+    settings = load_settings()
+    settings["startup_mode"] = req.mode
+    save_settings(settings)
+    return MessageResponse(success=True, message=f"Operating mode saved. {msg}")
 
 
 @router.get("/models", response_model=DockerModelsResponse, summary="Get available/cached models")

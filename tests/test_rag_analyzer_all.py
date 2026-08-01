@@ -36,6 +36,7 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         self.assertEqual(
             set(modes),
             {
+                "general_knowledge",
                 "free_qa",
                 "timeline",
                 "injury_summary",
@@ -66,6 +67,42 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         self.assertEqual(len(msgs), 8)
         self.assertEqual(msgs[1]["content"], "q4")
         self.assertEqual(msgs[-1]["role"], "user")
+
+    def test_build_general_knowledge_prompt_has_no_rag_context_or_provenance(self):
+        msgs = rag_anz.build_prompt(
+            "What is Markdown?",
+            "secret retrieved excerpt",
+            "general_knowledge",
+            [{"role": "assistant", "content": "Previous answer"}],
+        )
+
+        self.assertEqual(msgs[-1], {"role": "user", "content": "What is Markdown?"})
+        self.assertIn("No case documents", msgs[0]["content"])
+        self.assertNotIn("NON-NEGOTIABLE PROVENANCE", msgs[0]["content"])
+        self.assertNotIn("secret retrieved excerpt", str(msgs))
+
+    @patch.object(rag_anz, "query_llm", return_value="Markdown is lightweight markup.")
+    @patch.object(rag_anz, "search_comprehensive")
+    @patch.object(rag_anz, "search_similar")
+    def test_general_knowledge_analyze_bypasses_retrieval(
+        self, mock_search_similar, mock_search_comprehensive, mock_query_llm
+    ):
+        result = "".join(
+            rag_anz.analyze(
+                "What is Markdown?",
+                mode="general_knowledge",
+                model_name="qwen3-test",
+                stream=False,
+            )
+        )
+
+        self.assertEqual(result, "Markdown is lightweight markup.")
+        mock_search_similar.assert_not_called()
+        mock_search_comprehensive.assert_not_called()
+        messages = mock_query_llm.call_args.args[0]
+        self.assertEqual(messages[-1]["content"], "What is Markdown?")
+        self.assertNotIn("DOCUMENT EXCERPTS", str(messages))
+        self.assertTrue(mock_query_llm.call_args.kwargs["enable_thinking"])
 
     @patch("httpx.stream")
     def test_query_llm_streaming_success(self, mock_stream):

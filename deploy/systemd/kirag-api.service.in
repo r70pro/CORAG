@@ -1,7 +1,7 @@
 [Unit]
 Description=KIRAG FastAPI service
-Requires=kirag-infrastructure.service
-After=kirag-infrastructure.service network-online.target
+Wants=kirag-infrastructure.service
+After=network-online.target
 StartLimitIntervalSec=300
 StartLimitBurst=5
 

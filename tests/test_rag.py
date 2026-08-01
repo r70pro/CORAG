@@ -160,6 +160,7 @@ A/Prof. Eugene T. Ek
         self.assertEqual(
             set(modes),
             {
+                "general_knowledge",
                 "free_qa",
                 "timeline",
                 "injury_summary",

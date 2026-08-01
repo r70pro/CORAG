@@ -230,6 +230,17 @@ def _map_equivalent(model_name: str, loaded_models: list) -> str:
 # ── System prompt templates ───────────────────────────────────
 
 SYSTEM_PROMPTS = {
+    "general_knowledge": """You are a general-purpose assistant operating in General Knowledge mode.
+
+Answer the user's question using your general knowledge and reasoning. No case documents or retrieved excerpts are available in this mode.
+
+INSTRUCTIONS:
+- Do not claim that your answer is based on the user's indexed documents
+- Do not generate document citations, PDF page references, source tags, or case-specific facts
+- If the user asks about a particular case or document, explain that General Knowledge mode cannot inspect it and ask them to use an appropriate RAG mode
+- Clearly distinguish established information from uncertainty or opinion
+- For medical, legal, or other high-stakes questions, provide general educational information rather than personalised professional advice
+- Use clear examples where they improve understanding""",
     "free_qa": """You are a medicolegal document analyst with expertise in personal injury, workers' compensation, and clinical documentation. You have been provided with excerpts from clinical records, specialist reports, and correspondence.
 
 INSTRUCTIONS:
@@ -327,6 +338,8 @@ NON-NEGOTIABLE PROVENANCE RULES:
 
 
 ANALYSIS_MODE_MAP = {
+    "🌐 General Knowledge": "general_knowledge",
+    "general_knowledge": "general_knowledge",
     "💬 Free Q&A": "free_qa",
     "free_qa": "free_qa",
     "📅 Timeline Generator": "timeline",
@@ -355,6 +368,7 @@ ANALYSIS_MODE_MAP = {
 def get_analysis_modes():
     """Get available analysis modes and their descriptions."""
     return {
+        "general_knowledge": "🌐 General Knowledge — Chat without document retrieval",
         "free_qa": "💬 Free Q&A — Ask anything about the documents",
         "timeline": "📅 Timeline Generator — Extract chronological events",
         "injury_summary": "🏥 Injury Summary — Structured injury/treatment report",
@@ -391,7 +405,9 @@ def build_prompt(
     Returns:
         List of message dicts for OpenAI Chat Completions API.
     """
-    system_prompt = SYSTEM_PROMPTS.get(mode, SYSTEM_PROMPTS["free_qa"]) + PROVENANCE_INSTRUCTIONS
+    system_prompt = SYSTEM_PROMPTS.get(mode, SYSTEM_PROMPTS["free_qa"])
+    if mode != "general_knowledge":
+        system_prompt += PROVENANCE_INSTRUCTIONS
 
     messages = [{"role": "system", "content": system_prompt}]
 
@@ -400,7 +416,11 @@ def build_prompt(
         for msg in chat_history[-6:]:  # Keep last 6 messages to manage context window
             messages.append(msg)
 
-    # Build the user message with context
+    if mode == "general_knowledge":
+        messages.append({"role": "user", "content": query})
+        return messages
+
+    # Build the user message with retrieved document context.
     user_message = f"""DOCUMENT EXCERPTS:
 
 {context}
@@ -782,33 +802,37 @@ def analyze(
     """
     policy = get_analysis_policy(mode)
     mode = policy.mode
-    top_k = max(top_k, policy.min_top_k)
-    if "score_threshold" not in search_kwargs:
-        search_kwargs["score_threshold"] = policy.score_threshold
+    results: list[dict] = []
+    if policy.uses_retrieval:
+        top_k = max(top_k, policy.min_top_k)
+        if "score_threshold" not in search_kwargs:
+            search_kwargs["score_threshold"] = policy.score_threshold
 
-    # Step 1: Retrieve relevant chunks
-    search_function = search_comprehensive if policy.comprehensive_retrieval else search_similar
-    comprehensive_kwargs = {"search_function": search_similar} if policy.comprehensive_retrieval else {}
-    results = search_function(
-        query=query,
-        top_k=top_k,
-        run_id_filter=run_id_filter,
-        doc_type_filter=doc_type_filter,
-        author_filter=author_filter,
-        date_from=date_from,
-        date_to=date_to,
-        progress_callback=progress_callback,
-        **comprehensive_kwargs,
-        **search_kwargs,
-    )
+        # Step 1: Retrieve relevant chunks. General Knowledge bypasses this block.
+        search_function = search_comprehensive if policy.comprehensive_retrieval else search_similar
+        comprehensive_kwargs = {"search_function": search_similar} if policy.comprehensive_retrieval else {}
+        results = search_function(
+            query=query,
+            top_k=top_k,
+            run_id_filter=run_id_filter,
+            doc_type_filter=doc_type_filter,
+            author_filter=author_filter,
+            date_from=date_from,
+            date_to=date_to,
+            progress_callback=progress_callback,
+            **comprehensive_kwargs,
+            **search_kwargs,
+        )
 
-    if not results:
-        yield "No relevant document excerpts found in the indexed corpus. "
-        yield "Please ensure documents have been indexed using the 'Build Index' button."
-        return
+        if not results:
+            yield "No relevant document excerpts found in the indexed corpus. "
+            yield "Please ensure documents have been indexed using the 'Build Index' button."
+            return
 
-    if progress_callback:
-        progress_callback(0.82, f"Preparing {len(results)} retrieved excerpts for analysis…")
+        if progress_callback:
+            progress_callback(0.82, f"Preparing {len(results)} retrieved excerpts for analysis…")
+    elif progress_callback:
+        progress_callback(0.82, "Preparing general-knowledge conversation…")
 
     # Resolve the model used for analysis before calculating its prompt budget.
     resolved_model = model_name
@@ -916,12 +940,12 @@ def analyze(
         return num_tokens
 
     # Build prompt and check length
-    context = format_context_for_llm(results)
+    context = format_context_for_llm(results) if policy.uses_retrieval else ""
     messages = build_prompt(query, context, mode, chat_history)
     estimated_total = estimate_tokens(messages)
 
     warning_msg = None
-    if estimated_total > max_prompt_tokens:
+    if estimated_total > max_prompt_tokens and policy.uses_retrieval:
         # Drop the least-relevant chunks (results are pre-sorted by score,
         # most relevant first) until the prompt fits, keeping at least the
         # single most relevant chunk. Linear scan from the full set down to 1
@@ -942,9 +966,13 @@ def analyze(
             f"({estimated_total} estimated tokens vs limit of {max_prompt_tokens}). "
             f"It has been truncated to the top {len(results)} most relevant chunks.\n\n"
         )
+    elif estimated_total > max_prompt_tokens:
+        raise ContextWindowError(
+            "The general-knowledge prompt and recent chat history exceed the model context window"
+        )
 
     # Step 2: Format context (using final resolved results)
-    context = format_context_for_llm(results)
+    context = format_context_for_llm(results) if policy.uses_retrieval else ""
 
     # Step 3: Build prompt (using final resolved context)
     messages = build_prompt(query, context, mode, chat_history)
@@ -958,7 +986,12 @@ def analyze(
 
     # Step 4: Query LLM
     if progress_callback:
-        progress_callback(0.9, "Generating the source-grounded answer…")
+        generation_message = (
+            "Generating the source-grounded answer…"
+            if policy.uses_retrieval
+            else "Generating a general-knowledge answer without document retrieval…"
+        )
+        progress_callback(0.9, generation_message)
     if model_fallback_warning:
         yield model_fallback_warning
 
@@ -969,13 +1002,20 @@ def analyze(
             messages, server_url, resolved_model, max_tokens=requested_generation_tokens,
             enable_thinking=policy.enable_thinking, reasoning_callback=reasoning_callback,
         )
-        yield from replace_source_tags_streaming(raw_stream, results)
+        if policy.uses_retrieval:
+            yield from replace_source_tags_streaming(raw_stream, results)
+        else:
+            yield from raw_stream
     else:
         response_text = query_llm(
             messages, server_url, resolved_model, max_tokens=requested_generation_tokens,
             enable_thinking=policy.enable_thinking, reasoning_callback=reasoning_callback,
         )
-        processed_text = replace_source_tags_in_string(response_text, results)
+        processed_text = (
+            replace_source_tags_in_string(response_text, results)
+            if policy.uses_retrieval
+            else response_text
+        )
         if warning_msg:
             yield warning_msg + processed_text
         else:

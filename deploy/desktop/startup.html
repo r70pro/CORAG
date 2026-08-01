@@ -30,7 +30,7 @@
 <body>
   <main>
     <h1>KIRAG is starting</h1>
-    <p class="lead">The local AI models are loading. A cold start can take 5–7 minutes; this page will open the workstation automatically.</p>
+    <p class="lead">The application is opening now. AI models will continue loading in the background and can be selected in the workstation.</p>
     <div class="progress" aria-label="Startup in progress"><span></span></div>
     <ol>
       <li id="ocr">OCR model</li>
@@ -46,7 +46,7 @@
     const services = [
       ['ocr', 'http://127.0.0.1:8000/v1/models'],
       ['analysis', 'http://127.0.0.1:8002/v1/models'],
-      ['api', 'http://127.0.0.1:8001/readyz'],
+      ['api', 'http://127.0.0.1:8001/livez'],
       ['frontend', appUrl]
     ];
     const started = Date.now();

@@ -102,6 +102,16 @@ export async function fetchCaseTimeline(runId: string) {
   }
 }
 
+export async function deleteRagChatHistory(sessionId: string) {
+  try {
+    return await requestJson<ApiResult>(`/api/rag/chat/history/${apiPathSegment(sessionId)}`, {
+      method: "DELETE",
+    });
+  } catch (error) {
+    return failedResult(error);
+  }
+}
+
 export async function fetchPipelineRuns() {
   try {
     return await requestJson<ApiResult[]>("/api/pipeline/runs");
@@ -146,6 +156,14 @@ export async function setVllmRoleRunning(role: "ocr" | "analysis", running: bool
 export async function setExtendedAnalysisContext(extended: boolean) {
   try {
     return await jsonPost("/api/docker/analysis/context-mode", { extended });
+  } catch (error) {
+    return failedResult(error);
+  }
+}
+
+export async function setStartupMode(mode: "analysis_262k" | "dual_32k" | "ocr_only") {
+  try {
+    return await jsonPost("/api/docker/startup-mode", { mode });
   } catch (error) {
     return failedResult(error);
   }

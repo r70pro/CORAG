@@ -25,7 +25,7 @@ import {
   fetchSettings,
   updateSettings,
   setVllmRoleRunning,
-  setExtendedAnalysisContext,
+  setStartupMode,
 } from "@/lib/api";
 
 export type ViewType =
@@ -231,11 +231,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
     await loadDockerState();
   };
 
-  const handleAnalysisContextMode = async (extended: boolean) => {
-    setDockerMsg(extended ? "Stopping OCR and enabling 262K analysis context..." : "Restoring OCR and 32K analysis context...");
-    setDockerStatuses({ ocr: extended ? "stopping" : "starting", analysis: "starting" });
-    const res = await setExtendedAnalysisContext(extended);
-    setDockerMsg(res.message || "Context mode switch requested.");
+  const handleStartupMode = async (mode: "analysis_262k" | "dual_32k" | "ocr_only") => {
+    setDockerMsg("Applying and saving operating mode...");
+    const res = await setStartupMode(mode);
+    setDockerMsg(res.message || "Operating mode requested.");
     await loadDockerState();
   };
 
@@ -325,14 +324,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </div>
 
               <div className="rounded-lg border border-indigo-800/50 bg-indigo-950/20 p-2 space-y-1.5">
-                <div className="text-[10px] font-semibold text-indigo-200">Analysis context allocation</div>
-                <button type="button" onClick={() => handleAnalysisContextMode(true)} className="w-full px-2 py-1 rounded bg-indigo-700 hover:bg-indigo-600 text-white font-semibold">
-                  Stop OCR & Enable 262K
+                <div className="text-[10px] font-semibold text-indigo-200">Operating mode (restored next launch)</div>
+                <button type="button" onClick={() => handleStartupMode("analysis_262k")} className="w-full px-2 py-1 rounded bg-indigo-700 hover:bg-indigo-600 text-white font-semibold">
+                  Analyse Existing Cases — 262K
                 </button>
-                <button type="button" onClick={() => handleAnalysisContextMode(false)} className="w-full px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700">
-                  Restore OCR & 32K Mode
+                <button type="button" onClick={() => handleStartupMode("dual_32k")} className="w-full px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700">
+                  Ingest + Analyse — OCR / 32K
                 </button>
-                <p className="text-[9px] leading-snug text-slate-400">262K mode dedicates the shared GPU to analysis. OCR ingestion is unavailable until dual-model mode is restored.</p>
+                <button type="button" onClick={() => handleStartupMode("ocr_only")} className="w-full px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700">
+                  OCR Batch Only
+                </button>
+                <p className="text-[9px] leading-snug text-slate-400">The interface remains available while the selected model profile loads.</p>
               </div>
 
               <div className="text-[10px] text-slate-400 border-t border-slate-800 pt-2">OCR provisioning settings (analysis is managed independently by the production stack).</div>

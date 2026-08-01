@@ -116,7 +116,7 @@ app.add_middleware(UploadRequestLimitMiddleware)
 def _authentication_error(request: Request):
     """Return a typed authentication error, or ``None`` when access is allowed."""
 
-    if request.url.path in {"/health", "/livez", "/readyz"} or request.method == "OPTIONS":
+    if request.url.path in {"/health", "/livez", "/readyz", "/inference/ready"} or request.method == "OPTIONS":
         return None
 
     auth_header = request.headers.get("authorization", "")
@@ -299,32 +299,36 @@ def liveness_check():
 
 @app.get("/readyz", include_in_schema=False, dependencies=[])
 def readiness_check():
-    """Return 503 until all dependencies, including vLLM, are usable."""
-    from settings_manager import load_settings
+    """Return 503 until core data services are usable; inference is feature-gated."""
     from system_diagnostics import check_backing_services_data
 
     backing = check_backing_services_data()
-    settings = load_settings()
-    inference_endpoints = {
-        "vllm_ocr": settings.get("server_url", "http://127.0.0.1:8000/v1"),
-        "vllm_analysis": settings.get("analysis_server_url", "http://127.0.0.1:8002/v1"),
-    }
-    failed_inference = [
-        name
-        for name, endpoint in inference_endpoints.items()
-        if not _inference_endpoint_ready(endpoint)
+    failed_core = [
+        name for name in backing.get("failed_services", []) if not name.startswith("vllm_")
     ]
-    if not backing.get("all_healthy", False) or failed_inference:
+    if failed_core:
         raise HTTPException(
             status_code=503,
             detail={
                 "status": "not_ready",
                 "failed_services": sorted(
-                    set(backing.get("failed_services", [])) | set(failed_inference)
+                    set(failed_core)
                 ),
             },
         )
     return {"status": "ready"}
+
+
+@app.get("/inference/ready", include_in_schema=False, dependencies=[])
+def inference_readiness_check():
+    """Report role-specific inference readiness without blocking the app shell."""
+    from settings_manager import load_settings
+    settings = load_settings()
+    roles = {
+        "ocr": _inference_endpoint_ready(settings.get("server_url", "http://127.0.0.1:8000/v1")),
+        "analysis": _inference_endpoint_ready(settings.get("analysis_server_url", "http://127.0.0.1:8002/v1")),
+    }
+    return {"status": "ready" if all(roles.values()) else "degraded", "roles": roles}
 
 
 @app.get(

@@ -22,6 +22,15 @@ def test_extraction_modes_disable_thinking():
         assert policy.comprehensive_retrieval is False
 
 
+def test_general_knowledge_disables_retrieval_and_enables_thinking():
+    policy = get_analysis_policy("general_knowledge")
+    assert policy.enable_thinking is True
+    assert policy.uses_retrieval is False
+    assert policy.comprehensive_retrieval is False
+    assert policy.min_top_k == 0
+    assert policy.score_threshold == 0.0
+
+
 def test_comprehensive_retrieval_deduplicates_and_preserves_facets():
     def fake_search(query, **kwargs):
         return [{"chunk_id": "same", "doc_id": "d1", "score": 0.8, "text": query}]

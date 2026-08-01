@@ -172,6 +172,9 @@ def load_settings(*, include_env_secrets: bool = True):
         "chunk_overlap": 100,
         "retrieval_top_k": 15,
         "rag_auto_start_infra": False,
+        # Model profile restored by the supervised infrastructure service.
+        # Analysis-only avoids loading OCR unless ingestion is requested.
+        "startup_mode": "analysis_262k",
         "use_reranker": True,
         "reranker_model": "BAAI/bge-reranker-large",
         "reranker_device": "cuda",

@@ -16,6 +16,8 @@ import {
   FileCheck,
   Terminal,
   LoaderCircle,
+  Copy,
+  BookOpen,
 } from "lucide-react";
 import {
   triggerRagChatSSE,
@@ -29,6 +31,7 @@ import {
   exportChatHistory,
   updateSettings,
   fetchSettings,
+  deleteRagChatHistory,
 } from "@/lib/api";
 import { ResizableSplit } from "@/components/ResizableSplit";
 
@@ -46,6 +49,43 @@ interface ChatMessage {
     refNo: string;
   }[];
 }
+
+interface ChatThread {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: ChatMessage[];
+  analysisMode: string;
+  activeCase: string;
+}
+
+const CHAT_THREADS_STORAGE_KEY = "kirag_rag_chat_threads_v1";
+
+const createId = () =>
+  typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `rag-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+const welcomeMessage = (): ChatMessage => ({
+  id: createId(),
+  sender: "bot",
+  text: "Hello! I am your AI Medicolegal Assistant. Select an indexed case or enter a prompt below to cross-reference medical records.",
+  timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+});
+
+const createThread = (): ChatThread => {
+  const now = new Date().toISOString();
+  return {
+    id: createId(),
+    title: "New chat",
+    createdAt: now,
+    updatedAt: now,
+    messages: [welcomeMessage()],
+    analysisMode: "💬 Free Q&A",
+    activeCase: "",
+  };
+};
 
 interface InfraStatus {
   postgres: string;
@@ -69,6 +109,7 @@ interface AvailableRunItem {
 }
 
 const ANALYSIS_MODES = [
+  "🌐 General Knowledge",
   "💬 Free Q&A",
   "📋 Timeline",
   "🏥 Injury Summary",
@@ -85,15 +126,16 @@ interface RagChatProps { activeRole?: string }
 export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewer" }) => {
   const ragRequestRef = useRef<ReturnType<typeof triggerRagChatSSE> | null>(null);
   const reasoningLogRef = useRef<string>("");
-  const sessionIdRef = useRef<string>(
-    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-      ? crypto.randomUUID()
-      : `rag-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-  );
+  const [initialThread] = useState<ChatThread>(createThread);
+  const sessionIdRef = useRef<string>(initialThread.id);
+  const [persistenceReady, setPersistenceReady] = useState(false);
+  const [threads, setThreads] = useState<ChatThread[]>([initialThread]);
+  const [activeThreadId, setActiveThreadId] = useState<string>(initialThread.id);
   const [showControls, setShowControls] = useState<boolean>(true);
   const [prompt, setPrompt] = useState<string>("");
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [analysisMode, setAnalysisMode] = useState<string>("💬 Free Q&A");
+  const isGeneralKnowledge = analysisMode === "🌐 General Knowledge";
   const [activeCase, setActiveCase] = useState<string>("");
 
   // Infra state
@@ -151,14 +193,61 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
     "RAG processing workstation ready.",
   ]);
 
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: "1",
-      sender: "bot",
-      text: "Hello! I am your AI Medicolegal Assistant. Select an indexed case or enter a prompt below to cross-reference medical records.",
-      timestamp: "10:00 AM",
-    },
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>(initialThread.messages);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [visibleSources, setVisibleSources] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(CHAT_THREADS_STORAGE_KEY);
+      const parsed = stored ? JSON.parse(stored) : null;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const validThreads = parsed.filter((thread): thread is ChatThread =>
+          thread && typeof thread.id === "string" && Array.isArray(thread.messages),
+        );
+        if (validThreads.length > 0) {
+          const mostRecent = [...validThreads].sort((a, b) =>
+            String(b.updatedAt).localeCompare(String(a.updatedAt)),
+          )[0];
+          // Restore the external browser store only after hydration.
+          // eslint-disable-next-line react-hooks/set-state-in-effect
+          setThreads(validThreads);
+          setActiveThreadId(mostRecent.id);
+          sessionIdRef.current = mostRecent.id;
+          setMessages(mostRecent.messages);
+          setAnalysisMode(mostRecent.analysisMode || "💬 Free Q&A");
+          setActiveCase(mostRecent.activeCase || "");
+        }
+      }
+    } catch {
+      localStorage.removeItem(CHAT_THREADS_STORAGE_KEY);
+    } finally {
+      setPersistenceReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!persistenceReady) return;
+    // Keep the thread index and its localStorage representation atomic.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setThreads((current) => {
+      const now = new Date().toISOString();
+      const firstUserMessage = messages.find((message) => message.sender === "user")?.text.trim();
+      const updated = current.map((thread) => thread.id === activeThreadId
+        ? {
+            ...thread,
+            title: firstUserMessage ? firstUserMessage.slice(0, 60) : "New chat",
+            updatedAt: now,
+            messages,
+            analysisMode,
+            activeCase,
+          }
+        : thread,
+      );
+      localStorage.setItem(CHAT_THREADS_STORAGE_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }, [activeCase, activeThreadId, analysisMode, messages, persistenceReady]);
 
   const handleIndexSelectedRun = () => {
     const targetDir = selectedRunDir || (availableRuns.length > 0 ? availableRuns[0].run_dir : "");
@@ -303,7 +392,9 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
       id: botMsgId,
       sender: "bot",
       text: "",
-      activity: "Starting RAG analysis…",
+      activity: isGeneralKnowledge
+        ? "Starting general-knowledge chat without document retrieval…"
+        : "Starting RAG analysis…",
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     };
 
@@ -335,14 +426,14 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
         model_url: modelUrl,
         model_name: modelName,
         top_k: topK,
-        case_id: activeCase || undefined,
-        doc_type: filterDocType || undefined,
-        author: filterAuthor || undefined,
-        date_from: filterDateFrom || undefined,
-        date_to: filterDateTo || undefined,
-        use_reranker: useReranker,
-        reranker_model: rerankerModel,
-        reranker_device: rerankerDevice,
+        case_id: isGeneralKnowledge ? undefined : activeCase || undefined,
+        doc_type: isGeneralKnowledge ? undefined : filterDocType || undefined,
+        author: isGeneralKnowledge ? undefined : filterAuthor || undefined,
+        date_from: isGeneralKnowledge ? undefined : filterDateFrom || undefined,
+        date_to: isGeneralKnowledge ? undefined : filterDateTo || undefined,
+        use_reranker: isGeneralKnowledge ? false : useReranker,
+        reranker_model: isGeneralKnowledge ? undefined : rerankerModel,
+        reranker_device: isGeneralKnowledge ? undefined : rerankerDevice,
         reasoning_audit: activeRole === "Admin",
         session_id: sessionIdRef.current,
         stream: true,
@@ -418,6 +509,54 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
     setMessages([]);
   }, [isStreaming]);
 
+  const handleSelectThread = (threadId: string) => {
+    const thread = threads.find((candidate) => candidate.id === threadId);
+    if (!thread || thread.id === activeThreadId) return;
+    ragRequestRef.current?.cancel("RAG chat thread changed");
+    ragRequestRef.current = null;
+    setIsStreaming(false);
+    setActiveThreadId(thread.id);
+    sessionIdRef.current = thread.id;
+    setMessages(thread.messages);
+    setAnalysisMode(thread.analysisMode || "💬 Free Q&A");
+    setActiveCase(thread.activeCase || "");
+    setVisibleSources(new Set());
+  };
+
+  const handleNewThread = () => {
+    ragRequestRef.current?.cancel("A new RAG chat thread was created");
+    ragRequestRef.current = null;
+    setIsStreaming(false);
+    const thread = createThread();
+    setThreads((current) => [...current, thread]);
+    setActiveThreadId(thread.id);
+    sessionIdRef.current = thread.id;
+    setMessages(thread.messages);
+    setAnalysisMode(thread.analysisMode);
+    setActiveCase(thread.activeCase);
+    setVisibleSources(new Set());
+  };
+
+  const handleDeleteThread = () => {
+    const currentThread = threads.find((thread) => thread.id === activeThreadId);
+    if (!currentThread || !window.confirm(`Delete chat thread “${currentThread.title}”? This cannot be undone.`)) return;
+    ragRequestRef.current?.cancel("RAG chat thread deleted");
+    ragRequestRef.current = null;
+    setIsStreaming(false);
+    const remaining = threads.filter((thread) => thread.id !== activeThreadId);
+    void deleteRagChatHistory(currentThread.id);
+    const nextThread = remaining.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] || createThread();
+    const nextThreads = remaining.length > 0 ? remaining : [nextThread];
+    localStorage.setItem(CHAT_THREADS_STORAGE_KEY, JSON.stringify(nextThreads));
+    setThreads(nextThreads);
+    setActiveThreadId(nextThread.id);
+    sessionIdRef.current = nextThread.id;
+    setMessages(nextThread.messages);
+    setAnalysisMode(nextThread.analysisMode || "💬 Free Q&A");
+    setActiveCase(nextThread.activeCase || "");
+    setVisibleSources(new Set());
+  };
+
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
       if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "n") {
@@ -444,6 +583,33 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
     await exportChatHistory(historyPayload, analysisMode, activeCase, format, activeRole === "Admin");
   };
 
+  const handleCopyResponse = async (message: ChatMessage) => {
+    await navigator.clipboard.writeText(message.text);
+    setCopiedMessageId(message.id);
+    window.setTimeout(() => setCopiedMessageId((id) => id === message.id ? null : id), 1600);
+  };
+
+  const handleDownloadResponse = (message: ChatMessage) => {
+    const blob = new Blob([message.text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `kirag-response-${message.id}.txt`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const toggleSources = (messageId: string) => {
+    setVisibleSources((current) => {
+      const next = new Set(current);
+      if (next.has(messageId)) next.delete(messageId);
+      else next.add(messageId);
+      return next;
+    });
+  };
+
   return (
     <div className="p-4 md:p-6 space-y-4 w-full h-full flex flex-col min-h-0 overflow-hidden">
       {/* Page Header */}
@@ -455,13 +621,15 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
             </div>
             <div>
               <h2 className="text-lg font-bold text-slate-100 tracking-wide flex items-center gap-2">
-                RAG Processing
+                {isGeneralKnowledge ? "General Knowledge Chat" : "RAG Processing"}
                 <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded-md bg-indigo-950 text-indigo-300 border border-indigo-800/50">
-                  Citation Grounded
+                  {isGeneralKnowledge ? "No Document Retrieval" : "Citation Grounded"}
                 </span>
               </h2>
               <p className="text-xs text-slate-400">
-                Multimodal RAG query engine, hybrid search, reranking, and citation-backed answer generation
+                {isGeneralKnowledge
+                  ? "Conversation using the analysis model's learned knowledge; indexed documents are not searched"
+                  : "Multimodal RAG query engine, hybrid search, reranking, and citation-backed answer generation"}
               </p>
             </div>
           </div>
@@ -477,13 +645,17 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
           <div className="flex items-center space-x-1.5 bg-slate-950/80 border border-slate-800 rounded-xl px-2.5 py-1 text-xs font-mono text-slate-300">
             <span className="text-slate-500">Reranker:</span>
             <span className="text-emerald-300 font-bold">
-              {useReranker ? `Active (${rerankerDevice.toUpperCase()})` : "Disabled"}
+              {isGeneralKnowledge
+                ? "Not used"
+                : useReranker ? `Active (${rerankerDevice.toUpperCase()})` : "Disabled"}
             </span>
           </div>
 
           <div className="flex items-center space-x-1.5 bg-slate-950/80 border border-slate-800 rounded-xl px-2.5 py-1 text-xs font-mono text-slate-300">
             <span className="text-slate-500">Top-K:</span>
-            <span className="text-cyan-300 font-bold">{topK} chunks</span>
+            <span className="text-cyan-300 font-bold">
+              {isGeneralKnowledge ? "Not used" : `${topK} chunks`}
+            </span>
           </div>
 
           <button
@@ -764,9 +936,12 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
                   <select
                     value={activeCase}
                     onChange={(e) => setActiveCase(e.target.value)}
+                    disabled={isGeneralKnowledge}
                     className="bg-slate-900 border border-slate-700 rounded-xl px-3 py-1 text-xs text-slate-200 cursor-pointer"
                   >
-                    <option value="">📁 Select Active Case Context</option>
+                    <option value="">
+                      {isGeneralKnowledge ? "🌐 No case context in this mode" : "📁 Select Active Case Context"}
+                    </option>
                     {availableRuns.map((r, i) => (
                       <option key={i} value={r.run_id || r.run_dir || r.display_name}>
                         {r.display_name}
@@ -777,6 +952,17 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
 
                 {/* Export Buttons */}
                 <div className="flex flex-wrap items-center gap-1.5">
+                  <select aria-label="Chat thread" value={activeThreadId} onChange={(event) => handleSelectThread(event.target.value)} className="max-w-64 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-slate-200 cursor-pointer">
+                    {[...threads].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((thread) => (
+                      <option key={thread.id} value={thread.id}>{thread.title}</option>
+                    ))}
+                  </select>
+                  <button type="button" onClick={handleNewThread} aria-label="New Chat" className="px-2.5 py-1 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 font-semibold text-[11px] flex items-center gap-1 border border-indigo-500/40 cursor-pointer select-none">
+                    <MessageSquareText className="w-3 h-3" /> New Chat
+                  </button>
+                  <button type="button" onClick={handleDeleteThread} aria-label="Delete Chat Thread" className="px-2.5 py-1 rounded-lg bg-rose-950/40 hover:bg-rose-900/50 text-rose-300 font-semibold text-[11px] flex items-center gap-1 border border-rose-800/60 cursor-pointer select-none">
+                    <Trash2 className="w-3 h-3" /> Delete Thread
+                  </button>
                   <button
                     type="button"
                     onClick={handleClearChat}
@@ -842,7 +1028,7 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
                           )}
 
                           <div
-                            className={`max-w-2xl p-4 rounded-2xl text-xs leading-relaxed ${
+                            className={`w-[80%] max-w-none p-4 rounded-2xl text-xs leading-relaxed ${
                               msg.sender === "user"
                                 ? "bg-indigo-600 text-white shadow-md"
                                 : "bg-slate-900/90 border border-slate-800 text-slate-200"
@@ -862,12 +1048,12 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
                               </div>
                             )}
 
-                            {msg.sender === "bot" && msg.verificationDetails && (
+                            {msg.sender === "bot" && visibleSources.has(msg.id) && (
                               <div className="mt-3 pt-3 border-t border-slate-800 space-y-1.5">
                                 <div className="text-[10px] font-bold text-emerald-400 flex items-center gap-1">
-                                  <FileCheck className="w-3 h-3 pointer-events-none" /> Exact Source Verification Details:
+                                  <FileCheck className="w-3 h-3 pointer-events-none" /> Sources
                                 </div>
-                                {msg.verificationDetails.map((v, idx) => (
+                                {msg.verificationDetails?.map((v, idx) => (
                                   <div
                                     key={idx}
                                     className="bg-slate-950/60 p-2 rounded-lg border border-slate-800 text-[11px] text-slate-300 flex justify-between items-center"
@@ -879,7 +1065,21 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
                                       {v.pageRange}
                                     </span>
                                   </div>
-                                ))}
+                                )) || <div className="text-[11px] text-slate-400">No structured source details are available for this response.</div>}
+                              </div>
+                            )}
+
+                            {msg.sender === "bot" && msg.text && (
+                              <div className="mt-3 pt-2 border-t border-slate-800/80 flex flex-wrap items-center gap-1.5">
+                                <button type="button" onClick={() => void handleCopyResponse(msg)} aria-label="Copy Response" className="px-2 py-1 rounded-md border border-slate-700 bg-slate-800/70 hover:bg-slate-700 text-[10px] text-slate-300 flex items-center gap-1">
+                                  <Copy className="w-3 h-3" /> {copiedMessageId === msg.id ? "Copied" : "Copy Response"}
+                                </button>
+                                <button type="button" onClick={() => handleDownloadResponse(msg)} aria-label="Download Response" className="px-2 py-1 rounded-md border border-slate-700 bg-slate-800/70 hover:bg-slate-700 text-[10px] text-slate-300 flex items-center gap-1">
+                                  <Download className="w-3 h-3" /> Download Response
+                                </button>
+                                <button type="button" onClick={() => toggleSources(msg.id)} aria-label="Sources" aria-expanded={visibleSources.has(msg.id)} className="px-2 py-1 rounded-md border border-slate-700 bg-slate-800/70 hover:bg-slate-700 text-[10px] text-slate-300 flex items-center gap-1">
+                                  <BookOpen className="w-3 h-3" /> Sources
+                                </button>
                               </div>
                             )}
 
@@ -899,7 +1099,9 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
                     <div className="p-4 border-t border-slate-800/80 bg-slate-950/60 flex items-center gap-3 shrink-0">
                       <input
                         type="text"
-                        placeholder="Ask a medicolegal question or request an audit..."
+                        placeholder={isGeneralKnowledge
+                          ? "Ask a general-knowledge question (documents are not searched)..."
+                          : "Ask a medicolegal question or request an audit..."}
                         value={prompt}
                         onChange={(e) => setPrompt(e.target.value)}
                         onKeyDown={(e) => {
@@ -975,9 +1177,12 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
                 <select
                   value={activeCase}
                   onChange={(e) => setActiveCase(e.target.value)}
+                  disabled={isGeneralKnowledge}
                   className="bg-slate-900 border border-slate-700 rounded-xl px-3 py-1 text-xs text-slate-200 cursor-pointer"
                 >
-                  <option value="">📁 Select Active Case Context</option>
+                  <option value="">
+                    {isGeneralKnowledge ? "🌐 No case context in this mode" : "📁 Select Active Case Context"}
+                  </option>
                   {availableRuns.map((r, i) => (
                     <option key={i} value={r.run_id || r.run_dir || r.display_name}>
                       {r.display_name}
@@ -988,6 +1193,17 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
 
               {/* Export Buttons */}
               <div className="flex flex-wrap items-center gap-1.5">
+                <select aria-label="Chat thread" value={activeThreadId} onChange={(event) => handleSelectThread(event.target.value)} className="max-w-64 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-slate-200 cursor-pointer">
+                  {[...threads].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((thread) => (
+                    <option key={thread.id} value={thread.id}>{thread.title}</option>
+                  ))}
+                </select>
+                <button type="button" onClick={handleNewThread} aria-label="New Chat" className="px-2.5 py-1 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 font-semibold text-[11px] flex items-center gap-1 border border-indigo-500/40 cursor-pointer select-none">
+                  <MessageSquareText className="w-3 h-3" /> New Chat
+                </button>
+                <button type="button" onClick={handleDeleteThread} aria-label="Delete Chat Thread" className="px-2.5 py-1 rounded-lg bg-rose-950/40 hover:bg-rose-900/50 text-rose-300 font-semibold text-[11px] flex items-center gap-1 border border-rose-800/60 cursor-pointer select-none">
+                  <Trash2 className="w-3 h-3" /> Delete Thread
+                </button>
                 <button
                   type="button"
                   onClick={handleClearChat}
@@ -1053,7 +1269,7 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
                         )}
 
                         <div
-                          className={`max-w-2xl p-4 rounded-2xl text-xs leading-relaxed ${
+                          className={`w-[80%] max-w-none p-4 rounded-2xl text-xs leading-relaxed ${
                             msg.sender === "user"
                               ? "bg-indigo-600 text-white shadow-md"
                               : "bg-slate-900/90 border border-slate-800 text-slate-200"
@@ -1073,12 +1289,12 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
                             </div>
                           )}
 
-                          {msg.sender === "bot" && msg.verificationDetails && (
+                          {msg.sender === "bot" && visibleSources.has(msg.id) && (
                             <div className="mt-3 pt-3 border-t border-slate-800 space-y-1.5">
                               <div className="text-[10px] font-bold text-emerald-400 flex items-center gap-1">
-                                <FileCheck className="w-3 h-3 pointer-events-none" /> Exact Source Verification Details:
+                                <FileCheck className="w-3 h-3 pointer-events-none" /> Sources
                               </div>
-                              {msg.verificationDetails.map((v, idx) => (
+                              {msg.verificationDetails?.map((v, idx) => (
                                 <div
                                   key={idx}
                                   className="bg-slate-950/60 p-2 rounded-lg border border-slate-800 text-[11px] text-slate-300 flex justify-between items-center"
@@ -1090,7 +1306,21 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
                                     {v.pageRange}
                                   </span>
                                 </div>
-                              ))}
+                              )) || <div className="text-[11px] text-slate-400">No structured source details are available for this response.</div>}
+                            </div>
+                          )}
+
+                          {msg.sender === "bot" && msg.text && (
+                            <div className="mt-3 pt-2 border-t border-slate-800/80 flex flex-wrap items-center gap-1.5">
+                              <button type="button" onClick={() => void handleCopyResponse(msg)} aria-label="Copy Response" className="px-2 py-1 rounded-md border border-slate-700 bg-slate-800/70 hover:bg-slate-700 text-[10px] text-slate-300 flex items-center gap-1">
+                                <Copy className="w-3 h-3" /> {copiedMessageId === msg.id ? "Copied" : "Copy Response"}
+                              </button>
+                              <button type="button" onClick={() => handleDownloadResponse(msg)} aria-label="Download Response" className="px-2 py-1 rounded-md border border-slate-700 bg-slate-800/70 hover:bg-slate-700 text-[10px] text-slate-300 flex items-center gap-1">
+                                <Download className="w-3 h-3" /> Download Response
+                              </button>
+                              <button type="button" onClick={() => toggleSources(msg.id)} aria-label="Sources" aria-expanded={visibleSources.has(msg.id)} className="px-2 py-1 rounded-md border border-slate-700 bg-slate-800/70 hover:bg-slate-700 text-[10px] text-slate-300 flex items-center gap-1">
+                                <BookOpen className="w-3 h-3" /> Sources
+                              </button>
                             </div>
                           )}
 
@@ -1110,7 +1340,9 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
                   <div className="p-4 border-t border-slate-800/80 bg-slate-950/60 flex items-center gap-3 shrink-0">
                     <input
                       type="text"
-                      placeholder="Ask a medicolegal question or request an audit..."
+                      placeholder={isGeneralKnowledge
+                        ? "Ask a general-knowledge question (documents are not searched)..."
+                        : "Ask a medicolegal question or request an audit..."}
                       value={prompt}
                       onChange={(e) => setPrompt(e.target.value)}
                       onKeyDown={(e) => {

@@ -36,8 +36,9 @@ see [`medicolegal_rag_guide.md`](medicolegal_rag_guide.md).
   offline model snapshots, dedicated OCR and analysis vLLM services, ordered
   health-gated startup, systemd restart supervision, readiness probes, and
   bounded log rotation.
-- Nine analysis modes: Free Q&A; Timeline; Injury Summary; Inconsistency Finder;
-  Medication Tracker; Causation; Prognosis; Work Capacity; and Treatment Planning.
+- Ten chat modes: General Knowledge (without document retrieval); Free Q&A;
+  Timeline; Injury Summary; Inconsistency Finder; Medication Tracker;
+  Causation; Prognosis; Work Capacity; and Treatment Planning.
 - Markdown, text, timeline CSV, analysis DOCX, and timeline DOCX exports.
 - REST API, headless CLI, diagnostics, reconciliation reporting, and managed
   vLLM/container lifecycle operations.
@@ -190,8 +191,9 @@ scoped-token requirements documented in [`.env.example`](.env.example).
 The verified Qwen 3.6 option is `Qwen/Qwen3.6-35B-A3B`; the incompatible NVIDIA
 NVFP4 checkpoint is intentionally not offered by the managed model selector.
 For Qwen3-family models, the managed container configures vLLM's `qwen3`
-reasoning parser. Free Q&A, Causation, Prognosis, Work Capacity, and Treatment
-Planning enable Qwen thinking; the four structured extraction modes disable it.
+reasoning parser. General Knowledge, Free Q&A, Causation, Prognosis, Work
+Capacity, and Treatment Planning enable Qwen thinking; the four structured
+extraction modes disable it.
 Reasoning is a separate channel: verified administrators can view, persist,
 audit, and export it, while regular-user responses contain only the final answer.
 Completion capacity is calculated from the live served context rather than a
@@ -238,14 +240,17 @@ Next.js artifact.
 Production has one lifecycle owner: systemd. The dependency chain is:
 
 ```text
-kirag-infrastructure -> kirag-api -> kirag-frontend
+kirag-infrastructure (background model loading)
+kirag-api -> kirag-frontend
 ```
 
-`kirag-infrastructure` owns PostgreSQL, Redis, MinIO, Qdrant, OCR vLLM on port
-8000, and analysis vLLM on port 8002. OCR must become healthy before analysis
-starts. The unit verifies both cached model commits without network access,
-runs Compose with a one-hour cold-start allowance, and idempotently initialises
-the database schema, object buckets, and vector collection. An infrastructure
+`kirag-infrastructure` owns PostgreSQL, Redis, MinIO, Qdrant and the selected
+vLLM profile. It starts concurrently with the API and frontend, so the
+workstation is usable while models load. New installations default to
+analysis-only 262K mode; the sidebar can switch to dual OCR/32K or OCR-only and
+persists that choice for the next launch. The unit verifies both cached model
+commits without network access and idempotently initialises the database schema,
+object buckets, and vector collection. An infrastructure
 status of `active (exited)` is expected because it is a `RemainAfterExit`
 oneshot unit; the containers remain supervised by Docker.
 
@@ -304,7 +309,8 @@ curl --fail --silent --output /dev/null \
 ```
 
 `/livez` proves that the API process is running. `/readyz` returns HTTP 503
-until PostgreSQL, Redis, MinIO, Qdrant, and both inference endpoints are usable.
+until PostgreSQL, Redis, MinIO, and Qdrant are usable. `/inference/ready`
+reports OCR and analysis readiness separately without blocking the application.
 Do not use Gradio/API Docker or infrastructure start/stop controls against this
 profile. Keep `KIRAG_ENABLE_REMOTE_LIFECYCLE=false` and use systemd on the host.
 Stopping the API or frontend does not stop persistent infrastructure.
@@ -393,6 +399,402 @@ This is a development command. Production uses a tested `npm run build`
 artifact and systemd executes `next start`; it never runs `next dev`.
 Deployment profiles and reverse-proxy requirements are documented in
 [`frontend/README.md`](frontend/README.md).
+
+## RAG Chat analysis modes and LLM interaction
+
+RAG Chat modes are server-side analysis policies, not merely labels or text
+prepended by the browser. A mode selects an LLM system prompt, a retrieval
+strategy, and (for Qwen3 models) whether the model's thinking channel is
+enabled. All modes use the same indexed corpus, embedding model, optional
+reranker, analysis endpoint, prompt-construction code, citation verifier, and
+response streamer.
+
+The authoritative definitions are in
+[`rag/analyzer.py`](rag/analyzer.py), [`rag/analysis_policy.py`](rag/analysis_policy.py),
+and [`rag/retriever.py`](rag/retriever.py). If this documentation and those
+files ever differ, the code is authoritative.
+
+### What changes when a mode is selected
+
+| Mode | Policy class | Retrieval calls | Qwen thinking | Principal output contract |
+|---|---|---:|---:|---|
+| General Knowledge | No RAG | 0 | Enabled | General model-knowledge conversation without case evidence |
+| Free Q&A | Analytical | 8 | Enabled | A source-grounded answer to the user's question |
+| Timeline | Extraction | 1 | Disabled | Oldest-first table of every dated event |
+| Injury Summary | Extraction | 1 | Disabled | Eight-section injury, treatment, and outcome report |
+| Inconsistency Finder | Extraction | 1 | Disabled | Paired-source discrepancy table with severity |
+| Medication Tracker | Extraction | 1 | Disabled | Medication/change history table |
+| Causation Analysis | Analytical | 8 | Enabled | Balanced analysis of supporting and competing causes |
+| Prognosis Analysis | Analytical | 8 | Enabled | Longitudinal clinical and functional prognosis |
+| Work Capacity | Analytical | 8 | Enabled | Capacity, restriction, return-to-work, and opinion analysis |
+| Treatment Planning | Analytical | 8 | Enabled | Record-supported treatment review, not medical prescribing |
+
+The UI sends the user's text unchanged as `query` together with the selected
+mode and filters. On the server, the display name is normalized to an internal
+key such as `injury_summary` or `causation`. Unknown mode names fall back
+to Free Q&A policy.
+
+Every RAG mode currently enforces a minimum `top_k` of 50 and a similarity-score
+threshold of `0.05`. Therefore, selecting a UI Top-K below 50 does not reduce
+the server-side target below 50. Metadata filters for case/run, document type,
+author, and date range are applied to every retrieval call. When configured,
+the Cross-Encoder reranker and diversity ranking are part of the underlying
+similarity search for either policy class.
+
+General Knowledge is the exception: it makes no retrieval call, ignores case
+and metadata filters, disables reranking, supplies no document excerpts, and
+does not run citation substitution. It uses only the model's learned knowledge,
+the current question, and recent conversation history. It has no live web access.
+
+Extraction modes perform one vector search using the user's query. Analytical
+modes use comprehensive retrieval: the original query plus seven derivative
+queries made by appending each of these evidence focuses:
+
+1. chronology and temporal relationship;
+2. objective clinical findings and investigations;
+3. pre-existing conditions and baseline function;
+4. treating practitioner opinions and recommendations;
+5. independent or expert opinions;
+6. alternative explanations, intervening events, and contrary evidence; and
+7. functional course, work capacity, treatment response, and prognosis.
+
+Results from the eight analytical searches are deduplicated by stable chunk
+identity. The best score is retained, retrieval facets are recorded, and the
+final set is diversified across documents before remaining positions are
+filled by score. This is intended to expose an analytical mode to supporting,
+contrary, temporal, and opinion evidence that a single semantic query might
+miss. The evidence focuses are common to all five analytical modes; the
+mode-specific system prompt tells the LLM how to use that evidence.
+
+### Message construction and generation lifecycle
+
+After retrieval, KIRAG formats the selected chunks as numbered document
+excerpts with source metadata. It sends an OpenAI-compatible Chat Completions
+request with this logical message sequence:
+
+```text
+system: <mode-specific system instructions [+ shared provenance rules for RAG modes]>
+
+[up to the last six chat-history messages]
+
+user: DOCUMENT EXCERPTS:
+      <formatted retrieved excerpts>
+
+      ---
+
+      USER QUESTION:
+      <the user's original query>
+```
+
+Chat history is therefore conversational context for the LLM, but retrieval is
+performed from the current query rather than from a rewritten query containing
+the history. Only the last six history messages are placed in the prompt to
+control context use.
+
+KIRAG calculates the prompt budget against the live context length served by
+the analysis model. It reserves generation space (up to an 8,192-token minimum
+for thinking modes or 4,096 for extraction modes, bounded by one third of the
+model context), accounts for chat-template overhead, and removes the
+least-relevant retrieved chunks until the prompt fits. A caller-specified
+maximum output-token value further constrains that calculation. If generation
+ends because the output limit was reached, the answer receives an explicit
+incomplete-response warning.
+
+Requests use temperature `0.1` by default. Models whose names contain
+`reasoning` or `r1` use `0.7` when that default would otherwise apply and
+also receive a `1.05` repetition penalty. For Qwen3-family models, KIRAG sends
+`chat_template_kwargs: {"enable_thinking": true|false}` according to the
+mode policy. Thus, “thinking enabled” is an actual model chat-template option,
+not an extra sentence in the prompt. Other model families still receive the
+mode-specific prompt and retrieval policy, but may not implement a distinct
+thinking channel.
+
+When thinking is enabled, reasoning-channel tokens are kept separate from the
+final response and are only passed to the authorized reasoning-audit path.
+When thinking is disabled, content classified by a Qwen parser as reasoning is
+treated as answer content so structured extraction is not silently lost.
+Final-answer tokens are streamed to the client.
+
+In RAG modes, the LLM cites numbered placeholders such as `[Source 3]`. During streaming or
+after non-streaming generation, KIRAG replaces valid placeholders with metadata
+from the corresponding retrieved chunk. It does not ask the model to manufacture
+that metadata. Citation replacement can include the original filename, extracted
+author, document type, source date, PDF page information, and an explicitly
+present reference/claim/accession number. External Markdown is identified as
+having no original-PDF page provenance.
+
+### Shared provenance instructions for every RAG mode
+
+The following text is appended verbatim to every document-grounded mode's
+system prompt. It is deliberately omitted from General Knowledge:
+
+```text
+NON-NEGOTIABLE PROVENANCE RULES:
+- Treat the provenance fields in each excerpt header as the complete source of citation metadata.
+- Never infer or invent a PDF page, page range, provider, author, clinic, filename, document type, claim/reference number, or accession number.
+- If a field is unavailable, omit it or write "Not present in source".
+- If an excerpt says it is external Markdown, state that it has no original-PDF page provenance; do not assign it a page.
+- Retain the source's original date expression. Only present a normalized ISO date when it is a valid calendar date.
+```
+
+These rules apply in addition to the following mode-specific system instructions.
+
+### General Knowledge
+
+General Knowledge is a true no-RAG mode. It skips Qdrant/vector retrieval,
+Cross-Encoder reranking, document filters, excerpt formatting, provenance
+instructions, and source-tag replacement. It retains up to the last six chat
+messages, context-window budgeting, streaming, model fallback, and Qwen
+thinking. The mode is appropriate for questions such as differences between
+Markdown, JSON, and plain text. It cannot inspect an active case, answer from
+indexed documents, or provide current internet information.
+
+Exact mode-specific system instructions:
+
+```text
+You are a general-purpose assistant operating in General Knowledge mode.
+
+Answer the user's question using your general knowledge and reasoning. No case documents or retrieved excerpts are available in this mode.
+
+INSTRUCTIONS:
+- Do not claim that your answer is based on the user's indexed documents
+- Do not generate document citations, PDF page references, source tags, or case-specific facts
+- If the user asks about a particular case or document, explain that General Knowledge mode cannot inspect it and ask them to use an appropriate RAG mode
+- Clearly distinguish established information from uncertainty or opinion
+- For medical, legal, or other high-stakes questions, provide general educational information rather than personalised professional advice
+- Use clear examples where they improve understanding
+```
+
+### Free Q&A
+
+Free Q&A is an analytical mode. It performs comprehensive, evidence-diverse
+retrieval and enables Qwen thinking. It is best for a focused question that may
+require synthesis across records, rather than a predetermined report schema.
+Despite its name, it remains closed-book with respect to case facts: the prompt
+requires answers to be based only on retrieved excerpts. If the retrieved
+evidence is insufficient, the model is instructed to say so and identify useful
+missing documents.
+
+Exact mode-specific system instructions:
+
+```text
+You are a medicolegal document analyst with expertise in personal injury, workers' compensation, and clinical documentation. You have been provided with excerpts from clinical records, specialist reports, and correspondence.
+
+INSTRUCTIONS:
+- Answer based ONLY on the provided document excerpts — do not hallucinate or assume facts not present in the sources
+- Use the supplied [Source N] tag for each factual claim; the application replaces it with verified metadata before display
+- Cite an exact PDF page range only when both page endpoints are supplied
+- Include robust verification details for every factual claim so that users can instantly verify the source when scrolling through the original file, including:
+  * The source-supported document type and original filename
+  * The source-supported authoring physician or explicitly labeled clinic
+  * Identifying report details only when present in the excerpt
+- If multiple sources discuss the same event, synthesise the information and note any differences
+- Use ISO date format (YYYY-MM-DD) when referencing dates
+- If the answer cannot be determined from the provided excerpts, say so explicitly and suggest what additional documents might help
+- Use clear, professional language appropriate for medicolegal analysis
+```
+
+### Timeline
+
+Timeline is a structured extraction mode. It makes a single similarity-search
+pass and disables Qwen thinking to favor direct, schema-following extraction.
+The LLM is asked to find every dated event in the retrieved evidence, normalize
+valid dates, order them chronologically, and disclose ambiguous or conflicting
+dates. “Every” means every dated event present in the excerpts supplied to the
+LLM; retrieval or context truncation can still omit events from the full corpus.
+
+Exact mode-specific system instructions:
+
+```text
+You are a medicolegal chronology specialist. Your task is to extract every dated event from the provided document excerpts and present them in strict chronological order.
+
+INSTRUCTIONS:
+- Extract EVERY event with a date (consultations, injuries, surgeries, referrals, reports, diagnoses, medication changes)
+- Present as a markdown table with columns: Date | Event | Provider/Author | Source (PDF Page & Verifying Details)
+- Use ISO date format (YYYY-MM-DD) for all dates
+- If a date is ambiguous (e.g., "early 2018"), note the ambiguity but place it approximately
+- For the "Source" column:
+  * Use the supplied [Source N] tag; the application replaces it with verified metadata before display
+  * Cite an exact PDF page range only when both page endpoints are supplied
+  * Include robust verification details for each entry so that users can instantly verify the source when scrolling through the original file, including:
+    - The source-supported document type and original filename
+    - The source-supported authoring physician or explicitly labeled clinic
+    - Identifying report details only when present in the excerpt
+- Flag any inconsistencies in dates between different sources
+- Order strictly by date, oldest first
+```
+
+### Injury Summary
+
+Injury Summary is a structured extraction mode using one similarity-search pass
+with Qwen thinking disabled. Its principal difference from Free Q&A is a fixed,
+eight-section report contract that combines identity fields, mechanism,
+diagnoses, chronological treatment, current status, medicines, providers, and
+outstanding issues. It also explicitly asks for contradictions between
+providers.
+
+Exact mode-specific system instructions:
+
+```text
+You are a medicolegal injury analyst. Your task is to produce a structured summary of the patient's injury, treatment, and outcomes from the provided document excerpts.
+
+INSTRUCTIONS:
+Generate a structured report with these sections:
+1. **Patient Details** — Name, DOB, claim/reference numbers
+2. **Mechanism of Injury** — How the injury occurred, date, circumstances
+3. **Injuries Sustained** — List of all injuries/diagnoses with dates of diagnosis
+4. **Treatment History** — All treatments, surgeries, therapies in chronological order
+5. **Current Status** — Most recent assessment findings
+6. **Medications** — All current and historical medications mentioned
+7. **Providers Involved** — All treating practitioners with their roles
+8. **Outstanding Issues** — Unresolved symptoms, pending treatments, or recommendations
+
+For every factual claim or timeline entry in this summary:
+- Use the supplied [Source N] tag; the application replaces it with verified metadata before display
+- Cite an exact PDF page range only when both page endpoints are supplied
+- Include robust verification details so that users can instantly verify the source when scrolling through the original file, including:
+  * The source-supported document type and original filename
+  * The source-supported authoring physician or explicitly labeled clinic
+  * Identifying report details only when present in the excerpt
+Flag any contradictions between providers.
+```
+
+### Inconsistency Finder
+
+Inconsistency Finder is a structured extraction/comparison mode. It performs one
+similarity-search pass and disables Qwen thinking. Unlike a general summary, it
+asks the LLM to align accounts of the same event, display both claims, classify
+the discrepancy, and report documentary gaps. Its output depends particularly
+on retrieval returning both sides of a potential contradiction; absence of a
+finding is not proof that the full corpus is consistent.
+
+Exact mode-specific system instructions:
+
+```text
+You are a medicolegal document auditor specialising in identifying inconsistencies, contradictions, and discrepancies across clinical records.
+
+INSTRUCTIONS:
+- Compare accounts of the same events across different sources
+- Identify discrepancies in: dates, injury descriptions, examination findings, treatment recommendations, patient-reported symptoms
+- For each inconsistency, cite both sources with:
+  * The exact original-PDF page range only when both endpoints are supplied
+  * Source-supported document type, filename, author/clinic, and reference details
+  * The supplied [Source N] tag, which the application replaces before display
+- Rate severity: MINOR (date formatting differences), MODERATE (differing clinical findings), MAJOR (contradictory diagnoses or recommendations)
+- Present findings in a structured table: Issue | Source A Says | Source B Says | Severity
+- Also note any gaps — events referenced but not documented
+```
+
+### Medication Tracker
+
+Medication Tracker is a structured extraction mode using one similarity-search
+pass with Qwen thinking disabled. It focuses on medication identity, dose,
+frequency, route, indication, prescriber, dates, changes, allergies, and possible
+interactions rather than the broader injury narrative. Interaction or
+contraindication statements remain model-generated analysis of the supplied
+record and require professional verification.
+
+Exact mode-specific system instructions:
+
+```text
+You are a clinical pharmacology analyst. Your task is to extract and track all medication references from the provided document excerpts.
+
+INSTRUCTIONS:
+- Extract every medication mentioned (name, dose, frequency, route, indication)
+- Note the date and source where each medication is mentioned
+- Track changes: new prescriptions, dose changes, cessations
+- Present as a markdown table: Medication | Dose/Frequency | Date Started | Date Stopped | Prescriber | Source (PDF Page & Verifying Details)
+- For the "Source" column:
+  * Use the supplied [Source N] tag; the application replaces it with verified metadata before display
+  * Cite an exact PDF page range only when both page endpoints are supplied
+  * Include robust verification details for each entry so that users can instantly verify the source when scrolling through the original file, including:
+    - The source-supported document type and original filename
+    - The source-supported authoring physician or explicitly labeled clinic
+    - Identifying report details only when present in the excerpt
+- Flag any potential interactions or contraindications
+- Note any allergies mentioned in the records
+```
+
+### Causation Analysis
+
+Causation Analysis is an analytical mode. It performs the eight-query
+comprehensive retrieval and enables Qwen thinking. The prompt requires an
+evidence-balanced causal assessment rather than mere temporal association. It
+asks the model to separate records, attributed clinical opinions, and its own
+inferences, and prevents the final conclusion from exceeding the strength of
+the evidence.
+
+Exact mode-specific system instructions:
+
+```text
+You are a senior medicolegal analyst assessing causation. Analyse temporal sequence, mechanism, objective findings, pre-existing conditions, alternative and intervening causes, and all treating or expert opinions. Separate documented fact, quoted clinical opinion, and your evidence-grounded inference. Address supporting and contrary evidence, missing evidence, and uncertainty. Do not express a conclusion more strongly than the records permit.
+```
+
+### Prognosis Analysis
+
+Prognosis Analysis is an analytical mode using comprehensive retrieval with
+Qwen thinking enabled. It emphasizes change over time, objective evidence,
+treatment response, function, expressed prognostic opinions, recovery barriers,
+and uncertainty. It requires favorable and adverse evidence to be considered
+instead of extrapolating only the latest observation.
+
+Exact mode-specific system instructions:
+
+```text
+You are a senior medicolegal analyst assessing prognosis. Analyse longitudinal symptoms, objective findings, response to treatment, functional trajectory, prognostic opinions, barriers to recovery, and uncertainty. Distinguish documented facts, clinician opinions, and evidence-grounded inference; address both favourable and adverse evidence.
+```
+
+### Work Capacity
+
+Work Capacity is an analytical mode using comprehensive retrieval and Qwen
+thinking. It brings together the person's pre-injury job demands, certificates
+and restrictions, observed function, return-to-work attempts, accommodations,
+and competing clinical or independent opinions. It expressly calls for missing
+vocational evidence to be identified.
+
+Exact mode-specific system instructions:
+
+```text
+You are a senior medicolegal analyst assessing work capacity. Analyse pre-injury duties, certified restrictions, functional evidence, attempted returns, employer accommodations, treating and independent opinions, and changes over time. Distinguish fact, clinical opinion, and inference and identify conflicts and missing vocational evidence.
+```
+
+### Treatment Planning
+
+Treatment Planning is an analytical mode using comprehensive retrieval and
+Qwen thinking. It reviews what was documented, response, recommendations,
+contraindications, disagreements, and gaps. The system prompt deliberately
+limits the model to record-supported considerations rather than allowing it to
+prescribe care.
+
+Exact mode-specific system instructions:
+
+```text
+You are a senior medicolegal analyst reviewing treatment planning. Analyse documented treatment, response, outstanding recommendations, contraindications, competing recommendations, and evidentiary gaps. Describe record-supported considerations rather than prescribing care. Distinguish facts, clinician recommendations, and evidence-grounded inference.
+```
+
+### Practical interpretation and limitations
+
+Changing among RAG modes does not switch the vector collection, embedding
+model, reranker, analysis model, or case filter. General Knowledge bypasses
+those document facilities but uses the same analysis model. No mode runs a deterministic
+medical algorithm, rules engine, temporal database query, contradiction solver,
+or causal-inference model. The final structure and conclusions are produced by
+the configured LLM from the excerpts that retrieval and context budgeting make
+available. Consequently:
+
+- use Timeline or another extraction mode when predictable coverage and format
+  are more important than extensive deliberation;
+- use an analytical mode when the question benefits from deliberately broad,
+  competing evidence and model reasoning;
+- phrase the query so the initial semantic retrieval has a meaningful target,
+  even when selecting a report-oriented mode;
+- treat “no inconsistency,” “no medication,” or “no contrary evidence” as “none
+  found in the supplied excerpts,” not as proof of absence from the case;
+- investigate any context-truncation or output-limit warning before relying on
+  or exporting the answer; and
+- verify all substantive findings against the original documents. Source-tag
+  replacement protects citation metadata, but it cannot guarantee that the
+  model's interpretation of the cited excerpt is correct.
 
 ## REST API contract
 

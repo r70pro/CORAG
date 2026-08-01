@@ -786,6 +786,7 @@ def build_rag_chat_ui():
                 analysis_mode = gr.Dropdown(
                     label="Analysis Mode",
                     choices=[
+                        "🌐 General Knowledge",
                         "💬 Free Q&A",
                         "📅 Timeline Generator",
                         "🏥 Injury Summary",

@@ -355,9 +355,11 @@ def set_extended_analysis_context(enabled: bool) -> tuple[bool, str]:
     try:
         subprocess.run(["docker", "stop", "kirag_vllm_analysis"], check=False, capture_output=True)
         if enabled:
-            success, message = set_vllm_role_running("ocr", False)
-            if not success:
-                raise RuntimeError(message)
+            # A fresh analysis-only installation may never have created OCR.
+            if get_docker_status("olmocr") != "not_found":
+                success, message = set_vllm_role_running("ocr", False)
+                if not success:
+                    raise RuntimeError(message)
         subprocess.run(
             [*compose, "up", "-d", "--no-deps", "--force-recreate", "vllm-analysis"],
             check=True,
@@ -368,9 +370,16 @@ def set_extended_analysis_context(enabled: bool) -> tuple[bool, str]:
             env=env,
         )
         if not enabled:
-            success, message = set_vllm_role_running("ocr", True)
-            if not success:
-                raise RuntimeError(message)
+            if get_docker_status("olmocr") == "not_found":
+                subprocess.run(
+                    [*compose, "up", "-d", "--no-deps", "vllm"],
+                    check=True, capture_output=True, text=True, timeout=300,
+                    cwd=root, env=env,
+                )
+            else:
+                success, message = set_vllm_role_running("ocr", True)
+                if not success:
+                    raise RuntimeError(message)
         # Verify the mutually exclusive operating invariant. A transitional or
         # mismatched state must never be reported as a successful context mode.
         ocr_status = get_docker_status("olmocr")

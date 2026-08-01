@@ -660,23 +660,27 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.json()["status"], "healthy")
 
-    @patch("api.main._inference_endpoint_ready", return_value=True)
     @patch("system_diagnostics.check_backing_services_data")
-    def test_readiness_reflects_dependencies(self, mock_backing, mock_inference):
+    def test_readiness_reflects_core_dependencies_only(self, mock_backing):
         mock_backing.return_value = {"all_healthy": True, "failed_services": []}
         self.assertEqual(self.client.get("/readyz").status_code, 200)
 
         mock_backing.return_value = {
             "all_healthy": False,
-            "failed_services": ["vllm"],
+            "failed_services": ["postgres"],
         }
         response = self.client.get("/readyz")
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["error"]["code"], "service_unavailable")
 
-        mock_backing.return_value = {"all_healthy": True, "failed_services": []}
-        mock_inference.return_value = False
-        self.assertEqual(self.client.get("/readyz").status_code, 503)
+        mock_backing.return_value = {"all_healthy": False, "failed_services": ["vllm_ocr"]}
+        self.assertEqual(self.client.get("/readyz").status_code, 200)
+
+    @patch("api.main._inference_endpoint_ready", side_effect=[False, True])
+    def test_inference_readiness_is_role_specific(self, _mock_ready):
+        response = self.client.get("/inference/ready")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["roles"], {"ocr": False, "analysis": True})
 
     @patch("rag.db.get_corpus_stats")
     @patch("rag.db.get_runs_with_stats")

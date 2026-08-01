@@ -19,9 +19,9 @@ def test_shutdown_disables_and_stops_the_complete_system_stack():
 def test_desktop_launcher_starts_user_stack_without_enabling_boot_start():
     launcher = (ROOT / "scripts/launch-kirag.sh").read_text()
 
-    assert 'systemctl --user start --no-block "$SERVICE"' in launcher
+    assert 'systemctl --user start --no-block "$SERVICE" "$INFRA_SERVICE"' in launcher
     assert "systemctl enable" not in launcher
-    assert 'curl --silent --fail --max-time 2 "$API_READY_URL"' in launcher
+    assert 'curl --silent --fail --max-time 2 "$API_LIVE_URL"' in launcher
     assert 'open_startup_page' in launcher
     readiness_loop = launcher.split("for _attempt", 1)[1]
     assert "open_app" in readiness_loop
@@ -40,6 +40,13 @@ def test_frontend_cannot_outlive_the_api_service():
     unit = (ROOT / "deploy/systemd-user/kirag-frontend.service.in").read_text()
 
     assert "BindsTo=kirag-api.service" in unit
+
+
+def test_api_does_not_wait_for_slow_inference_startup():
+    unit = (ROOT / "deploy/systemd-user/kirag-api.service.in").read_text()
+    assert "Wants=kirag-infrastructure.service" in unit
+    assert "Requires=kirag-infrastructure.service" not in unit
+    assert "After=kirag-infrastructure.service" not in unit
 
 
 def test_installers_do_not_enable_application_autostart():

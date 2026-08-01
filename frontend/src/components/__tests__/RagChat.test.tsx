@@ -24,11 +24,57 @@ jest.mock("@/lib/api", () => ({
   indexAllRuns: jest.fn().mockResolvedValue({ success: true }),
   exportChatHistory: jest.fn().mockResolvedValue({ success: true }),
   updateSettings: jest.fn().mockResolvedValue({ success: true }),
+  deleteRagChatHistory: jest.fn().mockResolvedValue({ success: true }),
 }));
 
 describe("RagChat Component", () => {
   beforeEach(() => {
     jest.mocked(triggerRagChatSSE).mockReset();
+    localStorage.clear();
+  });
+
+  test("restores persisted chat messages after a browser refresh", async () => {
+    localStorage.setItem("kirag_rag_chat_threads_v1", JSON.stringify([{
+      id: "persisted-thread",
+      title: "Prior causation analysis",
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T01:00:00.000Z",
+      analysisMode: "🧬 Causation Analysis",
+      activeCase: "case-1",
+      messages: [{
+        id: "answer-1",
+        sender: "bot",
+        text: "This answer survived the refresh.",
+        timestamp: "11:20 AM",
+      }],
+    }]));
+
+    render(<RagChat />);
+
+    expect(await screen.findByText("This answer survived the refresh.")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Chat thread" })).toHaveValue("persisted-thread");
+  });
+
+  test("allows a persisted chat thread to be deleted", async () => {
+    localStorage.setItem("kirag_rag_chat_threads_v1", JSON.stringify([{
+      id: "delete-me",
+      title: "Delete me",
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T01:00:00.000Z",
+      analysisMode: "💬 Free Q&A",
+      activeCase: "",
+      messages: [],
+    }]));
+    jest.spyOn(window, "confirm").mockReturnValue(true);
+    render(<RagChat />);
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Chat thread" })).toHaveValue("delete-me"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete Chat Thread" }));
+
+    const stored = JSON.parse(localStorage.getItem("kirag_rag_chat_threads_v1") || "[]");
+    expect(stored).toHaveLength(1);
+    expect(stored[0].id).not.toBe("delete-me");
+    jest.restoreAllMocks();
   });
 
   test("renders RAG analysis chat interface and input area", async () => {
@@ -63,6 +109,7 @@ describe("RagChat Component", () => {
     render(<RagChat />);
 
     for (const name of [
+      "🌐 General Knowledge",
       "💬 Free Q&A",
       "📋 Timeline",
       "🏥 Injury Summary",
@@ -71,6 +118,37 @@ describe("RagChat Component", () => {
     ]) {
       expect(screen.getByRole("button", { name })).toBeInTheDocument();
     }
+  });
+
+  test("General Knowledge sends no case, filters, or reranker settings", async () => {
+    render(<RagChat />);
+
+    fireEvent.click(screen.getByRole("button", { name: "🌐 General Knowledge" }));
+    const input = screen.getByPlaceholderText(/Ask a general-knowledge question/i);
+    fireEvent.change(input, { target: { value: "What is Markdown?" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send Query" }));
+
+    await waitFor(() => {
+      expect(triggerRagChatSSE).toHaveBeenCalledWith(
+        expect.objectContaining({
+          query: "What is Markdown?",
+          mode: "🌐 General Knowledge",
+          case_id: undefined,
+          doc_type: undefined,
+          author: undefined,
+          date_from: undefined,
+          date_to: undefined,
+          use_reranker: false,
+          reranker_model: undefined,
+          reranker_device: undefined,
+        }),
+        expect.any(Function),
+        expect.any(Function),
+        expect.any(Function),
+        expect.any(Function),
+        expect.any(Function),
+      );
+    });
   });
 
   test("omits empty optional filters from a RAG request", async () => {
