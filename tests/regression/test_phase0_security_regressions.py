@@ -103,7 +103,7 @@ def test_pipeline_upload_rejects_oversized_payload(tmp_path, monkeypatch):
     import settings_manager
     from api.routes.pipeline import upload_pipeline_files
 
-    monkeypatch.setenv("KIRAG_MAX_UPLOAD_BYTES", "32")
+    monkeypatch.setenv("KIRAG_MAX_PDF_FILE_BYTES", "32")
     monkeypatch.setattr(settings_manager, "WORKSPACE_DIR", str(tmp_path / "workspace"))
 
     with pytest.raises(HTTPException) as exc:

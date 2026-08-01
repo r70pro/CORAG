@@ -76,6 +76,12 @@ class DockerCreateRequest(BaseModel):
     tensor_parallel_size: int = Field(1, ge=1, le=8)
 
 
+class AnalysisContextModeRequest(BaseModel):
+    """Switch between shared-GPU and OCR-off extended analysis modes."""
+
+    extended: bool
+
+
 class DockerStatusResponse(BaseModel):
     """vLLM container status."""
 
@@ -119,7 +125,7 @@ class RAGQueryRequest(BaseModel):
     use_reranker: bool = True
     reranker_model: str = Field("BAAI/bge-reranker-large", min_length=1, max_length=512)
     reranker_device: str = Field("cuda", min_length=1, max_length=32)
-    max_output_tokens: int = Field(4096, ge=1, le=MAX_MODEL_CONTEXT_LENGTH - 1)
+    max_output_tokens: int = Field(16000, ge=1, le=MAX_MODEL_CONTEXT_LENGTH - 1)
     stream: bool = Field(True, description="If True, response is SSE-streamed")
 
     @model_validator(mode="after")
@@ -252,6 +258,12 @@ class MessageResponse(BaseModel):
 
     success: bool = True
     message: str = ""
+
+
+class AppShutdownRequest(BaseModel):
+    """Explicit acknowledgement required before stopping KIRAG."""
+
+    confirmation: str = Field(pattern="^SHUTDOWN$")
 
 
 class ErrorDetail(BaseModel):

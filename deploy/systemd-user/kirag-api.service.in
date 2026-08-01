@@ -2,13 +2,9 @@
 Description=KIRAG FastAPI service
 Requires=kirag-infrastructure.service
 After=kirag-infrastructure.service network-online.target
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 [Service]
 Type=simple
-User=@KIRAG_USER@
-Group=@KIRAG_GROUP@
 RuntimeDirectory=kirag
 RuntimeDirectoryMode=0700
 WorkingDirectory=@KIRAG_ROOT@
@@ -19,11 +15,6 @@ Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=150
 KillSignal=SIGINT
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=@KIRAG_ROOT@/workspace @KIRAG_ROOT@/logs @KIRAG_ROOT@/settings.json
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

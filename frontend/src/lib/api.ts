@@ -46,6 +46,21 @@ export interface RagQueryPayload {
   max_output_tokens?: number;
 }
 
+export interface RagStreamStatus {
+  type: "status";
+  stage: "starting" | "retrieving" | "preparing" | "generating" | "complete";
+  message: string;
+  progress?: number;
+}
+
+interface RagStreamEvent {
+  type?: "content" | "status";
+  chunk?: string;
+  stage?: RagStreamStatus["stage"];
+  message?: string;
+  progress?: number;
+}
+
 type ApiResult = any;
 
 function failedResult(error: unknown): ApiResult {
@@ -127,6 +142,14 @@ export async function setVllmRoleRunning(role: "ocr" | "analysis", running: bool
   }
 }
 
+export async function setExtendedAnalysisContext(extended: boolean) {
+  try {
+    return await jsonPost("/api/docker/analysis/context-mode", { extended });
+  } catch (error) {
+    return failedResult(error);
+  }
+}
+
 export async function startDockerContainer(payload: {
   hf_token?: string;
   model_name?: string;
@@ -144,6 +167,14 @@ export async function startDockerContainer(payload: {
 export async function stopDockerContainer() {
   try {
     return await jsonPost("/api/docker/stop");
+  } catch (error) {
+    return failedResult(error);
+  }
+}
+
+export async function shutdownApp() {
+  try {
+    return await jsonPost("/api/system/shutdown", { confirmation: "SHUTDOWN" });
   } catch (error) {
     return failedResult(error);
   }
@@ -187,8 +218,9 @@ export function triggerRagChatSSE(
   onChunk: (chunk: string) => void,
   onError: (error: unknown) => void,
   onComplete: () => void,
+  onStatus?: (status: RagStreamStatus) => void,
 ): ApiRequestHandle {
-  return requestJsonSse<{ chunk?: string }>(
+  return requestJsonSse<RagStreamEvent>(
     "/api/rag/query",
     {
       method: "POST",
@@ -197,6 +229,14 @@ export function triggerRagChatSSE(
     {
       onMessage: (data) => {
         if (typeof data.chunk === "string") onChunk(data.chunk);
+        if (data.type === "status" && data.stage && typeof data.message === "string") {
+          onStatus?.({
+            type: "status",
+            stage: data.stage,
+            message: data.message,
+            ...(typeof data.progress === "number" ? { progress: data.progress } : {}),
+          });
+        }
       },
       onError,
       onComplete,

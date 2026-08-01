@@ -91,6 +91,18 @@ describe("same-origin API client", () => {
     ).rejects.toBeInstanceOf(ApiTimeoutError);
   });
 
+  test("normalizes browser fetch network failures into an actionable API error", async () => {
+    global.fetch = jest.fn().mockRejectedValue(
+      new TypeError("NetworkError when attempting to fetch resource."),
+    );
+
+    await expect(requestJson("/api/health")).rejects.toMatchObject<ApiError>({
+      name: "ApiError",
+      status: 0,
+      message: expect.stringContaining("connection to KIRAG was interrupted"),
+    });
+  });
+
   async function collectStream(byteChunks: Uint8Array[]): Promise<string[]> {
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -234,6 +246,30 @@ describe("same-origin API client", () => {
       name: "ApiError",
       status: 502,
       message: "RAG query failed",
+    });
+  });
+
+  test("reports a prematurely closed SSE response instead of treating it as complete", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"chunk":"partial"}\n\n'));
+        controller.close();
+      },
+    });
+    global.fetch = jest.fn().mockResolvedValue(new Response(stream, { status: 200 }));
+
+    const error = await new Promise<unknown>((resolve) => {
+      requestJsonSse("/api/stream", {}, {
+        onMessage: jest.fn(),
+        onError: resolve,
+        onComplete: jest.fn(),
+      });
+    });
+
+    expect(error).toMatchObject({
+      name: "ApiError",
+      status: 502,
+      message: expect.stringContaining("ended before the server confirmed completion"),
     });
   });
 

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -400,35 +402,84 @@ def rag_query(req: RAGQueryRequest):
     if req.stream:
 
         def event_generator():
-            try:
-                for chunk in analyze(
-                    query=req.query,
-                    mode=mode_key,
-                    server_url=req.model_url,
-                    model_name=req.model_name,
-                    top_k=req.top_k,
-                    run_id_filter=req.case_id,
-                    doc_type_filter=req.doc_type,
-                    author_filter=req.author,
-                    date_from=date_from,
-                    date_to=date_to,
-                    stream=True,
-                    max_tokens=req.max_output_tokens,
-                    use_reranker=req.use_reranker,
-                    reranker_model=req.reranker_model,
-                    reranker_device=req.reranker_device,
-                ):
-                    yield f"data: {json.dumps({'chunk': chunk})}\n\n"
-                yield "data: [DONE]\n\n"
-            except ContextWindowError as exc:
-                envelope = error_envelope("context_window_exceeded", str(exc))
-                yield f"data: {envelope.model_dump_json(exclude_none=True)}\n\n"
-            except Exception:
-                logger.exception("Streaming RAG query failed")
-                envelope = error_envelope("rag_query_failed", "RAG query failed")
-                yield f"data: {envelope.model_dump_json(exclude_none=True)}\n\n"
+            # The analyzer and local model are synchronous. Run them in a worker so
+            # progress can be delivered immediately and keep-alives can cross every
+            # proxy while a non-streaming model call is in progress.
+            events: queue.Queue[tuple[str, object]] = queue.Queue()
 
-        return StreamingResponse(event_generator(), media_type="text/event-stream")
+            def report_progress(progress: float, message: str):
+                normalized_message = message.lower()
+                if "generating" in normalized_message:
+                    stage = "generating"
+                elif "preparing" in normalized_message:
+                    stage = "preparing"
+                else:
+                    stage = "retrieving"
+                events.put(
+                    ("status", {"stage": stage, "progress": progress, "message": message})
+                )
+
+            def produce():
+                try:
+                    for chunk in analyze(
+                        query=req.query,
+                        mode=mode_key,
+                        server_url=req.model_url,
+                        model_name=req.model_name,
+                        top_k=req.top_k,
+                        run_id_filter=req.case_id,
+                        doc_type_filter=req.doc_type,
+                        author_filter=req.author,
+                        date_from=date_from,
+                        date_to=date_to,
+                        stream=True,
+                        max_tokens=req.max_output_tokens,
+                        progress_callback=report_progress,
+                        use_reranker=req.use_reranker,
+                        reranker_model=req.reranker_model,
+                        reranker_device=req.reranker_device,
+                    ):
+                        events.put(("content", chunk))
+                    events.put(("done", None))
+                except Exception as exc:
+                    events.put(("error", exc))
+
+            threading.Thread(target=produce, name="rag-query-stream", daemon=True).start()
+            yield f"data: {json.dumps({'type': 'status', 'stage': 'starting', 'message': 'Starting RAG analysis…', 'progress': 0.0})}\n\n"
+
+            while True:
+                try:
+                    event_type, payload = events.get(timeout=10.0)
+                except queue.Empty:
+                    # SSE comments are ignored by clients but prevent idle proxy and
+                    # browser connections from being dropped during long inference.
+                    yield ": keep-alive\n\n"
+                    continue
+
+                if event_type == "status":
+                    status = payload
+                    yield f"data: {json.dumps({'type': 'status', **status})}\n\n"
+                elif event_type == "content":
+                    yield f"data: {json.dumps({'type': 'content', 'chunk': payload})}\n\n"
+                elif event_type == "done":
+                    yield f"data: {json.dumps({'type': 'status', 'stage': 'complete', 'message': 'Analysis complete.', 'progress': 1.0})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    break
+                elif event_type == "error":
+                    exc = payload
+                    if isinstance(exc, ContextWindowError):
+                        envelope = error_envelope("context_window_exceeded", str(exc))
+                    else:
+                        logger.error("Streaming RAG query failed", exc_info=(type(exc), exc, exc.__traceback__))
+                        envelope = error_envelope("rag_query_failed", "RAG query failed")
+                    yield f"data: {envelope.model_dump_json(exclude_none=True)}\n\n"
+                    break
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+        )
     else:
         # Non-streaming: collect full response
         full_response = ""

@@ -87,8 +87,9 @@ test("safe controls inside every workspace respond to clicks", async ({ page }) 
   await page.getByRole("button", { name: "🖥️ System Diagnostics", exact: true }).click();
   await page.getByRole("button", { name: /Diagnostic System Log/, exact: false }).click();
   await expect(page.getByRole("button", { name: /Diagnostic System Log/, exact: false })).toHaveClass(/bg-indigo-600/);
-  await page.getByRole("button", { name: /Live Container Logs/, exact: false }).click();
-  await expect(page.getByRole("button", { name: /Live Container Logs/, exact: false })).toHaveClass(/bg-indigo-600/);
+  const vllmLogs = page.getByRole("button", { name: /vLLM Logs/, exact: false });
+  await vllmLogs.click();
+  await expect(vllmLogs).toHaveClass(/bg-indigo-600/);
   await page.getByTitle("Refresh Container Logs").click();
 
   expect(browserErrors).toEqual([]);
@@ -98,11 +99,11 @@ test("interactive shell controls update visible state without browser errors", a
   const browserErrors = failOnBrowserErrors(page);
   await page.goto("/", { waitUntil: "networkidle" });
 
-  const inferenceToggle = page.getByRole("button", { name: /Inference Server/ });
+  const inferenceToggle = page.getByRole("button", { name: /Dedicated vLLM Roles/ });
   await inferenceToggle.click();
-  await expect(page.getByText("Manage the local GPU inference container.")).toBeHidden();
+  await expect(page.getByText("OCR provisioning settings (analysis is managed independently by the production stack).")).toBeHidden();
   await inferenceToggle.click();
-  await expect(page.getByText("Manage the local GPU inference container.")).toBeVisible();
+  await expect(page.getByText("OCR provisioning settings (analysis is managed independently by the production stack).")).toBeVisible();
 
   await page.getByRole("button", { name: "Compact", exact: true }).click();
   const applicationShell = page.locator("body > div.flex").first();

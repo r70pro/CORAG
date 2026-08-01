@@ -36,7 +36,14 @@ def format_size(size_bytes):
         return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
 
 
-def perform_reset_cleanup(clean_runs, clean_gradio, clean_pycache, clean_hf, workspace_dir=None):
+def perform_reset_cleanup(
+    clean_runs,
+    clean_gradio,
+    clean_pycache,
+    clean_hf,
+    workspace_dir=None,
+    repo_dir=None,
+):
     audit_event(
         "application_cleanup",
         "attempt",
@@ -107,26 +114,52 @@ def perform_reset_cleanup(clean_runs, clean_gradio, clean_pycache, clean_hf, wor
 
     # 3. Clean python bytecode cache
     if clean_pycache:
-        repo_dir = Path(__file__).resolve().parent
-        for root, dirs, _ in list(os.walk(repo_dir)):
-            for d in list(dirs):
-                if d == "__pycache__":
-                    try:
-                        pycache_path = resolve_under(root, d)
-                    except PathSecurityError:
-                        continue
-                    if not pycache_path.is_relative_to(repo_dir):
-                        continue
-                    size = get_dir_size(pycache_path)
-                    try:
-                        shutil.rmtree(pycache_path)
-                        dirs.remove(d)  # Don't recurse into deleted dir
-                        freed_space += size
-                        deleted_items.append(
-                            f"Bytecode cache: `{pycache_path.relative_to(repo_dir)}` ({format_size(size)})"
-                        )
-                    except Exception:
-                        errors.append("Failed to delete a bytecode cache")
+        repo_dir = Path(repo_dir or Path(__file__).resolve().parent).resolve()
+        # Dependency, VCS, and runtime-data directories are not application
+        # bytecode caches. Traversing them is both expensive and can encounter
+        # container-owned directories (for example workspace/pg_data).
+        excluded_dirs = {".git", ".venv", "node_modules", "workspace"}
+        walk_errors = []
+
+        def record_walk_error(error):
+            walk_errors.append(error)
+
+        for root, dirs, _ in os.walk(repo_dir, topdown=True, onerror=record_walk_error):
+            dirs[:] = [d for d in dirs if d not in excluded_dirs]
+            if "__pycache__" not in dirs:
+                continue
+
+            # Prevent os.walk from descending into a directory that is about
+            # to be removed. Do this before deletion so a successful deletion
+            # cannot subsequently be reported as a failure.
+            dirs.remove("__pycache__")
+            try:
+                pycache_path = resolve_under(root, "__pycache__")
+            except PathSecurityError:
+                continue
+            if not pycache_path.is_relative_to(repo_dir):
+                continue
+
+            size = get_dir_size(pycache_path)
+            try:
+                shutil.rmtree(pycache_path)
+            except OSError as exc:
+                relative_path = pycache_path.relative_to(repo_dir)
+                errors.append(
+                    f"Failed to delete bytecode cache `{relative_path}`: {exc}"
+                )
+                continue
+
+            freed_space += size
+            deleted_items.append(
+                f"Bytecode cache: `{pycache_path.relative_to(repo_dir)}` ({format_size(size)})"
+            )
+
+        if walk_errors:
+            errors.append(
+                f"Could not scan {len(walk_errors)} director"
+                f"{'y' if len(walk_errors) == 1 else 'ies'} for bytecode caches"
+            )
 
     # 4. Clean hugging face cache
     if clean_hf:

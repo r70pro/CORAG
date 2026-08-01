@@ -17,6 +17,15 @@ immutable 40-character Hugging Face commits for both models, and absolute `KIRAG
 and `KIRAG_LOG_DIR` paths. Keep `KIRAG_ENABLE_REMOTE_LIFECYCLE=false`; operators
 should use systemd for lifecycle changes.
 
+To expose the guarded KIRAG shutdown button in the UI, set
+`KIRAG_ENABLE_APP_SHUTDOWN=true`. The endpoint requires the dedicated admin
+credential and an exact typed confirmation. The installer below adds a narrow
+root-owned systemd path trigger that stops KIRAG services and containers while
+leaving the host powered on; the API itself receives no sudo privileges. The
+application units are disabled at installation and by the shutdown action, so
+they stay off across host restarts. Opening the desktop launcher explicitly
+starts the complete dependency chain again.
+
 ## 2. Stage and verify the model while online
 
 Runtime vLLM is deliberately offline. Downloading is a separate deployment

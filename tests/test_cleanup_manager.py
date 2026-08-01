@@ -127,6 +127,44 @@ class TestCleanupManager(unittest.TestCase):
         self.assertEqual(res, "### No files selected or found to clean up.")
         mock_rmtree.assert_not_called()
 
+    def test_perform_reset_cleanup_deletes_project_pycache_only(self):
+        repo = Path(self.temp_dir) / "repo"
+        project_cache = repo / "package" / "__pycache__"
+        dependency_cache = repo / ".venv" / "package" / "__pycache__"
+        project_cache.mkdir(parents=True)
+        dependency_cache.mkdir(parents=True)
+        (project_cache / "module.pyc").write_bytes(b"project bytecode")
+        (dependency_cache / "module.pyc").write_bytes(b"dependency bytecode")
+
+        res = cleanup_manager.perform_reset_cleanup(
+            clean_runs=False,
+            clean_gradio=False,
+            clean_pycache=True,
+            clean_hf=False,
+            repo_dir=repo,
+        )
+
+        self.assertFalse(project_cache.exists())
+        self.assertTrue(dependency_cache.exists())
+        self.assertIn("Bytecode cache: `package/__pycache__`", res)
+        self.assertNotIn("Warnings / Errors", res)
+
+    def test_perform_reset_cleanup_reports_pycache_path_and_error(self):
+        repo = Path(self.temp_dir) / "repo"
+        pycache = repo / "package" / "__pycache__"
+        pycache.mkdir(parents=True)
+
+        with patch("shutil.rmtree", side_effect=PermissionError("permission denied")):
+            res = cleanup_manager.perform_reset_cleanup(
+                clean_runs=False,
+                clean_gradio=False,
+                clean_pycache=True,
+                clean_hf=False,
+                repo_dir=repo,
+            )
+
+        self.assertIn("`package/__pycache__`: permission denied", res)
+
     def test_perform_reset_cleanup_hf_error(self):
         home = Path(self.temp_dir) / "home"
         hf_cache = home / ".cache" / "huggingface"

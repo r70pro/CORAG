@@ -15,6 +15,7 @@ import {
   Trash2,
   FileCheck,
   Terminal,
+  LoaderCircle,
 } from "lucide-react";
 import {
   triggerRagChatSSE,
@@ -35,6 +36,7 @@ interface ChatMessage {
   id: string;
   sender: "user" | "bot";
   text: string;
+  activity?: string;
   timestamp: string;
   verificationDetails?: {
     pageRange: string;
@@ -119,7 +121,7 @@ export const RagChat: React.FC = () => {
   const [modelUrl, setModelUrl] = useState<string>("http://localhost:8000/v1");
   const [modelName, setModelName] = useState<string>("nvidia/Phi-4-reasoning-plus-NVFP4");
   const [topK, setTopK] = useState<number>(8);
-  const [maxOutputTokens, setMaxOutputTokens] = useState<number>(4096);
+  const [maxOutputTokens, setMaxOutputTokens] = useState<number>(16000);
   const [useReranker, setUseReranker] = useState<boolean>(true);
   const [rerankerModel, setRerankerModel] = useState<string>("BAAI/bge-reranker-large");
   const [rerankerDevice, setRerankerDevice] = useState<string>("cuda");
@@ -288,6 +290,7 @@ export const RagChat: React.FC = () => {
       id: botMsgId,
       sender: "bot",
       text: "",
+      activity: "Starting RAG analysis…",
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     };
 
@@ -332,6 +335,11 @@ export const RagChat: React.FC = () => {
       },
       (chunk) => {
         pendingText += chunk;
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === botMsgId ? { ...message, activity: undefined } : message,
+          ),
+        );
         if (!flushTimer) flushTimer = setTimeout(flushPendingText, 200);
       },
       (err) => {
@@ -348,7 +356,19 @@ export const RagChat: React.FC = () => {
         flushPendingText();
         ragRequestRef.current = null;
         setIsStreaming(false);
-      }
+      },
+      (status) => {
+        if (status.stage !== "complete") {
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === botMsgId ? { ...message, activity: status.message } : message,
+            ),
+          );
+          setLogMessages((previous) =>
+            previous.at(-1) === status.message ? previous : [...previous, status.message],
+          );
+        }
+      },
     );
   };
 
@@ -808,6 +828,12 @@ export const RagChat: React.FC = () => {
                             }`}
                           >
                             <div className="whitespace-pre-wrap">{msg.text}</div>
+                            {msg.sender === "bot" && !msg.text && msg.activity && (
+                              <div className="flex items-center gap-2 text-indigo-300" role="status" aria-live="polite">
+                                <LoaderCircle className="w-4 h-4 animate-spin" />
+                                <span>{msg.activity}</span>
+                              </div>
+                            )}
 
                             {msg.sender === "bot" && msg.verificationDetails && (
                               <div className="mt-3 pt-3 border-t border-slate-800 space-y-1.5">
@@ -1007,6 +1033,12 @@ export const RagChat: React.FC = () => {
                           }`}
                         >
                           <div className="whitespace-pre-wrap">{msg.text}</div>
+                          {msg.sender === "bot" && !msg.text && msg.activity && (
+                            <div className="flex items-center gap-2 text-indigo-300" role="status" aria-live="polite">
+                              <LoaderCircle className="w-4 h-4 animate-spin" />
+                              <span>{msg.activity}</span>
+                            </div>
+                          )}
 
                           {msg.sender === "bot" && msg.verificationDetails && (
                             <div className="mt-3 pt-3 border-t border-slate-800 space-y-1.5">

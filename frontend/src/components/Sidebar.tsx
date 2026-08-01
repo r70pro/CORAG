@@ -25,6 +25,7 @@ import {
   fetchSettings,
   updateSettings,
   setVllmRoleRunning,
+  setExtendedAnalysisContext,
 } from "@/lib/api";
 
 export type ViewType =
@@ -230,6 +231,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
     await loadDockerState();
   };
 
+  const handleAnalysisContextMode = async (extended: boolean) => {
+    setDockerMsg(extended ? "Stopping OCR and enabling 262K analysis context..." : "Restoring OCR and 32K analysis context...");
+    setDockerStatuses({ ocr: extended ? "stopping" : "starting", analysis: "starting" });
+    const res = await setExtendedAnalysisContext(extended);
+    setDockerMsg(res.message || "Context mode switch requested.");
+    await loadDockerState();
+  };
+
 
   const handleShutdownDocker = async () => {
     setDockerMsg("Shutting down container...");
@@ -313,6 +322,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     </div>
                   </div>
                 ))}
+              </div>
+
+              <div className="rounded-lg border border-indigo-800/50 bg-indigo-950/20 p-2 space-y-1.5">
+                <div className="text-[10px] font-semibold text-indigo-200">Analysis context allocation</div>
+                <button type="button" onClick={() => handleAnalysisContextMode(true)} className="w-full px-2 py-1 rounded bg-indigo-700 hover:bg-indigo-600 text-white font-semibold">
+                  Stop OCR & Enable 262K
+                </button>
+                <button type="button" onClick={() => handleAnalysisContextMode(false)} className="w-full px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700">
+                  Restore OCR & 32K Mode
+                </button>
+                <p className="text-[9px] leading-snug text-slate-400">262K mode dedicates the shared GPU to analysis. OCR ingestion is unavailable until dual-model mode is restored.</p>
               </div>
 
               <div className="text-[10px] text-slate-400 border-t border-slate-800 pt-2">OCR provisioning settings (analysis is managed independently by the production stack).</div>

@@ -157,6 +157,16 @@ async function assertOk(response: Response): Promise<Response> {
 
 function normalizeThrownError(error: unknown, signal: AbortSignal): unknown {
   if (signal.aborted && signal.reason !== undefined) return signal.reason;
+  if (
+    error instanceof TypeError &&
+    /fetch|network|failed to load|load failed/i.test(error.message)
+  ) {
+    return new ApiError(
+      "The connection to KIRAG was interrupted. Check that the API and frontend services are running, then retry the query.",
+      0,
+      error,
+    );
+  }
   return error;
 }
 
@@ -375,6 +385,12 @@ async function consumeSse<T>(
       const { done, value } = await reader.read();
       if (done) {
         parser.finish();
+        if (!streamDone) {
+          throw new ApiError(
+            "The RAG stream ended before the server confirmed completion. Retry the query.",
+            502,
+          );
+        }
         break;
       }
       parser.push(value);

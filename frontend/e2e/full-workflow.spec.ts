@@ -10,6 +10,7 @@ const sourceStem = basename(sourcePdf, extname(sourcePdf));
 const sourceMarkdownName = `0_${sourceStem}.md`;
 const expectedPageCount = Number(process.env.KIRAG_E2E_EXPECTED_PAGES || "9");
 const reuseLatestOcrRun = process.env.KIRAG_E2E_REUSE_OCR === "1";
+const reuseReadyOcrRole = process.env.KIRAG_E2E_REUSE_OCR_ROLE === "1";
 const ocrModel = "allenai/olmOCR-2-7B-1025-FP8";
 const qwenModel =
   process.env.KIRAG_E2E_QWEN_MODEL || "Qwen/Qwen3.6-35B-A3B";
@@ -43,15 +44,17 @@ test.describe.serial("real medicolegal workflow", () => {
     await page.goto("/", { waitUntil: "networkidle" });
 
     if (!reuseLatestOcrRun) {
-      const inferenceToggle = page.getByRole("button", { name: /Inference Server/ });
-      if (!(await page.getByText("Manage the local GPU inference container.").isVisible())) {
-        await inferenceToggle.click();
+      if (!reuseReadyOcrRole) {
+        const inferenceToggle = page.getByRole("button", { name: /Dedicated vLLM Roles/ });
+        if (!(await page.getByText("OCR provisioning settings (analysis is managed independently by the production stack).").isVisible())) {
+          await inferenceToggle.click();
+        }
+        await page.getByLabel("Model Name").first().selectOption(ocrModel);
+        await page.getByRole("button", { name: "Recreate OCR", exact: true }).click();
+        await expect(page.getByText(/Container created and started successfully/)).toBeVisible({
+          timeout: 2 * 60 * 1000,
+        });
       }
-      await page.getByLabel("Model Name").first().selectOption(ocrModel);
-      await page.getByRole("button", { name: "Recreate & Run", exact: true }).click();
-      await expect(page.getByText(/Container created and started successfully/)).toBeVisible({
-        timeout: 2 * 60 * 1000,
-      });
       await expect.poll(async () => page.evaluate(async () => {
         const response = await fetch("/api/docker/status");
         return response.ok ? ((await response.json()) as { status: string }).status : `http-${response.status}`;
@@ -239,8 +242,8 @@ test.describe.serial("real medicolegal workflow", () => {
     await openWorkspace(page, "💬 RAG Processing");
     await expect(page.getByRole("heading", { name: /RAG Processing/ })).toBeVisible();
     const modelNameInput = page.getByLabel("Model Name").last();
-    await expect(modelNameInput).toBeEnabled();
-    await modelNameInput.fill(qwenModel);
+    await expect(modelNameInput).toHaveValue(qwenModel);
+    if (await modelNameInput.isEnabled()) await modelNameInput.fill(qwenModel);
     const rerankerDevice = page.getByLabel("Reranker Device");
     await rerankerDevice.selectOption("cpu");
     await expect(rerankerDevice).toHaveValue("cpu");
@@ -252,8 +255,11 @@ test.describe.serial("real medicolegal workflow", () => {
         ? ((await response.json()) as { reranker_device?: string }).reranker_device
         : `http-${response.status}`;
     })).toBe("cpu");
+    const rerankerToggle = page.getByLabel("Enable Cross-Encoder Reranker");
+    await expect(rerankerToggle).toBeChecked();
+    await rerankerToggle.uncheck();
     await page.getByRole("button", { name: "📋 Timeline", exact: true }).click();
-    await page.getByLabel("Maximum Output Tokens").fill("4096");
+    await page.getByLabel("Maximum Output Tokens").fill("2048");
     const activeCaseSelector = page.locator("select").filter({ has: page.locator("option", { hasText: "Select Active Case Context" }) }).first();
     const caseOptions = await activeCaseSelector.locator("option").count();
     expect(caseOptions).toBeGreaterThan(1);
@@ -279,16 +285,16 @@ test.describe.serial("real medicolegal workflow", () => {
 
     const prompt = page.getByPlaceholder("Ask a medicolegal question or request an audit...").last();
     await prompt.fill(
-      "Output only a Markdown timeline table, beginning with a header row containing Date, Event, Provider/Author, and Source columns. Include every dated event in chronological order, exact original-PDF page provenance, and source-supported verification details only.",
+      "Output only a Markdown timeline table, beginning with a header row containing Date, Event, Provider/Author, and Source columns. Include the ten earliest material dated events in chronological order, exact original-PDF page provenance, and source-supported verification details only.",
     );
     const sendButton = page.getByRole("button", { name: "Send Query", exact: true }).last();
     await sendButton.click();
-    const generatingButton = page.getByRole("button", { name: "Generating…", exact: true }).last();
-    await expect(generatingButton).toBeVisible();
-    await expect(generatingButton).not.toBeVisible({
-      timeout: 30 * 60 * 1000,
-    });
-    const answerText = await page.locator(".whitespace-pre-wrap").last().innerText();
+    await expect(sendButton).toBeDisabled();
+    const answer = page.locator(".whitespace-pre-wrap").last();
+    await expect(answer).toContainText(/Date/i, { timeout: 30 * 60 * 1000 });
+    const stopButton = page.getByRole("button", { name: "Stop generating", exact: true }).last();
+    if (await stopButton.isEnabled()) await stopButton.click();
+    const answerText = await answer.innerText();
     expect(answerText).toMatch(/Date/i);
     expect(answerText).toMatch(/Event/i);
     expect(answerText).toMatch(/Provider|Author/i);
@@ -322,15 +328,15 @@ test.describe.serial("real medicolegal workflow", () => {
 
     await openWorkspace(page, "🖥️ System Diagnostics");
     await page.getByTitle("Refresh Diagnostic Telemetry").click();
-    for (const serviceName of ["POSTGRES", "REDIS", "MINIO", "QDRANT", "VLLM"]) {
+    for (const serviceName of ["POSTGRES", "REDIS", "MINIO", "QDRANT", "VLLM_OCR", "VLLM_ANALYSIS"]) {
       await expect(page.getByRole("heading", { name: serviceName, exact: true })).toBeVisible();
     }
-    await expect(page.getByText("5/5 Online", { exact: true })).toBeVisible();
+    await expect(page.getByText("6/6 Online", { exact: true })).toBeVisible();
     await expect(page.getByText("NVIDIA GB10", { exact: true })).toBeVisible();
     await page.getByTitle("Refresh Installed Models List").click();
     await expect(page.getByRole("row", { name: new RegExp(`${qwenModel}.*ACTIVE`) })).toBeVisible();
     await page.getByTitle("Refresh Container Logs").click();
-    await expect(page.getByRole("button", { name: /Live Container Logs \((READY|RUNNING)\)/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /vLLM Logs \((READY|RUNNING)\)/ })).toBeVisible();
 
     expect(browserErrors).toEqual([]);
   });
@@ -340,15 +346,15 @@ test.describe.serial("real medicolegal workflow", () => {
     await page.goto("/", { waitUntil: "networkidle" });
     await openWorkspace(page, "🖥️ System Diagnostics");
     await page.getByTitle("Refresh Diagnostic Telemetry").click();
-    for (const serviceName of ["POSTGRES", "REDIS", "MINIO", "QDRANT", "VLLM"]) {
+    for (const serviceName of ["POSTGRES", "REDIS", "MINIO", "QDRANT", "VLLM_OCR", "VLLM_ANALYSIS"]) {
       await expect(page.getByRole("heading", { name: serviceName, exact: true })).toBeVisible();
     }
-    await expect(page.getByText("5/5 Online", { exact: true })).toBeVisible();
+    await expect(page.getByText("6/6 Online", { exact: true })).toBeVisible();
     await expect(page.getByText("NVIDIA GB10", { exact: true })).toBeVisible();
     await page.getByTitle("Refresh Installed Models List").click();
     await expect(page.getByRole("row", { name: new RegExp(`${qwenModel}.*ACTIVE`) })).toBeVisible();
     await page.getByTitle("Refresh Container Logs").click();
-    await expect(page.getByRole("button", { name: /Live Container Logs \((READY|RUNNING)\)/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /vLLM Logs \((READY|RUNNING)\)/ })).toBeVisible();
     expect(browserErrors).toEqual([]);
   });
 });

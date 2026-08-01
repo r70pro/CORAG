@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for an authenticated user-level KIRAG shutdown request
+
+[Path]
+PathExists=%t/kirag/app-shutdown-request
+Unit=kirag-shutdown.service
+
+[Install]
+WantedBy=default.target

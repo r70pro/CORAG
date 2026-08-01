@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.auth import require_remote_lifecycle_enabled, verify_admin_key
 from api.models import (
+    AnalysisContextModeRequest,
     DockerCreateRequest,
     DockerLogsResponse,
     DockerModelsResponse,
@@ -18,6 +19,22 @@ from api.models import (
 )
 
 router = APIRouter()
+
+
+@router.post(
+    "/analysis/context-mode",
+    response_model=MessageResponse,
+    summary="Switch analysis context mode",
+    dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
+)
+async def set_analysis_context_mode(req: AnalysisContextModeRequest):
+    """Use the OCR model's GPU allocation for a 262K analysis context, or restore it."""
+    from docker_manager import set_extended_analysis_context
+
+    success, msg = await asyncio.to_thread(set_extended_analysis_context, req.extended)
+    if not success:
+        raise HTTPException(status_code=503, detail=msg)
+    return MessageResponse(success=True, message=msg)
 
 
 @router.get("/models", response_model=DockerModelsResponse, summary="Get available/cached models")

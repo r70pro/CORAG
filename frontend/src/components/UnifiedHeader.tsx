@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import {
   Activity,
   Brain,
@@ -16,8 +17,9 @@ import {
   CheckCircle2,
   AlertTriangle,
   Loader2,
+  Power,
 } from "lucide-react";
-import { fetchSystemHealth, fetchCaseSummary, fetchDocumentRuns } from "@/lib/api";
+import { fetchSystemHealth, fetchCaseSummary, fetchDocumentRuns, shutdownApp } from "@/lib/api";
 
 export type ViewType =
   | "ingestion"
@@ -68,6 +70,10 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
   // Case list state
   const [casesList, setCasesList] = useState<{ id: string; name: string }[]>([]);
   const [isFetching, setIsFetching] = useState<boolean>(false);
+  const [showShutdownDialog, setShowShutdownDialog] = useState(false);
+  const [shutdownConfirmation, setShutdownConfirmation] = useState("");
+  const [shutdownState, setShutdownState] = useState<"idle" | "requesting" | "accepted" | "error">("idle");
+  const [shutdownMessage, setShutdownMessage] = useState("");
 
   // Popover controls
   const [showHealthPopover, setShowHealthPopover] = useState<boolean>(false);
@@ -205,6 +211,19 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
     { id: "diagnostics", label: "Diagnostics", icon: Activity },
   ];
 
+  const requestShutdown = async () => {
+    if (shutdownConfirmation !== "SHUTDOWN") return;
+    setShutdownState("requesting");
+    const result = await shutdownApp();
+    if (result?.success) {
+      setShutdownState("accepted");
+      setShutdownMessage(result.message || "Shutdown accepted. KIRAG is stopping.");
+    } else {
+      setShutdownState("error");
+      setShutdownMessage(result?.message || "The shutdown request failed.");
+    }
+  };
+
   // VRAM calculation
   // The diagnostics API reports memory in MiB (the underlying nvidia-smi unit).
   const vramUsed = gpuInfo?.vram_used ?? 0;
@@ -216,6 +235,7 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
   const vramTotalGiB = vramTotal / 1024;
 
   return (
+    <>
     <header className="w-full bg-[#0d121f]/90 backdrop-blur-md border-b border-slate-800/80 sticky top-0 z-40 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 shadow-xl shadow-black/20">
       {/* LEFT SECTION: Logo & Quick Jump Case Switcher */}
       <div className="flex items-center space-x-3">
@@ -441,7 +461,58 @@ export const UnifiedHeader: React.FC<UnifiedHeaderProps> = ({
         >
           <RefreshCw className={`w-3.5 h-3.5 ${isFetching ? "animate-spin text-indigo-400" : ""}`} />
         </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setShowShutdownDialog(true);
+            setShutdownConfirmation("");
+            setShutdownState("idle");
+            setShutdownMessage("");
+          }}
+          className="p-1.5 rounded-xl bg-rose-950/70 border border-rose-800/70 hover:bg-rose-900 text-rose-300 transition-all cursor-pointer"
+          title="Shut down KIRAG"
+          aria-label="Shut down KIRAG"
+        >
+          <Power className="w-3.5 h-3.5" />
+        </button>
       </div>
+
     </header>
+      {showShutdownDialog && typeof document !== "undefined" && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 px-4" role="dialog" aria-modal="true" aria-labelledby="shutdown-title">
+          <div className="w-full max-w-md rounded-2xl border border-rose-800/70 bg-slate-950 p-5 shadow-2xl">
+            <h2 id="shutdown-title" className="flex items-center gap-2 text-base font-bold text-rose-200">
+              <Power className="h-5 w-5" /> Shut down KIRAG?
+            </h2>
+            {shutdownState === "accepted" ? (
+              <p className="mt-3 text-sm text-emerald-300">{shutdownMessage}</p>
+            ) : (
+              <>
+                <p className="mt-3 text-sm text-slate-300">Active work, KIRAG services, and all KIRAG containers will stop gracefully. The DGX host will remain powered on. Type <strong>SHUTDOWN</strong> to confirm.</p>
+                <input
+                  autoFocus
+                  value={shutdownConfirmation}
+                  onChange={(event) => setShutdownConfirmation(event.target.value)}
+                  disabled={shutdownState === "requesting"}
+                  className="mt-4 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 outline-none focus:border-rose-500"
+                  aria-label="Type SHUTDOWN to confirm"
+                />
+                {shutdownState === "error" && <p className="mt-2 text-sm text-rose-300" role="alert">{shutdownMessage}</p>}
+              </>
+            )}
+            <div className="mt-5 flex justify-end gap-2">
+              {shutdownState !== "accepted" && <button type="button" onClick={() => setShowShutdownDialog(false)} disabled={shutdownState === "requesting"} className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-50">Cancel</button>}
+              {shutdownState !== "accepted" && (
+                <button type="button" onClick={requestShutdown} disabled={shutdownConfirmation !== "SHUTDOWN" || shutdownState === "requesting"} className="rounded-lg bg-rose-700 px-3 py-2 text-sm font-bold text-white hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-40">
+                  {shutdownState === "requesting" ? "Shutting down…" : "Stop KIRAG"}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+    </>
   );
 };

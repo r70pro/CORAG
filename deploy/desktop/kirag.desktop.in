@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=KIRAG
+GenericName=Medicolegal RAG Workstation
+Comment=Open the KIRAG PDF OCR and medicolegal analysis workstation
+Exec=@LAUNCHER@
+Icon=kirag
+Terminal=false
+Categories=Office;
+StartupNotify=true
+StartupWMClass=KIRAG
+Keywords=PDF;OCR;RAG;Medical;Legal;

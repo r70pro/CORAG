@@ -1,0 +1,18 @@
+[Unit]
+Description=Gracefully stop KIRAG services and containers
+ConditionPathExists=/run/kirag/app-shutdown-request
+
+[Service]
+Type=oneshot
+User=root
+ExecStartPre=/usr/bin/rm -f /run/kirag/app-shutdown-request
+ExecStartPre=/usr/bin/sleep 2
+# Older desktop-launcher installations created login-enabled user units. Stop
+# and disable them during migration as well. A missing user manager/unit is
+# harmless, so failure of this compatibility step must not skip container stop.
+ExecStart=-/usr/bin/systemctl --user --machine=@KIRAG_USER@.host disable --now kirag-frontend.service kirag-api.service
+# Disable the application units as well as stopping them. This is deliberately
+# persistent: Docker and a subsequent host boot must not resurrect KIRAG after
+# the user has selected Shutdown. The desktop launcher starts the units
+# explicitly when the user next opens KIRAG.
+ExecStart=/usr/bin/systemctl disable --now kirag-frontend.service kirag-api.service kirag-infrastructure.service

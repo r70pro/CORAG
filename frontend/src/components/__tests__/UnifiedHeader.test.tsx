@@ -1,6 +1,7 @@
 import React from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { UnifiedHeader } from "../UnifiedHeader";
+import { shutdownApp } from "@/lib/api";
 
 jest.mock("@/lib/api", () => ({
   fetchSystemHealth: jest.fn().mockResolvedValue({
@@ -32,6 +33,7 @@ jest.mock("@/lib/api", () => ({
     stats: { total_chunks: 54, unique_authors: 4 },
   }),
   fetchDocumentRuns: jest.fn().mockResolvedValue(["souki_enclosures", "test_case_02"]),
+  shutdownApp: jest.fn().mockResolvedValue({ success: true, message: "Shutdown accepted." }),
 }));
 
 describe("UnifiedHeader Component", () => {
@@ -125,5 +127,26 @@ describe("UnifiedHeader Component", () => {
       expect(screen.getByText("postgres")).toBeInTheDocument();
       expect(screen.getByText("qdrant")).toBeInTheDocument();
     });
+  });
+
+  test("requires typed confirmation before requesting host shutdown", async () => {
+    render(
+      <UnifiedHeader
+        currentView="ingestion"
+        onSelectView={mockOnSelectView}
+        activeCaseId="souki_enclosures"
+        onSelectCase={mockOnSelectCase}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Shut down KIRAG" }));
+    const confirmButton = screen.getByRole("button", { name: "Stop KIRAG" });
+    expect(confirmButton).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Type SHUTDOWN to confirm"), { target: { value: "SHUTDOWN" } });
+    fireEvent.click(confirmButton);
+
+    await waitFor(() => expect(shutdownApp).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Shutdown accepted.")).toBeInTheDocument();
   });
 });

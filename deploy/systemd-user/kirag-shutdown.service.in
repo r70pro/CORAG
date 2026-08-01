@@ -1,0 +1,9 @@
+[Unit]
+Description=Gracefully stop the user-owned KIRAG application
+ConditionPathExists=%t/kirag/app-shutdown-request
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/bin/rm -f %t/kirag/app-shutdown-request
+ExecStartPre=/usr/bin/sleep 2
+ExecStart=/usr/bin/systemctl --user disable --now kirag-frontend.service kirag-api.service kirag-infrastructure.service

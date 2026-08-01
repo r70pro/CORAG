@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src http://127.0.0.1:*">
+  <title>Starting KIRAG…</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; color: #e2e8f0; background: radial-gradient(circle at top, #17345c, #08111f 62%); }
+    main { width: min(560px, calc(100% - 32px)); padding: 40px; border: 1px solid #294565; border-radius: 24px; background: #0d1b2dcc; box-shadow: 0 24px 80px #0008; }
+    h1 { margin: 0 0 8px; font-size: 2rem; }
+    .lead { margin: 0 0 30px; color: #94a3b8; line-height: 1.5; }
+    .progress { height: 8px; overflow: hidden; border-radius: 99px; background: #1e293b; }
+    .progress span { display: block; width: 35%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #2dd4bf, #60a5fa); animation: travel 1.6s ease-in-out infinite; }
+    ol { margin: 28px 0 0; padding: 0; list-style: none; }
+    li { display: flex; align-items: center; gap: 12px; padding: 9px 0; color: #64748b; }
+    li::before { content: ''; width: 10px; height: 10px; flex: 0 0 auto; border: 2px solid currentColor; border-radius: 50%; }
+    li.testing { color: #fbbf24; }
+    li.testing::before { border-top-color: transparent; animation: spin .8s linear infinite; }
+    li.ready { color: #5eead4; }
+    li.ready::before { background: currentColor; box-shadow: inset 0 0 0 2px #0d1b2d; }
+    #detail { min-height: 1.4em; margin: 24px 0 0; color: #cbd5e1; }
+    small { display: block; margin-top: 8px; color: #64748b; }
+    @keyframes travel { 0% { transform: translateX(-110%); } 100% { transform: translateX(300%); } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>KIRAG is starting</h1>
+    <p class="lead">The local AI models are loading. A cold start can take 5–7 minutes; this page will open the workstation automatically.</p>
+    <div class="progress" aria-label="Startup in progress"><span></span></div>
+    <ol>
+      <li id="ocr">OCR model</li>
+      <li id="analysis">Analysis model</li>
+      <li id="api">Application API</li>
+      <li id="frontend">KIRAG interface</li>
+    </ol>
+    <p id="detail" role="status">Contacting local services…</p>
+    <small id="elapsed"></small>
+  </main>
+  <script>
+    const appUrl = 'http://127.0.0.1:3000';
+    const services = [
+      ['ocr', 'http://127.0.0.1:8000/v1/models'],
+      ['analysis', 'http://127.0.0.1:8002/v1/models'],
+      ['api', 'http://127.0.0.1:8001/readyz'],
+      ['frontend', appUrl]
+    ];
+    const started = Date.now();
+
+    async function reachable(url) {
+      try {
+        await fetch(url, { mode: 'no-cors', cache: 'no-store' });
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    async function update() {
+      const states = await Promise.all(services.map(([, url]) => reachable(url)));
+      services.forEach(([id], index) => {
+        const element = document.getElementById(id);
+        element.className = states[index] ? 'ready' : (index === states.findIndex(value => !value) ? 'testing' : '');
+      });
+
+      const readyCount = states.filter(Boolean).length;
+      document.getElementById('detail').textContent = readyCount === 4
+        ? 'Ready — opening KIRAG…'
+        : `${readyCount} of 4 services ready`;
+      document.getElementById('elapsed').textContent = `Elapsed: ${Math.floor((Date.now() - started) / 60000)}m ${String(Math.floor((Date.now() - started) / 1000) % 60).padStart(2, '0')}s`;
+
+      if (states[3]) {
+        window.location.replace(appUrl);
+      } else {
+        window.setTimeout(update, 2000);
+      }
+    }
+
+    update();
+  </script>
+</body>
+</html>

@@ -314,7 +314,7 @@ class TestRAGAnalyzerAll(unittest.TestCase):
             "http://localhost:8000/v1",
             "Qwen/Qwen3.6-35B-A3B",
             temperature=0.1,
-            max_tokens=4096,
+            max_tokens=16000,
         )
 
     @patch("httpx.post")

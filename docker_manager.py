@@ -5,6 +5,7 @@ import re
 import socket
 import subprocess
 import time
+from pathlib import Path
 
 import httpx
 
@@ -326,6 +327,52 @@ def set_vllm_role_running(role: str, running: bool) -> tuple[bool, str]:
         error = _decode_stderr(exc)
         audit_event(f"container_{action}", "failure", container=container_name, role=role, error=error)
         return False, f"Failed to {action} {role} vLLM: {error}"
+
+
+def set_extended_analysis_context(enabled: bool) -> tuple[bool, str]:
+    """Atomically switch analysis between 32K shared mode and 262K OCR-off mode."""
+    root = Path(__file__).resolve().parent
+    compose_files = [root / "docker-compose.rag.yml", root / "docker-compose.production.yml"]
+    if not all(path.is_file() for path in compose_files):
+        return False, "Production Compose files were not found."
+
+    target_context = 262144 if enabled else 32768
+    target_gpu = "0.85" if enabled else "0.57"
+    env = os.environ.copy()
+    env["KIRAG_ANALYSIS_MAX_MODEL_LEN"] = str(target_context)
+    env["KIRAG_ANALYSIS_GPU_MEMORY_UTILIZATION"] = target_gpu
+    compose = [
+        "docker", "compose", "--project-directory", str(root),
+        "-f", str(compose_files[0]), "-f", str(compose_files[1]),
+    ]
+
+    audit_event("analysis_context_mode", "attempt", extended=enabled, context=target_context)
+    try:
+        subprocess.run(["docker", "stop", "kirag_vllm_analysis"], check=False, capture_output=True)
+        if enabled:
+            success, message = set_vllm_role_running("ocr", False)
+            if not success:
+                raise RuntimeError(message)
+        subprocess.run(
+            [*compose, "up", "-d", "--no-deps", "--force-recreate", "vllm-analysis"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            cwd=root,
+            env=env,
+        )
+        if not enabled:
+            success, message = set_vllm_role_running("ocr", True)
+            if not success:
+                raise RuntimeError(message)
+        audit_event("analysis_context_mode", "success", extended=enabled, context=target_context)
+        mode = "262,144-token analysis-only" if enabled else "32,768-token dual-model"
+        return True, f"Switched to {mode} mode. Analysis vLLM is starting."
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as exc:
+        error = _decode_stderr(exc) if isinstance(exc, subprocess.CalledProcessError) else str(exc)
+        audit_event("analysis_context_mode", "failure", extended=enabled, error=error)
+        return False, f"Unable to switch analysis context mode: {error}"
 
 
 def resolve_vllm_image() -> str:

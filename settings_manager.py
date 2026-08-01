@@ -97,7 +97,12 @@ def _resolve_hf_home():
 if "HF_HOME" not in os.environ:
     os.environ["HF_HOME"] = _resolve_hf_home()
 
-SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+_DEFAULT_SETTINGS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "settings.json"
+)
+SETTINGS_FILE = os.path.abspath(
+    os.path.expanduser(os.environ.get("KIRAG_SETTINGS_FILE", _DEFAULT_SETTINGS_FILE))
+)
 _SETTINGS_LOCK = threading.RLock()
 
 

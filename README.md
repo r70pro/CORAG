@@ -91,7 +91,7 @@ The primary implementation boundaries are:
   environment can run tests and CPU embeddings, but it does not make the
   managed vLLM container CPU-compatible.
 - Node.js/npm compatible with Next.js 16 if using the alternative frontend.
-- systemd on Linux for unattended, reboot-persistent production operation.
+- systemd on Linux for supervised production operation without boot autostart.
 - Sufficient storage for model weights and the persistent `workspace/` data.
 
 The supplied production defaults were validated on a 128 GiB NVIDIA GB10
@@ -157,14 +157,18 @@ At minimum, review:
 | `KIRAG_API_KEY` | General REST API credential |
 | `KIRAG_ADMIN_API_KEY` | Separate credential for administrative REST operations |
 | `KIRAG_ENABLE_REMOTE_LIFECYCLE` | Keep `false` in production so only host operators control services |
+| `KIRAG_ENABLE_APP_SHUTDOWN` | Set `true` to enable the confirmed UI/API control that stops KIRAG services and containers without powering off the host |
 | `KIRAG_GRADIO_USERNAME` / `KIRAG_GRADIO_PASSWORD` | Required together before Gradio may bind beyond loopback |
 | `KIRAG_API_URL` | FastAPI origin used by the Next.js server-side proxy |
+| `KIRAG_SETTINGS_FILE` | Optional absolute mutable-settings path; production should place it beneath the writable workspace |
 | `KIRAG_MAX_*` | PDF and Markdown upload count/per-file/aggregate limits |
 
 `.env` and `.env.*` are ignored except example files. `settings.json` is the
 application's persistent UI/CLI settings file and is tracked in this checkout;
 the Gradio UI can save a Hugging Face token into it. Do not save a real token
-there in a shared checkout or commit one. Environment values take precedence
+there in a shared checkout or commit one. Supervised deployments should set
+`KIRAG_SETTINGS_FILE` to a protected path beneath `workspace/` so atomic saves
+remain compatible with the systemd filesystem sandbox. Environment values take precedence
 where the relevant code explicitly reads them.
 
 Interactive-workstation defaults include:
@@ -200,10 +204,29 @@ images are processed by the OCR role.
 
 ## Running KIRAG
 
-For unattended production on one Linux/NVIDIA host, use the supervised profile
-in [`deploy/README.md`](deploy/README.md). It keeps persistent infrastructure
-independent of UI/API exits, starts vLLM from a pre-verified offline snapshot,
-uses readiness gates and rotating logs, and runs a built Next.js artifact.
+### Desktop launcher
+
+On a Linux desktop, install the application-menu and desktop icons once:
+
+```bash
+scripts/install-desktop-launcher.sh
+```
+
+Double-click **KIRAG** (or select it from the applications menu) to start the
+installed per-user services and containers when necessary and open the
+production UI. This desktop lifecycle does not require root or a PolicyKit
+prompt. KIRAG does not start at login or host boot: the UI **Stop KIRAG** action
+stops and disables the complete stack, and it remains stopped across reboots
+until this launcher is used again. The user must have permission to use Docker
+(for example, through membership of the `docker` group).
+Launcher diagnostics are written to
+`~/.local/state/kirag/launcher.log`.
+
+For supervised production on one Linux/NVIDIA host, use the profile in
+[`deploy/README.md`](deploy/README.md). It keeps infrastructure independent of
+incidental UI/API exits while KIRAG is running, starts vLLM from a pre-verified
+offline snapshot, uses readiness gates and rotating logs, and runs a built
+Next.js artifact.
 
 ### Supervised single-machine production
 
@@ -249,6 +272,10 @@ HF_TOKEN="$HF_TOKEN" .venv/bin/python scripts/prepare-production-model.py \
 sudo scripts/install-systemd-services.sh "$USER" "$PWD" "$PWD/.env"
 sudo systemctl start kirag-frontend.service
 ```
+
+The installer leaves the application units disabled so KIRAG does not start at
+boot. Starting a disabled unit explicitly is supported; its dependencies start
+the container infrastructure for the current application session.
 
 `--cache-dir` is the Hugging Face home, not its `hub/` child; the preparation
 script resolves repositories under `$KIRAG_HF_HOME/hub`. Runtime containers
@@ -376,6 +403,7 @@ dedicated admin key.
 | Documents | list runs/files, retrieve Markdown, first run PDF, and page-map information |
 | Diagnostics | health, GPU, services, report, installed models; cleanup and model deletion are **admin** |
 | Settings | read settings (HF token masked); update settings is **admin** |
+| System | `POST /api/system/shutdown` stops KIRAG but not the host; requires the **admin** key, `KIRAG_ENABLE_APP_SHUTDOWN=true`, and body `{ "confirmation": "SHUTDOWN" }` |
 | Convenience | `POST /api/ingest`, `POST /api/chat`, `GET /api/health`, `GET /api/case-summary`, `GET /api/cases/{run_id}/timeline` |
 | Probes | unauthenticated `GET /livez` and `GET /readyz` |
 

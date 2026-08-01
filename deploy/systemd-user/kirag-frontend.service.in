@@ -2,13 +2,9 @@
 Description=KIRAG production Next.js frontend
 BindsTo=kirag-api.service
 After=kirag-api.service
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 [Service]
 Type=simple
-User=@KIRAG_USER@
-Group=@KIRAG_GROUP@
 WorkingDirectory=@KIRAG_ROOT@/frontend
 EnvironmentFile=@KIRAG_ENV@
 Environment=NODE_ENV=production
@@ -20,11 +16,6 @@ Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=60
 KillSignal=SIGINT
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=@KIRAG_ROOT@/frontend/.next
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

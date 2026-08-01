@@ -53,7 +53,7 @@ runuser -u "$service_user" -- "$kirag_root/.venv/bin/python" \
 staging_dir="$(mktemp -d)"
 trap 'rm -rf -- "$staging_dir"' EXIT
 
-for unit in kirag-infrastructure kirag-api kirag-frontend; do
+for unit in kirag-infrastructure kirag-api kirag-frontend kirag-shutdown; do
   echo "Rendering $unit.service..."
   sed \
     -e "s|@KIRAG_USER@|$service_user|g" \
@@ -64,15 +64,21 @@ for unit in kirag-infrastructure kirag-api kirag-frontend; do
     -e "s|@NODE_BIN_DIR@|$node_bin_dir|g" \
     "$kirag_root/deploy/systemd/$unit.service.in" > "$staging_dir/$unit.service"
 done
+cp "$kirag_root/deploy/systemd/kirag-shutdown.path.in" "$staging_dir/kirag-shutdown.path"
 
 echo "Validating generated systemd units..."
-/usr/bin/systemd-analyze verify "$staging_dir"/*.service
+/usr/bin/systemd-analyze verify "$staging_dir"/*
 
-for unit in kirag-infrastructure kirag-api kirag-frontend; do
+for unit in kirag-infrastructure kirag-api kirag-frontend kirag-shutdown; do
   echo "Installing $unit.service..."
   install -m 0644 "$staging_dir/$unit.service" "/etc/systemd/system/$unit.service"
 done
+install -m 0644 "$staging_dir/kirag-shutdown.path" "/etc/systemd/system/kirag-shutdown.path"
 
 systemctl daemon-reload
-systemctl enable kirag-infrastructure kirag-api kirag-frontend
-echo "Installed and enabled KIRAG services. Start with: systemctl start kirag-frontend"
+# KIRAG behaves like a desktop application: installing it must not opt it into
+# host boot. The desktop launcher starts this dependency chain explicitly.
+# Disable also migrates installations created by older versions of this script.
+systemctl disable kirag-infrastructure kirag-api kirag-frontend
+systemctl enable --now kirag-shutdown.path
+echo "Installed KIRAG services without boot autostart. Open the desktop launcher or run: systemctl start kirag-frontend"

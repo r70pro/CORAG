@@ -67,6 +67,23 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(data["service"], "KIRAG API")
         self.assertIn("version", data)
 
+    def test_host_shutdown_requires_confirmation_and_creates_trigger(self):
+        marker = os.path.join(self.temp_directory.name, "shutdown-request")
+        with patch("api.routes.system.SHUTDOWN_REQUEST_PATH", marker):
+            rejected = self.client.post(
+                "/api/system/shutdown", json={"confirmation": "shutdown"}
+            )
+            self.assertEqual(rejected.status_code, 422)
+            self.assertFalse(os.path.exists(marker))
+
+            accepted = self.client.post(
+                "/api/system/shutdown", json={"confirmation": "SHUTDOWN"}
+            )
+            self.assertEqual(accepted.status_code, 202)
+            self.assertTrue(accepted.json()["success"])
+            with open(marker, encoding="ascii") as request_file:
+                self.assertEqual(request_file.read(), "shutdown\n")
+
     # ── Settings ──────────────────────────────────────────────────────────────
 
     @patch("api.routes.settings.load_settings")
@@ -583,6 +600,12 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         lines = [line for line in response.iter_lines() if line]
         self.assertTrue(any("Answer" in line for line in lines))
+        self.assertTrue(any('"type": "status"' in line for line in lines))
+        self.assertTrue(any('"type": "content"' in line for line in lines))
+        self.assertEqual(
+            response.headers["cache-control"],
+            "no-cache, no-transform",
+        )
 
         # Case 2: Non-streaming
         payload = {"query": "test query", "stream": False}

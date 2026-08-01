@@ -93,6 +93,7 @@ describe("RagChat Component", () => {
         expect.any(Function),
         expect.any(Function),
         expect.any(Function),
+        expect.any(Function),
       );
     });
   });
@@ -115,6 +116,7 @@ describe("RagChat Component", () => {
           date_from: "2024-01-01",
           date_to: "2024-12-31",
         }),
+        expect.any(Function),
         expect.any(Function),
         expect.any(Function),
         expect.any(Function),
@@ -142,6 +144,30 @@ describe("RagChat Component", () => {
       expect(send).toHaveAccessibleName("Send Query");
       expect(send).toBeDisabled();
     });
+  });
+
+  test("shows safe pipeline activity without exposing model reasoning", async () => {
+    jest.mocked(triggerRagChatSSE).mockImplementation(
+      (_payload, onChunk, _onError, _onComplete, onStatus) => {
+        onStatus?.({
+          type: "status",
+          stage: "retrieving",
+          message: "Searching indexed medical records…",
+          progress: 0.1,
+        });
+        return { cancel: jest.fn() };
+      },
+    );
+    render(<RagChat />);
+
+    const input = screen.getByPlaceholderText(/Ask a medicolegal question or request an audit.../i);
+    fireEvent.change(input, { target: { value: "Build a timeline" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send Query" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Searching indexed medical records…",
+    );
+    expect(screen.queryByText(/thinking process/i)).not.toBeInTheDocument();
   });
 
   test("exposes Gradio-equivalent stop and clear controls", async () => {

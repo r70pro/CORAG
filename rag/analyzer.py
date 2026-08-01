@@ -39,7 +39,7 @@ _MODEL_EQUIVALENTS = {
 # RAG analysis retrieval constants
 STRUCTURED_MODE_MIN_TOP_K = 50
 STRUCTURED_MODE_SCORE_THRESHOLD = 0.05
-DEFAULT_MAX_OUTPUT_TOKENS = 4096
+DEFAULT_MAX_OUTPUT_TOKENS = 16000
 CONSERVATIVE_ANALYSIS_CONTEXT_LENGTH = 32768
 # KIRAG's generic token estimator can under-count a served model's native
 # tokenizer, and vLLM then adds that model's chat-template special tokens.
@@ -373,7 +373,7 @@ def query_llm_streaming(
     server_url: str,
     model_name: str,
     temperature: float = 0.1,
-    max_tokens: int = 4096,
+    max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
 ) -> Generator[str, None, None]:
     """Send messages to vLLM and stream the response.
 
@@ -474,7 +474,7 @@ def query_llm(
     server_url: str,
     model_name: str,
     temperature: float = 0.1,
-    max_tokens: int = 4096,
+    max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
 ) -> str:
     """Send messages to vLLM and return the full response (non-streaming).
 
@@ -748,6 +748,9 @@ def analyze(
         yield "Please ensure documents have been indexed using the 'Build Index' button."
         return
 
+    if progress_callback:
+        progress_callback(0.82, f"Preparing {len(results)} retrieved excerpts for analysis…")
+
     # Resolve the model used for analysis before calculating its prompt budget.
     resolved_model = model_name
     model_fallback_warning = None
@@ -886,6 +889,8 @@ def analyze(
         )
 
     # Step 4: Query LLM
+    if progress_callback:
+        progress_callback(0.9, "Generating the source-grounded answer…")
     if model_fallback_warning:
         yield model_fallback_warning
 

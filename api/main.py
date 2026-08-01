@@ -250,7 +250,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # ── Mount route modules ──────────────────────────────────────────────────────
 
-from api.routes import diagnostics, docker, documents, pipeline, rag, settings  # noqa: E402
+from api.routes import diagnostics, docker, documents, pipeline, rag, settings, system  # noqa: E402
 
 app.include_router(pipeline.router, prefix="/api/pipeline", tags=["Pipeline"])
 app.include_router(docker.router, prefix="/api/docker", tags=["Docker"])
@@ -258,6 +258,7 @@ app.include_router(rag.router, prefix="/api/rag", tags=["RAG"])
 app.include_router(diagnostics.router, prefix="/api/diagnostics", tags=["Diagnostics"])
 app.include_router(settings.router, prefix="/api/settings", tags=["Settings"])
 app.include_router(documents.router, prefix="/api/documents", tags=["Documents"])
+app.include_router(system.router, prefix="/api/system", tags=["System"])
 
 
 # ── Phase 1 Consolidated Endpoints ───────────────────────────────────────────
@@ -495,6 +496,7 @@ def root():
             "diagnostics": "/api/diagnostics",
             "settings": "/api/settings",
             "documents": "/api/documents",
+            "system": "/api/system",
             "ingest": "/api/ingest",
             "chat": "/api/chat",
             "health": "/api/health",
