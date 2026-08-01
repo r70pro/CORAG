@@ -41,6 +41,10 @@ class TestRAGAnalyzerAll(unittest.TestCase):
                 "injury_summary",
                 "inconsistency_finder",
                 "medication_tracker",
+                "causation",
+                "prognosis",
+                "work_capacity",
+                "treatment_planning",
             },
         )
 
@@ -300,22 +304,25 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         payload = mock_post.call_args[1]["json"]
         self.assertEqual(payload["repetition_penalty"], 1.05)
 
-    @patch("rag.analyzer.query_llm", return_value="safe answer")
-    def test_query_llm_streaming_uses_safe_qwen3_content_envelope(self, mock_query):
+    @patch("httpx.stream")
+    def test_query_llm_streaming_separates_qwen_reasoning(self, mock_stream):
+        mock_stream.return_value = MockStreamResponse(200, [
+            'data: {"choices":[{"delta":{"reasoning_content":"private analysis"}}]}',
+            'data: {"choices":[{"delta":{"content":"safe answer"}}]}',
+            "data: [DONE]",
+        ])
+        reasoning = []
         chunks = list(
             rag_anz.query_llm_streaming(
-                [], "http://localhost:8000/v1", "Qwen/Qwen3.6-35B-A3B"
+                [], "http://localhost:8000/v1", "Qwen/Qwen3.6-35B-A3B",
+                enable_thinking=True, reasoning_callback=reasoning.append,
             )
         )
 
         self.assertEqual(chunks, ["safe answer"])
-        mock_query.assert_called_once_with(
-            [],
-            "http://localhost:8000/v1",
-            "Qwen/Qwen3.6-35B-A3B",
-            temperature=0.1,
-            max_tokens=16000,
-        )
+        self.assertEqual(reasoning, ["private analysis"])
+        payload = mock_stream.call_args.kwargs["json"]
+        self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": True})
 
     @patch("httpx.post")
     def test_query_llm_disables_qwen3_thinking(self, mock_post):

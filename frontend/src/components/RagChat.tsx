@@ -36,6 +36,7 @@ interface ChatMessage {
   id: string;
   sender: "user" | "bot";
   text: string;
+  reasoning?: string;
   activity?: string;
   timestamp: string;
   verificationDetails?: {
@@ -73,10 +74,22 @@ const ANALYSIS_MODES = [
   "🏥 Injury Summary",
   "🔍 Inconsistency Finder",
   "💊 Medication Tracker",
+  "🧬 Causation Analysis",
+  "📈 Prognosis Analysis",
+  "🧑‍💼 Work Capacity",
+  "🩺 Treatment Planning",
 ] as const;
 
-export const RagChat: React.FC = () => {
+interface RagChatProps { activeRole?: string }
+
+export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewer" }) => {
   const ragRequestRef = useRef<ReturnType<typeof triggerRagChatSSE> | null>(null);
+  const reasoningLogRef = useRef<string>("");
+  const sessionIdRef = useRef<string>(
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `rag-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
   const [showControls, setShowControls] = useState<boolean>(true);
   const [prompt, setPrompt] = useState<string>("");
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
@@ -121,7 +134,6 @@ export const RagChat: React.FC = () => {
   const [modelUrl, setModelUrl] = useState<string>("http://localhost:8000/v1");
   const [modelName, setModelName] = useState<string>("nvidia/Phi-4-reasoning-plus-NVFP4");
   const [topK, setTopK] = useState<number>(8);
-  const [maxOutputTokens, setMaxOutputTokens] = useState<number>(16000);
   const [useReranker, setUseReranker] = useState<boolean>(true);
   const [rerankerModel, setRerankerModel] = useState<string>("BAAI/bge-reranker-large");
   const [rerankerDevice, setRerankerDevice] = useState<string>("cuda");
@@ -284,6 +296,7 @@ export const RagChat: React.FC = () => {
     const queryText = prompt;
     setPrompt("");
     setIsStreaming(true);
+    reasoningLogRef.current = "";
 
     const botMsgId = (Date.now() + 1).toString();
     const botMsg: ChatMessage = {
@@ -330,7 +343,8 @@ export const RagChat: React.FC = () => {
         use_reranker: useReranker,
         reranker_model: rerankerModel,
         reranker_device: rerankerDevice,
-        max_output_tokens: maxOutputTokens,
+        reasoning_audit: activeRole === "Admin",
+        session_id: sessionIdRef.current,
         stream: true,
       },
       (chunk) => {
@@ -368,6 +382,21 @@ export const RagChat: React.FC = () => {
             previous.at(-1) === status.message ? previous : [...previous, status.message],
           );
         }
+      },
+      (reasoningChunk) => {
+        reasoningLogRef.current += reasoningChunk;
+        setMessages((previous) => previous.map((message) =>
+          message.id === botMsgId
+            ? { ...message, reasoning: (message.reasoning || "") + reasoningChunk, activity: undefined }
+            : message
+        ));
+        setLogMessages((previous) => {
+          const auditLine = `[LLM THINKING — ADMIN AUDIT]\n${reasoningLogRef.current}`;
+          if (previous.at(-1)?.startsWith("[LLM THINKING — ADMIN AUDIT]")) {
+            return [...previous.slice(0, -1), auditLine];
+          }
+          return [...previous, auditLine];
+        });
       },
     );
   };
@@ -410,8 +439,9 @@ export const RagChat: React.FC = () => {
     const historyPayload = messages.map((m) => ({
       role: m.sender === "user" ? "user" : "assistant",
       content: m.text,
+      ...(m.reasoning ? { reasoning: m.reasoning } : {}),
     }));
-    await exportChatHistory(historyPayload, analysisMode, activeCase, format);
+    await exportChatHistory(historyPayload, analysisMode, activeCase, format, activeRole === "Admin");
   };
 
   return (
@@ -613,18 +643,9 @@ export const RagChat: React.FC = () => {
                     onChange={(e) => setTopK(Number(e.target.value))}
                     className="w-full accent-indigo-500 cursor-pointer"
                   />
-                  <div>
-                    <label htmlFor="analysis-max-output-tokens" className="block text-slate-400 text-[10px] mb-0.5">Maximum Output Tokens</label>
-                    <input
-                      id="analysis-max-output-tokens"
-                      type="number"
-                      min={1}
-                      max={131071}
-                      value={maxOutputTokens}
-                      onChange={(event) => setMaxOutputTokens(Math.max(1, Number(event.target.value) || 1))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-[11px]"
-                    />
-                  </div>
+                  <p className="text-[10px] text-cyan-300">
+                    Context allocation is automatic: 32K while OCR is active, full model context otherwise.
+                  </p>
                   <label className="flex items-center gap-2 text-[11px] text-slate-300">
                     <input
                       type="checkbox"
@@ -828,6 +849,12 @@ export const RagChat: React.FC = () => {
                             }`}
                           >
                             <div className="whitespace-pre-wrap">{msg.text}</div>
+                            {activeRole === "Admin" && msg.reasoning && (
+                              <details className="mt-3 rounded border border-amber-800/60 bg-amber-950/20 p-2">
+                                <summary className="cursor-pointer text-[11px] font-semibold text-amber-300">LLM reasoning — administrative audit</summary>
+                                <pre className="mt-2 whitespace-pre-wrap text-[10px] text-amber-100/80 font-mono">{msg.reasoning}</pre>
+                              </details>
+                            )}
                             {msg.sender === "bot" && !msg.text && msg.activity && (
                               <div className="flex items-center gap-2 text-indigo-300" role="status" aria-live="polite">
                                 <LoaderCircle className="w-4 h-4 animate-spin" />
@@ -1033,6 +1060,12 @@ export const RagChat: React.FC = () => {
                           }`}
                         >
                           <div className="whitespace-pre-wrap">{msg.text}</div>
+                          {activeRole === "Admin" && msg.reasoning && (
+                            <details className="mt-3 rounded border border-amber-800/60 bg-amber-950/20 p-2">
+                              <summary className="cursor-pointer text-[11px] font-semibold text-amber-300">LLM reasoning — administrative audit</summary>
+                              <pre className="mt-2 whitespace-pre-wrap text-[10px] text-amber-100/80 font-mono">{msg.reasoning}</pre>
+                            </details>
+                          )}
                           {msg.sender === "bot" && !msg.text && msg.activity && (
                             <div className="flex items-center gap-2 text-indigo-300" role="status" aria-live="polite">
                               <LoaderCircle className="w-4 h-4 animate-spin" />

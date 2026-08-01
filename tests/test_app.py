@@ -108,9 +108,10 @@ class TestOLMOCRApp(unittest.TestCase):
         mock_get.side_effect = Exception("Conn refused")
         self.assertFalse(app.check_server_ready(8000))
 
+    @patch("docker_manager.get_docker_restart_count", return_value=0)
     @patch("docker_manager.check_server_ready")
     @patch("docker_manager.get_docker_status")
-    def test_get_docker_status_str(self, mock_status, mock_ready):
+    def test_get_docker_status_str(self, mock_status, mock_ready, _mock_restarts):
         mock_status.return_value = "not_found"
         state, html = app.get_docker_status_str(8000)
         self.assertEqual(state, "not_found")

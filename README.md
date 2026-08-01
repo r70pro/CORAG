@@ -36,8 +36,8 @@ see [`medicolegal_rag_guide.md`](medicolegal_rag_guide.md).
   offline model snapshots, dedicated OCR and analysis vLLM services, ordered
   health-gated startup, systemd restart supervision, readiness probes, and
   bounded log rotation.
-- Five analysis modes: Free Q&A, Timeline, Injury Summary, Inconsistency Finder,
-  and Medication Tracker.
+- Nine analysis modes: Free Q&A; Timeline; Injury Summary; Inconsistency Finder;
+  Medication Tracker; Causation; Prognosis; Work Capacity; and Treatment Planning.
 - Markdown, text, timeline CSV, analysis DOCX, and timeline DOCX exports.
 - REST API, headless CLI, diagnostics, reconciliation reporting, and managed
   vLLM/container lifecycle operations.
@@ -190,17 +190,22 @@ scoped-token requirements documented in [`.env.example`](.env.example).
 The verified Qwen 3.6 option is `Qwen/Qwen3.6-35B-A3B`; the incompatible NVIDIA
 NVFP4 checkpoint is intentionally not offered by the managed model selector.
 For Qwen3-family models, the managed container configures vLLM's `qwen3`
-reasoning parser and RAG chat requests set `enable_thinking=false`; analysis
-responses and exports therefore contain the answer rather than exposed model
-reasoning.
+reasoning parser. Free Q&A, Causation, Prognosis, Work Capacity, and Treatment
+Planning enable Qwen thinking; the four structured extraction modes disable it.
+Reasoning is a separate channel: verified administrators can view, persist,
+audit, and export it, while regular-user responses contain only the final answer.
+Completion capacity is calculated from the live served context rather than a
+fixed 16K limit.
 
 The supervised profile overrides saved UI inference settings with its
 environment: OCR is `allenai/olmOCR-2-7B-1025-FP8` on port 8000 and analysis is
 `Qwen/Qwen3.6-35B-A3B` on port 8002. Both revisions must be immutable cached
 commits. The production Compose defaults use OCR/analysis GPU high-water marks
 of 0.28/0.57, batch limits of 4,096/8,192 tokens, and context limits of
-15,360/32,768 tokens. Analysis runs in language-only mode because document
-images are processed by the OCR role.
+15,360/32,768 tokens. The managed context switch enforces 32,768 analysis tokens
+while OCR is active and the model's full configured allocation while OCR is
+stopped. Analysis runs in language-only mode because document images are
+processed by the OCR role.
 
 ## Running KIRAG
 

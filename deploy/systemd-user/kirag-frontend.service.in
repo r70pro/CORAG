@@ -9,7 +9,7 @@ WorkingDirectory=@KIRAG_ROOT@/frontend
 EnvironmentFile=@KIRAG_ENV@
 Environment=NODE_ENV=production
 Environment=PATH=@NODE_BIN_DIR@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
-ExecStartPre=@KIRAG_ROOT@/.venv/bin/python @KIRAG_ROOT@/scripts/wait-for-http.py http://127.0.0.1:8001/readyz --timeout 300
+ExecStartPre=@KIRAG_ROOT@/.venv/bin/python @KIRAG_ROOT@/scripts/wait-for-http.py http://127.0.0.1:8001/livez --timeout 300
 ExecStartPre=/usr/bin/test -f @KIRAG_ROOT@/frontend/.next/BUILD_ID
 ExecStart=@NPM_BIN@ run start -- --hostname 127.0.0.1 --port 3000
 Restart=on-failure

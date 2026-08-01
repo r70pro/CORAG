@@ -125,8 +125,12 @@ class RAGQueryRequest(BaseModel):
     use_reranker: bool = True
     reranker_model: str = Field("BAAI/bge-reranker-large", min_length=1, max_length=512)
     reranker_device: str = Field("cuda", min_length=1, max_length=32)
-    max_output_tokens: int = Field(16000, ge=1, le=MAX_MODEL_CONTEXT_LENGTH - 1)
     stream: bool = Field(True, description="If True, response is SSE-streamed")
+    reasoning_audit: bool = Field(
+        False,
+        description="Request visible reasoning; honored only for verified administrators",
+    )
+    session_id: str | None = Field(None, min_length=1, max_length=128)
 
     @model_validator(mode="after")
     def validate_date_range(self):
@@ -139,6 +143,7 @@ class RAGQueryResponse(BaseModel):
     """Complete non-streaming RAG response."""
 
     response: str
+    reasoning: str | None = None
 
 
 class IndexRunRequest(BaseModel):
@@ -336,6 +341,7 @@ class ExportChatRequest(BaseModel):
     mode: str = Field("free_qa", description="Analysis mode key")
     case_id: str = Field("", description="Active case ID")
     export_format: str = Field("md", description="md | txt | csv | docx | timeline_docx")
+    include_reasoning: bool = Field(False, description="Admin-only reasoning audit export")
 
 
 # ── Diagnostics & Cleanup ─────────────────────────────────────────────────────

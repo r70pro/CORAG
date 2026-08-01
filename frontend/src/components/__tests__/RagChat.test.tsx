@@ -94,6 +94,7 @@ describe("RagChat Component", () => {
         expect.any(Function),
         expect.any(Function),
         expect.any(Function),
+        expect.any(Function),
       );
     });
   });
@@ -116,6 +117,7 @@ describe("RagChat Component", () => {
           date_from: "2024-01-01",
           date_to: "2024-12-31",
         }),
+        expect.any(Function),
         expect.any(Function),
         expect.any(Function),
         expect.any(Function),

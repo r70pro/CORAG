@@ -330,13 +330,18 @@ def set_vllm_role_running(role: str, running: bool) -> tuple[bool, str]:
 
 
 def set_extended_analysis_context(enabled: bool) -> tuple[bool, str]:
-    """Atomically switch analysis between 32K shared mode and 262K OCR-off mode."""
+    """Atomically switch between OCR-active 32K and OCR-off full context."""
     root = Path(__file__).resolve().parent
     compose_files = [root / "docker-compose.rag.yml", root / "docker-compose.production.yml"]
     if not all(path.is_file() for path in compose_files):
         return False, "Production Compose files were not found."
 
-    target_context = 262144 if enabled else 32768
+    from settings_manager import MODEL_MAX_CONTENT_LENGTHS, load_settings
+
+    settings = load_settings()
+    analysis_model = settings.get("analysis_model_name", "Qwen/Qwen3.6-35B-A3B")
+    full_model_context = int(MODEL_MAX_CONTENT_LENGTHS.get(analysis_model, 262144))
+    target_context = full_model_context if enabled else 32768
     target_gpu = "0.85" if enabled else "0.57"
     env = os.environ.copy()
     env["KIRAG_ANALYSIS_MAX_MODEL_LEN"] = str(target_context)
@@ -366,8 +371,15 @@ def set_extended_analysis_context(enabled: bool) -> tuple[bool, str]:
             success, message = set_vllm_role_running("ocr", True)
             if not success:
                 raise RuntimeError(message)
+        # Verify the mutually exclusive operating invariant. A transitional or
+        # mismatched state must never be reported as a successful context mode.
+        ocr_status = get_docker_status("olmocr")
+        if enabled and ocr_status in {"running", "restarting"}:
+            raise RuntimeError("OCR remained active while full analysis context was requested")
+        if not enabled and ocr_status not in {"running", "restarting"}:
+            raise RuntimeError("OCR is not active in 32K shared-context mode")
         audit_event("analysis_context_mode", "success", extended=enabled, context=target_context)
-        mode = "262,144-token analysis-only" if enabled else "32,768-token dual-model"
+        mode = f"{target_context:,}-token analysis-only" if enabled else "32,768-token dual-model"
         return True, f"Switched to {mode} mode. Analysis vLLM is starting."
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as exc:
         error = _decode_stderr(exc) if isinstance(exc, subprocess.CalledProcessError) else str(exc)

@@ -23,6 +23,9 @@ def test_desktop_launcher_starts_user_stack_without_enabling_boot_start():
     assert "systemctl enable" not in launcher
     assert 'curl --silent --fail --max-time 2 "$API_READY_URL"' in launcher
     assert 'open_startup_page' in launcher
+    readiness_loop = launcher.split("for _attempt", 1)[1]
+    assert "open_app" in readiness_loop
+    assert "STARTUP_PAGE_OPENED == 0" not in readiness_loop
 
 
 def test_startup_page_redirects_when_the_frontend_is_ready():

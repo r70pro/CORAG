@@ -71,6 +71,17 @@ def verify_admin_key(
     return provided_key or ""
 
 
+def has_admin_access(
+    admin_from_header: str | None = Security(admin_key_header),
+    key_from_header: str | None = Security(api_key_header),
+    bearer: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
+) -> bool:
+    """Return admin status without allowing a client-supplied role assertion."""
+    expected = os.environ.get("KIRAG_ADMIN_API_KEY", "").strip()
+    provided = admin_from_header or key_from_header or (bearer.credentials if bearer else None)
+    return _matches(provided, expected)
+
+
 def require_remote_lifecycle_enabled() -> None:
     """Keep host/container lifecycle control off the normal API surface."""
     if os.environ.get("TESTING") == "true":

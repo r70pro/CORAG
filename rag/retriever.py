@@ -27,6 +27,79 @@ from rag.embedding import (
 logger = logging.getLogger(__name__)
 
 
+_ANALYTICAL_QUERY_FACETS = (
+    "chronology and temporal relationship",
+    "objective clinical findings and investigations",
+    "pre-existing conditions and baseline function",
+    "treating practitioner opinions and recommendations",
+    "independent or expert opinions",
+    "alternative explanations, intervening events, and contrary evidence",
+    "functional course, work capacity, treatment response, and prognosis",
+)
+
+
+def search_comprehensive(query: str, top_k: int = 50, **kwargs) -> list[dict]:
+    """Run evidence-diverse multi-query retrieval for analytical questions.
+
+    Every subquery inherits the same case and metadata filters. Results are
+    merged by stable chunk identity, retaining the best score and recording the
+    facets that retrieved each excerpt before a final relevance/diversity pass.
+    """
+    per_query = max(8, min(20, top_k // 3))
+    merged: dict[str, dict] = {}
+    progress_callback = kwargs.pop("progress_callback", None)
+    search_function = kwargs.pop("search_function", search_similar)
+    queries = [query, *(f"{query}\nEvidence focus: {facet}" for facet in _ANALYTICAL_QUERY_FACETS)]
+    for index, subquery in enumerate(queries):
+        if progress_callback:
+            progress_callback(
+                0.05 + 0.65 * index / len(queries),
+                f"Searching analytical evidence facet {index + 1} of {len(queries)}...",
+            )
+        for result in search_function(
+            subquery,
+            top_k=per_query,
+            progress_callback=None,
+            **kwargs,
+        ):
+            key = str(result.get("chunk_id") or result.get("qdrant_point_id"))
+            facet = "primary question" if index == 0 else _ANALYTICAL_QUERY_FACETS[index - 1]
+            existing = merged.get(key)
+            if existing is None:
+                result = dict(result)
+                result["retrieval_facets"] = [facet]
+                merged[key] = result
+            else:
+                existing["retrieval_facets"].append(facet)
+                if float(result.get("score", 0)) > float(existing.get("score", 0)):
+                    facets = existing["retrieval_facets"]
+                    existing.update(result)
+                    existing["retrieval_facets"] = facets
+
+    results = sorted(merged.values(), key=lambda item: float(item.get("score", 0)), reverse=True)
+    # Diversify across documents before filling remaining slots by score.
+    selected: list[dict] = []
+    seen_docs: set[str] = set()
+    for result in results:
+        doc = str(result.get("doc_id") or result.get("original_filename") or "")
+        if doc and doc not in seen_docs:
+            selected.append(result)
+            seen_docs.add(doc)
+            if len(selected) >= top_k:
+                break
+    selected_ids = {str(item.get("chunk_id") or item.get("qdrant_point_id")) for item in selected}
+    for result in results:
+        key = str(result.get("chunk_id") or result.get("qdrant_point_id"))
+        if key not in selected_ids:
+            selected.append(result)
+            selected_ids.add(key)
+            if len(selected) >= top_k:
+                break
+    if progress_callback:
+        progress_callback(0.8, f"Consolidated {len(selected)} diverse analytical excerpts.")
+    return selected
+
+
 def search_similar(
     query: str,
     top_k: int = 8,

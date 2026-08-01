@@ -9,7 +9,6 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STARTUP_PAGE="${KIRAG_STARTUP_PAGE:-${ROOT_DIR}/deploy/desktop/startup.html}"
 LOG_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/kirag"
 LOG_FILE="${LOG_DIR}/launcher.log"
-STARTUP_PAGE_OPENED=0
 
 mkdir -p "$LOG_DIR"
 exec >>"$LOG_FILE" 2>&1
@@ -30,9 +29,7 @@ open_app() {
 
 open_startup_page() {
     if command -v xdg-open >/dev/null 2>&1 && [[ -f "$STARTUP_PAGE" ]]; then
-        if xdg-open "$STARTUP_PAGE" >/dev/null 2>&1; then
-            STARTUP_PAGE_OPENED=1
-        fi
+        xdg-open "$STARTUP_PAGE" >/dev/null 2>&1
     fi
 }
 
@@ -58,11 +55,10 @@ fi
 for _attempt in $(seq 1 900); do
     if curl --silent --fail --max-time 2 "$APP_URL" >/dev/null 2>&1 &&
             curl --silent --fail --max-time 2 "$API_READY_URL" >/dev/null 2>&1; then
-        # The startup page redirects itself as soon as the application answers.
-        # Retain the direct-open fallback for headless/minimal desktops.
-        if (( STARTUP_PAGE_OPENED == 0 )); then
-            open_app
-        fi
+        # Do not rely solely on a file:// startup page to detect HTTP services.
+        # Browser cross-origin/local-network policies can leave that page stuck
+        # even though the launcher's own readiness probes have succeeded.
+        open_app
         exit 0
     fi
     sleep 1

@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
-from api.auth import require_remote_lifecycle_enabled, verify_admin_key
+from api.auth import has_admin_access, require_remote_lifecycle_enabled, verify_admin_key
 from api.errors import error_envelope
 from api.models import (
     CaseInfo,
@@ -290,7 +290,7 @@ def purge_cache():
 
 
 @router.post("/export", summary="Export chat session")
-def export_chat_session(req: ExportChatRequest):
+def export_chat_session(req: ExportChatRequest, is_admin: bool = Depends(has_admin_access)):
     """Export a chat session into MD, TXT, CSV, DOCX, or Timeline DOCX format."""
     from fastapi.responses import FileResponse
 
@@ -302,17 +302,26 @@ def export_chat_session(req: ExportChatRequest):
         export_timeline_docx,
     )
 
+    if req.include_reasoning and not is_admin:
+        raise HTTPException(status_code=403, detail="Administrative authorization required")
+    history = req.history
+    if not (req.include_reasoning and is_admin):
+        history = [
+            {key: value for key, value in item.items() if key != "reasoning"}
+            if isinstance(item, dict) else item
+            for item in history
+        ]
     fmt = req.export_format.lower()
     case_label = req.case_id or "All Cases"
 
     if fmt == "md":
-        path = export_chat_markdown(req.history, mode=req.mode, active_case=case_label)
+        path = export_chat_markdown(history, mode=req.mode, active_case=case_label, include_reasoning=req.include_reasoning)
     elif fmt == "txt":
-        path = export_chat_text(req.history, mode=req.mode, active_case=case_label)
+        path = export_chat_text(history, mode=req.mode, active_case=case_label, include_reasoning=req.include_reasoning)
     elif fmt == "csv":
         path = export_timeline_csv(req.history, active_case=case_label)
     elif fmt == "docx":
-        path = export_chat_docx(req.history, mode=req.mode, active_case=case_label)
+        path = export_chat_docx(history, mode=req.mode, active_case=case_label, include_reasoning=req.include_reasoning)
     elif fmt == "timeline_docx":
         path = export_timeline_docx(req.history, active_case=case_label)
     else:
@@ -387,7 +396,7 @@ def infra_status():
     },
     summary="Query the RAG system",
 )
-def rag_query(req: RAGQueryRequest):
+def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
     """Run a RAG analysis query.
 
     If ``stream=True`` (default), returns an SSE stream of text chunks.
@@ -396,6 +405,7 @@ def rag_query(req: RAGQueryRequest):
     from rag.analyzer import ANALYSIS_MODE_MAP, ContextWindowError, analyze
 
     mode_key = ANALYSIS_MODE_MAP.get(req.mode, req.mode)
+    expose_reasoning = bool(is_admin and req.reasoning_audit)
     date_from = req.date_from.isoformat() if req.date_from else None
     date_to = req.date_to.isoformat() if req.date_to else None
 
@@ -421,6 +431,13 @@ def rag_query(req: RAGQueryRequest):
 
             def produce():
                 try:
+                    reasoning_audit_parts: list[str] = []
+                    answer_parts: list[str] = []
+                    def report_reasoning(chunk: str):
+                        if expose_reasoning:
+                            reasoning_audit_parts.append(chunk)
+                            events.put(("reasoning", chunk))
+
                     for chunk in analyze(
                         query=req.query,
                         mode=mode_key,
@@ -433,13 +450,36 @@ def rag_query(req: RAGQueryRequest):
                         date_from=date_from,
                         date_to=date_to,
                         stream=True,
-                        max_tokens=req.max_output_tokens,
                         progress_callback=report_progress,
+                        reasoning_callback=report_reasoning,
                         use_reranker=req.use_reranker,
                         reranker_model=req.reranker_model,
                         reranker_device=req.reranker_device,
                     ):
+                        answer_parts.append(chunk)
                         events.put(("content", chunk))
+                    if req.session_id:
+                        try:
+                            from rag.cache import get_chat_history, save_chat_history
+                            saved = get_chat_history(req.session_id)
+                            saved.append({"role": "user", "content": req.query})
+                            assistant_message = {"role": "assistant", "content": "".join(answer_parts)}
+                            if expose_reasoning and reasoning_audit_parts:
+                                assistant_message["reasoning"] = "".join(reasoning_audit_parts)
+                            saved.append(assistant_message)
+                            save_chat_history(req.session_id, saved)
+                        except Exception:
+                            logger.exception("Unable to persist RAG chat history")
+                    if reasoning_audit_parts:
+                        from audit_log import audit_event
+                        audit_event(
+                            "llm_reasoning_audit",
+                            "success",
+                            case_id=req.case_id,
+                            mode=mode_key,
+                            model=req.model_name,
+                            reasoning="".join(reasoning_audit_parts),
+                        )
                     events.put(("done", None))
                 except Exception as exc:
                     events.put(("error", exc))
@@ -461,6 +501,8 @@ def rag_query(req: RAGQueryRequest):
                     yield f"data: {json.dumps({'type': 'status', **status})}\n\n"
                 elif event_type == "content":
                     yield f"data: {json.dumps({'type': 'content', 'chunk': payload})}\n\n"
+                elif event_type == "reasoning":
+                    yield f"data: {json.dumps({'type': 'reasoning', 'chunk': payload})}\n\n"
                 elif event_type == "done":
                     yield f"data: {json.dumps({'type': 'status', 'stage': 'complete', 'message': 'Analysis complete.', 'progress': 1.0})}\n\n"
                     yield "data: [DONE]\n\n"
@@ -483,6 +525,11 @@ def rag_query(req: RAGQueryRequest):
     else:
         # Non-streaming: collect full response
         full_response = ""
+        full_reasoning = ""
+        def collect_reasoning(chunk: str):
+            nonlocal full_reasoning
+            if expose_reasoning:
+                full_reasoning += chunk
         try:
             for chunk in analyze(
                 query=req.query,
@@ -496,8 +543,8 @@ def rag_query(req: RAGQueryRequest):
                 date_from=date_from,
                 date_to=date_to,
                 stream=False,
-                max_tokens=req.max_output_tokens,
                 use_reranker=req.use_reranker,
+                reasoning_callback=collect_reasoning,
                 reranker_model=req.reranker_model,
                 reranker_device=req.reranker_device,
             ):
@@ -519,7 +566,25 @@ def rag_query(req: RAGQueryRequest):
                     "message": "RAG query failed",
                 },
             ) from exc
-        return RAGQueryResponse(response=full_response)
+        if full_reasoning:
+            from audit_log import audit_event
+            audit_event(
+                "llm_reasoning_audit", "success", case_id=req.case_id,
+                mode=mode_key, model=req.model_name, reasoning=full_reasoning,
+            )
+        if req.session_id:
+            try:
+                from rag.cache import get_chat_history, save_chat_history
+                saved = get_chat_history(req.session_id)
+                saved.append({"role": "user", "content": req.query})
+                assistant_message = {"role": "assistant", "content": full_response}
+                if expose_reasoning and full_reasoning:
+                    assistant_message["reasoning"] = full_reasoning
+                saved.append(assistant_message)
+                save_chat_history(req.session_id, saved)
+            except Exception:
+                logger.exception("Unable to persist RAG chat history")
+        return RAGQueryResponse(response=full_response, reasoning=full_reasoning or None)
 
 
 # ── Indexing ──────────────────────────────────────────────────────────────────

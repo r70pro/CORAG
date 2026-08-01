@@ -48,7 +48,7 @@ export default function Home() {
             {currentView === "inspector" && <PdfInspector />}
             {currentView === "dashboard" && <CaseDashboard />}
             {currentView === "embedding" && <EmbeddingPipeline />}
-            {currentView === "chat" && <RagChat />}
+            {currentView === "chat" && <RagChat activeRole={activeRole} />}
             {currentView === "diagnostics" && <SystemDiagnostics />}
           </ErrorBoundary>
         </div>

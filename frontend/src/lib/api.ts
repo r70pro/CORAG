@@ -43,7 +43,8 @@ export interface RagQueryPayload {
   use_reranker?: boolean;
   reranker_model?: string;
   reranker_device?: string;
-  max_output_tokens?: number;
+  reasoning_audit?: boolean;
+  session_id?: string;
 }
 
 export interface RagStreamStatus {
@@ -54,7 +55,7 @@ export interface RagStreamStatus {
 }
 
 interface RagStreamEvent {
-  type?: "content" | "status";
+  type?: "content" | "reasoning" | "status";
   chunk?: string;
   stage?: RagStreamStatus["stage"];
   message?: string;
@@ -219,6 +220,7 @@ export function triggerRagChatSSE(
   onError: (error: unknown) => void,
   onComplete: () => void,
   onStatus?: (status: RagStreamStatus) => void,
+  onReasoning?: (chunk: string) => void,
 ): ApiRequestHandle {
   return requestJsonSse<RagStreamEvent>(
     "/api/rag/query",
@@ -228,7 +230,8 @@ export function triggerRagChatSSE(
     },
     {
       onMessage: (data) => {
-        if (typeof data.chunk === "string") onChunk(data.chunk);
+        if (data.type === "reasoning" && typeof data.chunk === "string") onReasoning?.(data.chunk);
+        else if (data.type === "content" && typeof data.chunk === "string") onChunk(data.chunk);
         if (data.type === "status" && data.stage && typeof data.message === "string") {
           onStatus?.({
             type: "status",
@@ -362,6 +365,7 @@ export async function exportChatHistory(
   mode: string,
   caseId: string,
   exportFormat: string,
+  includeReasoning: boolean = false,
 ) {
   try {
     const blob = await requestBlob("/api/rag/export", {
@@ -371,6 +375,7 @@ export async function exportChatHistory(
         mode,
         case_id: caseId,
         export_format: exportFormat,
+        include_reasoning: includeReasoning,
       },
       timeoutMs: API_TIMEOUTS.download,
     });

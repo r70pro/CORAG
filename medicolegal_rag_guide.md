@@ -419,11 +419,19 @@ provenance is required.
 
 In supervised production, the analysis endpoint/model are pinned by environment
 to port 8002 and `Qwen/Qwen3.6-35B-A3B`; saved UI values cannot silently redirect
-the role. KIRAG disables thinking in its RAG chat requests so responses and
-exports contain only the user-facing answer. vLLM enables the `qwen3` reasoning
-parser for advanced direct callers that explicitly opt into reasoning. The
-incompatible NVIDIA NVFP4 checkpoint is intentionally excluded from the managed
-selector.
+the role. Free Q&A and the deep analytical modes use Qwen thinking plus
+multi-facet retrieval; Timeline, Injury Summary, Inconsistency Finder, and
+Medication Tracker disable thinking. Reasoning is parsed separately from the
+answer. It is discarded for regular roles and is visible, persisted in session
+history and the protected audit log, and optionally exported for requests
+verified with administrative credentials. The incompatible NVIDIA NVFP4
+checkpoint is intentionally excluded from the managed selector.
+
+There is no fixed 16,000-token completion limit. KIRAG reads the analysis
+server's live context length, tokenizes the actual prompt with its thinking
+setting, and assigns all remaining capacity to generation. Managed shared mode
+is 32,768 tokens and requires OCR to be active; OCR-off mode recreates analysis
+at the configured model's full context allocation.
 
 In **RAG Processing**:
 
@@ -449,8 +457,9 @@ flowchart LR
     L --> X[Source tags replaced with citations]
 ```
 
-Structured modes (Timeline, Injury Summary, Inconsistency Finder, Medication
-Tracker) raise retrieval to at least 50 chunks and use a 0.05 score threshold.
+All modes raise retrieval to at least 50 chunks and use a 0.05 score threshold.
+Deep analytical modes additionally search multiple evidence facets, merge by
+chunk identity, retain retrieval provenance, and diversify across documents.
 The configured/query Top-K therefore does not cap those modes at a smaller
 value. If context exceeds the analysis model budget, least-relevant chunks are
 dropped until the prompt fits, and KIRAG emits a warning.

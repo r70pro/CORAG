@@ -17,7 +17,8 @@ from typing import Any
 
 import httpx
 
-from rag.retriever import format_context_for_llm, search_similar
+from rag.analysis_policy import get_analysis_policy
+from rag.retriever import format_context_for_llm, search_comprehensive, search_similar
 from rag.upstream import CircuitOpenError, request_with_retry
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,6 @@ _MODEL_EQUIVALENTS = {
 # RAG analysis retrieval constants
 STRUCTURED_MODE_MIN_TOP_K = 50
 STRUCTURED_MODE_SCORE_THRESHOLD = 0.05
-DEFAULT_MAX_OUTPUT_TOKENS = 16000
 CONSERVATIVE_ANALYSIS_CONTEXT_LENGTH = 32768
 # KIRAG's generic token estimator can under-count a served model's native
 # tokenizer, and vLLM then adds that model's chat-template special tokens.
@@ -95,6 +95,37 @@ def _validate_output_token_request(max_tokens: int, max_model_len: int) -> None:
         raise ContextWindowError(
             f"Requested output tokens ({max_tokens}) must be smaller than the "
             f"analysis model context window ({max_model_len})"
+        )
+
+
+def _validate_managed_context_invariant(
+    server_url: str,
+    served_context: int,
+    full_model_context: int,
+) -> None:
+    """Fail closed when managed OCR and analysis context states disagree."""
+    if os.environ.get("TESTING") == "true" or ":8002" not in server_url:
+        return
+    try:
+        from docker_manager import get_docker_status
+
+        ocr_status = get_docker_status("olmocr")
+    except Exception as exc:
+        raise ContextWindowError("Unable to verify OCR state for analysis context allocation") from exc
+    if ocr_status == "running":
+        if served_context != 32768:
+            raise ContextWindowError(
+                f"OCR is active but analysis is serving {served_context:,} tokens; expected 32,768"
+            )
+    elif ocr_status in {"exited", "stopped", "created"}:
+        if served_context != full_model_context:
+            raise ContextWindowError(
+                f"OCR is inactive but analysis is serving {served_context:,} tokens; "
+                f"expected the full {full_model_context:,}-token model allocation"
+            )
+    else:
+        raise ContextWindowError(
+            f"OCR state '{ocr_status}' is not stable enough to start analysis"
         )
 
 
@@ -278,6 +309,10 @@ INSTRUCTIONS:
     - Identifying report details only when present in the excerpt
 - Flag any potential interactions or contraindications
 - Note any allergies mentioned in the records""",
+    "causation": """You are a senior medicolegal analyst assessing causation. Analyse temporal sequence, mechanism, objective findings, pre-existing conditions, alternative and intervening causes, and all treating or expert opinions. Separate documented fact, quoted clinical opinion, and your evidence-grounded inference. Address supporting and contrary evidence, missing evidence, and uncertainty. Do not express a conclusion more strongly than the records permit.""",
+    "prognosis": """You are a senior medicolegal analyst assessing prognosis. Analyse longitudinal symptoms, objective findings, response to treatment, functional trajectory, prognostic opinions, barriers to recovery, and uncertainty. Distinguish documented facts, clinician opinions, and evidence-grounded inference; address both favourable and adverse evidence.""",
+    "work_capacity": """You are a senior medicolegal analyst assessing work capacity. Analyse pre-injury duties, certified restrictions, functional evidence, attempted returns, employer accommodations, treating and independent opinions, and changes over time. Distinguish fact, clinical opinion, and inference and identify conflicts and missing vocational evidence.""",
+    "treatment_planning": """You are a senior medicolegal analyst reviewing treatment planning. Analyse documented treatment, response, outstanding recommendations, contraindications, competing recommendations, and evidentiary gaps. Describe record-supported considerations rather than prescribing care. Distinguish facts, clinician recommendations, and evidence-grounded inference.""",
 }
 
 PROVENANCE_INSTRUCTIONS = """
@@ -306,6 +341,14 @@ ANALYSIS_MODE_MAP = {
     "inconsistency_finder": "inconsistency_finder",
     "💊 Medication Tracker": "medication_tracker",
     "medication_tracker": "medication_tracker",
+    "🧬 Causation Analysis": "causation",
+    "causation": "causation",
+    "📈 Prognosis Analysis": "prognosis",
+    "prognosis": "prognosis",
+    "🧑‍💼 Work Capacity": "work_capacity",
+    "work_capacity": "work_capacity",
+    "🩺 Treatment Planning": "treatment_planning",
+    "treatment_planning": "treatment_planning",
 }
 
 
@@ -317,6 +360,10 @@ def get_analysis_modes():
         "injury_summary": "🏥 Injury Summary — Structured injury/treatment report",
         "inconsistency_finder": "🔍 Inconsistency Finder — Cross-reference discrepancies",
         "medication_tracker": "💊 Medication Tracker — Track all medication references",
+        "causation": "🧬 Causation Analysis — Assess competing causal evidence",
+        "prognosis": "📈 Prognosis Analysis — Assess likely clinical and functional course",
+        "work_capacity": "🧑‍💼 Work Capacity — Assess evidence of capacity and restrictions",
+        "treatment_planning": "🩺 Treatment Planning — Review documented treatment needs",
     }
 
 
@@ -373,7 +420,9 @@ def query_llm_streaming(
     server_url: str,
     model_name: str,
     temperature: float = 0.1,
-    max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    max_tokens: int | None = None,
+    enable_thinking: bool = False,
+    reasoning_callback: Any | None = None,
 ) -> Generator[str, None, None]:
     """Send messages to vLLM and stream the response.
 
@@ -394,6 +443,10 @@ def query_llm_streaming(
     is_qwen3_model = "qwen3" in normalized_model_name
     actual_temp = 0.7 if (is_reasoning_model and temperature == 0.1) else temperature
 
+    if max_tokens is None:
+        # analyze() supplies the exact live remaining capacity. Direct callers
+        # use the conservative model allocation without an extra network probe.
+        max_tokens = CONSERVATIVE_ANALYSIS_CONTEXT_LENGTH - 1
     payload = {
         "model": model_name,
         "messages": messages,
@@ -404,24 +457,7 @@ def query_llm_streaming(
     if is_reasoning_model:
         payload["repetition_penalty"] = 1.05
     if is_qwen3_model:
-        # Qwen3 enables visible chain-of-thought by default.  RAG responses must
-        # contain only the user-facing answer so reasoning neither leaks into
-        # exports nor consumes the configured output budget before the answer.
-        payload["chat_template_kwargs"] = {"enable_thinking": False}
-
-        # vLLM 0.20's Qwen3 streaming reasoning parser can classify a
-        # non-thinking answer as ``delta.reasoning`` even though the equivalent
-        # non-streaming response correctly places it in ``message.content``.
-        # Never forward that ambiguous field: obtain the safe content envelope
-        # and yield it as one application-level SSE chunk instead.
-        yield query_llm(
-            messages,
-            server_url,
-            model_name,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        return
+        payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
 
     try:
         with httpx.stream(
@@ -452,6 +488,16 @@ def query_llm_streaming(
                         if choice.get("finish_reason") == "length":
                             hit_output_limit = True
                         delta = choice.get("delta", {})
+                        reasoning = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                        if reasoning:
+                            if enable_thinking:
+                                if reasoning_callback:
+                                    reasoning_callback(reasoning)
+                            else:
+                                # vLLM's Qwen parser can classify a non-thinking
+                                # final answer as reasoning. In extraction modes
+                                # it is answer content, never an audit trace.
+                                yield reasoning
                         content = delta.get("content", "")
                         if content:
                             yield content
@@ -474,7 +520,9 @@ def query_llm(
     server_url: str,
     model_name: str,
     temperature: float = 0.1,
-    max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    max_tokens: int | None = None,
+    enable_thinking: bool = False,
+    reasoning_callback: Any | None = None,
 ) -> str:
     """Send messages to vLLM and return the full response (non-streaming).
 
@@ -495,6 +543,8 @@ def query_llm(
     is_qwen3_model = "qwen3" in normalized_model_name
     actual_temp = 0.7 if (is_reasoning_model and temperature == 0.1) else temperature
 
+    if max_tokens is None:
+        max_tokens = CONSERVATIVE_ANALYSIS_CONTEXT_LENGTH - 1
     payload = {
         "model": model_name,
         "messages": messages,
@@ -505,7 +555,7 @@ def query_llm(
     if is_reasoning_model:
         payload["repetition_penalty"] = 1.05
     if is_qwen3_model:
-        payload["chat_template_kwargs"] = {"enable_thinking": False}
+        payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
 
     try:
         response = request_with_retry(
@@ -523,7 +573,15 @@ def query_llm(
         choices = data.get("choices", [])
         if choices:
             choice = choices[0]
-            content = choice.get("message", {}).get("content", "No response generated.")
+            message = choice.get("message", {})
+            reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+            if reasoning and enable_thinking and reasoning_callback:
+                reasoning_callback(reasoning)
+            content = message.get("content")
+            if not content and reasoning and not enable_thinking:
+                content = reasoning
+            if not content:
+                content = "No response generated."
             if choice.get("finish_reason") == "length":
                 return content + OUTPUT_LIMIT_WARNING
             return content
@@ -693,8 +751,9 @@ def analyze(
     date_from: str | None = None,
     date_to: str | None = None,
     stream: bool = True,
-    max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    max_tokens: int | None = None,
     progress_callback: Any | None = None,
+    reasoning_callback: Any | None = None,
     **search_kwargs,
 ) -> Generator[str, None, None]:
     """Full RAG analysis pipeline: retrieve → prompt → generate.
@@ -721,17 +780,16 @@ def analyze(
     Yields:
         Response text chunks (if streaming) or full response.
     """
-    # For structured/analytical modes, automatically increase top_k to at least 50
-    # to guarantee comprehensive document coverage. A looser score threshold is
-    # used so the expanded candidate pool is actually retrieved (independent of
-    # whether a case filter is active).
-    if mode in ["timeline", "injury_summary", "inconsistency_finder", "medication_tracker"]:
-        top_k = max(top_k, STRUCTURED_MODE_MIN_TOP_K)
-        if "score_threshold" not in search_kwargs:
-            search_kwargs["score_threshold"] = STRUCTURED_MODE_SCORE_THRESHOLD
+    policy = get_analysis_policy(mode)
+    mode = policy.mode
+    top_k = max(top_k, policy.min_top_k)
+    if "score_threshold" not in search_kwargs:
+        search_kwargs["score_threshold"] = policy.score_threshold
 
     # Step 1: Retrieve relevant chunks
-    results = search_similar(
+    search_function = search_comprehensive if policy.comprehensive_retrieval else search_similar
+    comprehensive_kwargs = {"search_function": search_similar} if policy.comprehensive_retrieval else {}
+    results = search_function(
         query=query,
         top_k=top_k,
         run_id_filter=run_id_filter,
@@ -740,6 +798,7 @@ def analyze(
         date_from=date_from,
         date_to=date_to,
         progress_callback=progress_callback,
+        **comprehensive_kwargs,
         **search_kwargs,
     )
 
@@ -779,14 +838,23 @@ def analyze(
         served_context_length = _get_served_model_context_length(server_url, resolved_model)
         if served_context_length is not None:
             max_model_len = served_context_length
-    _validate_output_token_request(max_tokens, max_model_len)
+            full_context = int(MODEL_MAX_CONTENT_LENGTHS.get(resolved_model, max_model_len))
+            _validate_managed_context_invariant(server_url, max_model_len, full_context)
+    if max_tokens is not None:
+        _validate_output_token_request(max_tokens, max_model_len)
     analysis_tokenizer = _get_local_analysis_tokenizer(resolved_model)
     token_reserve = (
         NATIVE_CHAT_TEMPLATE_TOKEN_RESERVE
         if analysis_tokenizer is not None
         else GENERIC_TOKEN_ESTIMATE_RESERVE
     )
-    max_prompt_tokens = max_model_len - max_tokens - token_reserve
+    # Preserve generation room while allowing evidence to use the full live
+    # model allocation. The final request receives every token left after the
+    # actual prompt; there is no fixed application-wide completion ceiling.
+    minimum_generation_tokens = min(8192 if policy.enable_thinking else 4096, max_model_len // 3)
+    max_prompt_tokens = max_model_len - minimum_generation_tokens - token_reserve
+    if max_tokens is not None:
+        max_prompt_tokens = min(max_prompt_tokens, max_model_len - max_tokens - token_reserve)
     if max_prompt_tokens < 1:
         raise ContextWindowError(
             f"Requested output tokens ({max_tokens}) leave no room for the analysis "
@@ -801,7 +869,7 @@ def analyze(
                     msgs,
                     tokenize=True,
                     add_generation_prompt=True,
-                    enable_thinking=False,
+                    enable_thinking=policy.enable_thinking,
                 )
                 input_ids = encoded.get("input_ids", encoded)
                 return len(input_ids)
@@ -882,10 +950,10 @@ def analyze(
     messages = build_prompt(query, context, mode, chat_history)
     final_prompt_tokens = estimate_tokens(messages)
     remaining_context = max_model_len - final_prompt_tokens - token_reserve
-    if remaining_context < max_tokens:
+    requested_generation_tokens = remaining_context if max_tokens is None else min(max_tokens, remaining_context)
+    if requested_generation_tokens < 1:
         raise ContextWindowError(
-            f"Requested output tokens ({max_tokens}) exceed the remaining analysis "
-            f"context ({max(remaining_context, 0)} tokens after the prompt)"
+            "The analysis prompt leaves no context available for model generation"
         )
 
     # Step 4: Query LLM
@@ -898,11 +966,15 @@ def analyze(
         if warning_msg:
             yield warning_msg
         raw_stream = query_llm_streaming(
-            messages, server_url, resolved_model, max_tokens=max_tokens
+            messages, server_url, resolved_model, max_tokens=requested_generation_tokens,
+            enable_thinking=policy.enable_thinking, reasoning_callback=reasoning_callback,
         )
         yield from replace_source_tags_streaming(raw_stream, results)
     else:
-        response_text = query_llm(messages, server_url, resolved_model, max_tokens=max_tokens)
+        response_text = query_llm(
+            messages, server_url, resolved_model, max_tokens=requested_generation_tokens,
+            enable_thinking=policy.enable_thinking, reasoning_callback=reasoning_callback,
+        )
         processed_text = replace_source_tags_in_string(response_text, results)
         if warning_msg:
             yield warning_msg + processed_text

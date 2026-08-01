@@ -165,6 +165,10 @@ A/Prof. Eugene T. Ek
                 "injury_summary",
                 "inconsistency_finder",
                 "medication_tracker",
+                "causation",
+                "prognosis",
+                "work_capacity",
+                "treatment_planning",
             },
         )
 

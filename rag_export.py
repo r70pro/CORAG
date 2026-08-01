@@ -52,7 +52,7 @@ def _extract_case_name(active_case):
     return name[:60]
 
 
-def _history_to_pairs(history):
+def _history_to_pairs(history, include_reasoning=False):
     """Convert Gradio chatbot history (list of dicts) to (role, content) pairs."""
     pairs = []
     if not history:
@@ -67,6 +67,8 @@ def _history_to_pairs(history):
         else:
             continue
         pairs.append((role, str(content)))
+        if include_reasoning and isinstance(msg, dict) and msg.get("reasoning"):
+            pairs.append(("reasoning", str(msg["reasoning"])))
     return pairs
 
 
@@ -106,7 +108,7 @@ def _parse_markdown_table_row(line):
     return cells
 
 
-def export_chat_markdown(history, mode="Free Q&A", active_case="All Cases"):
+def export_chat_markdown(history, mode="Free Q&A", active_case="All Cases", include_reasoning=False):
     """Export a chat session as a Markdown file.
 
     Args:
@@ -125,7 +127,7 @@ def export_chat_markdown(history, mode="Free Q&A", active_case="All Cases"):
     filename = _make_export_filename(f"analysis_{case_name}", "md")
     filepath = resolve_file_under(EXPORT_DIR, filename, {".md"})
 
-    pairs = _history_to_pairs(history)
+    pairs = _history_to_pairs(history, include_reasoning=include_reasoning)
 
     lines = [
         "# RAG Analysis Export",
@@ -145,6 +147,13 @@ def export_chat_markdown(history, mode="Free Q&A", active_case="All Cases"):
             lines.append("")
             lines.append(content)
             lines.append("")
+        elif role == "reasoning":
+            lines.append("## 🛡️ Administrative LLM Reasoning Audit")
+            lines.append("")
+            lines.append(content)
+            lines.append("")
+            lines.append("---")
+            lines.append("")
         else:
             lines.append("## 🤖 Analysis Response")
             lines.append("")
@@ -159,7 +168,7 @@ def export_chat_markdown(history, mode="Free Q&A", active_case="All Cases"):
     return str(filepath)
 
 
-def export_chat_text(history, mode="Free Q&A", active_case="All Cases"):
+def export_chat_text(history, mode="Free Q&A", active_case="All Cases", include_reasoning=False):
     """Export a chat session as a plain text file.
 
     Args:
@@ -178,7 +187,7 @@ def export_chat_text(history, mode="Free Q&A", active_case="All Cases"):
     filename = _make_export_filename(f"analysis_{case_name}", "txt")
     filepath = resolve_file_under(EXPORT_DIR, filename, {".txt"})
 
-    pairs = _history_to_pairs(history)
+    pairs = _history_to_pairs(history, include_reasoning=include_reasoning)
 
     lines = [
         "RAG ANALYSIS EXPORT",
@@ -194,6 +203,11 @@ def export_chat_text(history, mode="Free Q&A", active_case="All Cases"):
     for role, content in pairs:
         if role == "user":
             lines.append("USER QUERY:")
+            lines.append(f"{'-' * 40}")
+            lines.append(content)
+            lines.append("")
+        elif role == "reasoning":
+            lines.append("ADMINISTRATIVE LLM REASONING AUDIT:")
             lines.append(f"{'-' * 40}")
             lines.append(content)
             lines.append("")
@@ -435,7 +449,7 @@ def _add_docx_table(doc, headers, rows):
                 cells[idx].text = _inline_md(val)
 
 
-def export_chat_docx(history, mode="Free Q&A", active_case="All Cases"):
+def export_chat_docx(history, mode="Free Q&A", active_case="All Cases", include_reasoning=False):
     """Export a full chat session as a branded DOCX report.
 
     The report carries the firm letterhead and renders each user query and
@@ -477,7 +491,7 @@ def export_chat_docx(history, mode="Free Q&A", active_case="All Cases"):
         f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     ).italic = True
 
-    pairs = _history_to_pairs(history)
+    pairs = _history_to_pairs(history, include_reasoning=include_reasoning)
     for role, content in pairs:
         if role == "user":
             label = doc.add_paragraph()
@@ -485,6 +499,12 @@ def export_chat_docx(history, mode="Free Q&A", active_case="All Cases"):
             lr.bold = True
             lr.font.color.rgb = RGBColor(0x37, 0x41, 0x51)
             doc.add_paragraph(_inline_md(content))
+        elif role == "reasoning":
+            label = doc.add_paragraph()
+            lr = label.add_run("Administrative LLM Reasoning Audit")
+            lr.bold = True
+            lr.font.color.rgb = RGBColor(0x99, 0x1B, 0x1B)
+            _render_markdown_to_docx(doc, content)
         else:
             label = doc.add_paragraph()
             lr = label.add_run("Analysis Response")
