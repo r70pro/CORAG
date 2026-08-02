@@ -191,8 +191,10 @@ def delete_models(req: DeleteModelsRequest):
             reclaimed_bytes=reclaimed,
             reclaimed_str=format_bytes_human(reclaimed),
         )
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to delete models")
+        # Deletion failures are an expected operation result (for example a
+        # permission error or a protected model), not an API transport error.
+        # Return the detailed result so the UI can show partial progress and
+        # the exact filesystem failure.
         return response
     except Exception as e:
         if isinstance(e, HTTPException):

@@ -222,6 +222,21 @@ class TestAPI(unittest.TestCase):
         self.assertTrue(data["success"])
         self.assertEqual(data["deleted_models"], ["old/model"])
 
+        mock_delete.return_value = (
+            False,
+            "Successfully deleted 1 model(s). Failed to delete 1 model(s): denied.",
+            ["old/model"],
+            5000,
+        )
+        response = self.client.request(
+            "DELETE", "/api/diagnostics/models", json={"model_ids": ["old/model", "bad/model"]}
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertFalse(data["success"])
+        self.assertIn("Failed to delete", data["message"])
+        self.assertEqual(data["deleted_models"], ["old/model"])
+
     # ── Docker ────────────────────────────────────────────────────────────────
 
     @patch("docker_manager.get_docker_status_str")

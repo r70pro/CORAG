@@ -486,6 +486,28 @@ class TestSystemDiagnostics(unittest.TestCase):
         self.assertIn("total_human_size", res)
         self.assertIsInstance(res["models"], list)
 
+    @patch("settings_manager.load_settings", return_value={"analysis_model_name": "acme/partial"})
+    def test_model_inventory_rejects_missing_referenced_snapshot(self, _mock_settings):
+        with tempfile.TemporaryDirectory() as cache_home:
+            model = os.path.join(cache_home, "hub", "models--acme--partial")
+            os.makedirs(os.path.join(model, "refs"))
+            os.makedirs(os.path.join(model, "blobs"))
+            with open(os.path.join(model, "refs", "main"), "w", encoding="utf-8") as ref:
+                ref.write("a" * 40)
+            with open(os.path.join(model, "blobs", "large"), "wb") as blob:
+                blob.truncate(2 * 1024 * 1024)
+            with patch.dict(os.environ, {"HF_HOME": cache_home}):
+                with patch("subprocess.run") as inspect:
+                    inspect.return_value.returncode = 1
+                    result = system_diagnostics.get_installed_models_data()
+
+            entry = next(item for item in result["models"] if item["id"] == "acme/partial")
+            self.assertFalse(entry["is_complete"])
+            self.assertTrue(entry["is_stub"])
+            self.assertFalse(entry["is_active"])
+            self.assertTrue(entry["is_configured"])
+            self.assertIn("referenced snapshot is missing", entry["validation_error"])
+
     @patch("shutil.rmtree")
     @patch("settings_manager.load_settings")
     def test_delete_installed_models(self, mock_settings, mock_rmtree):
@@ -518,9 +540,18 @@ class TestSystemDiagnostics(unittest.TestCase):
         self.assertIn("Skipped", msg)
         self.assertEqual(deleted, [])
 
+        # Exact inventory paths are accepted to disambiguate duplicate IDs.
+        with patch("system_diagnostics.get_installed_models_data", return_value=active_data):
+            success, msg, deleted, reclaimed = system_diagnostics.delete_installed_models(
+                ["/tmp/active-model"]
+            )
+        self.assertFalse(success)
+        self.assertIn("Skipped", msg)
+
         # 3. Deleting non-existent model ID
         success, msg, deleted, reclaimed = system_diagnostics.delete_installed_models(["nonexistent/model-12345"])
-        self.assertTrue(success)
+        self.assertFalse(success)
+        self.assertIn("not found in current model inventory", msg)
         self.assertEqual(deleted, [])
 
         # 4. Deleting an existing model directory (lines 861-872)
@@ -610,10 +641,10 @@ class TestSystemDiagnostics(unittest.TestCase):
                 with patch("os.path.islink", return_value=True):
                     with patch("os.unlink", side_effect=Exception("Permission denied")):
                         ok, msg, deleted, reclaimed = system_diagnostics.delete_installed_models(["model/unlink_err"])
-                        self.assertTrue(ok)
+                        self.assertFalse(ok)
                         self.assertEqual(deleted, [])
+                        self.assertIn("Permission denied", msg)
 
 
 if __name__ == "__main__":
     unittest.main()
-

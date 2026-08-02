@@ -169,7 +169,7 @@ export const SystemDiagnostics: React.FC = () => {
   };
 
   const toggleSelectAllModels = (filtered: InstalledModelItem[]) => {
-    const selectableKeys = filtered.filter((m) => !m.is_active).map((m) => m.path || m.id);
+    const selectableKeys = filtered.filter((m) => !m.is_protected).map((m) => m.path || m.id);
     if (selectedModelKeys.length === selectableKeys.length && selectableKeys.length > 0) {
       setSelectedModelKeys([]);
     } else {
@@ -192,8 +192,14 @@ export const SystemDiagnostics: React.FC = () => {
         await loadInstalledModelsList();
       } else {
         const errMsg = res?.message || "Failed to delete selected models.";
-        addLogMessage(`[${new Date().toLocaleTimeString()}] [ERROR] Delete models failed: ${errMsg}`);
-        setModelActionMessage(`❌ ${errMsg}`);
+        const partial = Boolean(res?.deleted_models?.length);
+        addLogMessage(`[${new Date().toLocaleTimeString()}] [${partial ? "WARN" : "ERROR"}] Delete models ${partial ? "partially completed" : "failed"}: ${errMsg}`);
+        setModelActionMessage(`${partial ? "⚠" : "❌"} ${errMsg}`);
+        if (partial) {
+          setSelectedModelKeys([]);
+          setDeleteConfirmOpen(false);
+          await loadInstalledModelsList();
+        }
       }
     } catch (err) {
       addLogMessage(`[${new Date().toLocaleTimeString()}] [ERROR] Delete models error: ${String(err)}`);
@@ -695,7 +701,9 @@ export const SystemDiagnostics: React.FC = () => {
                     existing.paths.push(m.path);
                     existing.size_bytes = Math.max(existing.size_bytes, m.size_bytes);
                     if (m.is_active) existing.is_active = true;
+                    if (m.is_protected) existing.is_protected = true;
                     if (!m.is_stub) existing.is_stub = false;
+                    if (m.is_complete) existing.is_complete = true;
                   }
                 }
                 displayModels = Array.from(uniqueMap.values());
@@ -714,7 +722,7 @@ export const SystemDiagnostics: React.FC = () => {
               });
 
               const selectableKeys = filteredModels
-                .filter((m) => !m.is_active)
+                .filter((m) => !m.is_protected)
                 .map((m) => m.path || m.id);
 
               return (
@@ -857,7 +865,7 @@ export const SystemDiagnostics: React.FC = () => {
                                     <input
                                       type="checkbox"
                                       checked={isSelected}
-                                      disabled={m.is_active}
+                                      disabled={m.is_protected}
                                       onChange={() => toggleSelectModel(itemKey)}
                                       className="accent-indigo-500 rounded cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
                                     />
@@ -867,7 +875,12 @@ export const SystemDiagnostics: React.FC = () => {
                                       <span>{m.id}</span>
                                       {m.is_active && (
                                         <span className="px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                                          ACTIVE
+                                          SERVING{m.runtime_role ? ` · ${m.runtime_role}` : ""}
+                                        </span>
+                                      )}
+                                      {!m.is_active && m.is_configured && (
+                                        <span className="px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                                          CONFIGURED
                                         </span>
                                       )}
                                       {m.copyCount && m.copyCount > 1 && (
@@ -900,12 +913,17 @@ export const SystemDiagnostics: React.FC = () => {
                                     {m.context_length.toLocaleString()} tokens
                                   </td>
                                   <td className="p-2.5 font-mono">
-                                    {isStub ? (
+                                    {isStub || m.is_complete === false ? (
                                       <div className="flex flex-wrap items-center gap-1">
                                         <span className="text-amber-400 font-bold">{m.human_size}</span>
                                         <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                                          Incomplete / Stub
+                                          Incomplete
                                         </span>
+                                        {m.validation_error && (
+                                          <span className="text-[10px] text-amber-300" title={m.validation_error}>
+                                            {m.validation_error}
+                                          </span>
+                                        )}
                                       </div>
                                     ) : (
                                       <span className="font-semibold text-cyan-300">{m.human_size}</span>
@@ -917,13 +935,13 @@ export const SystemDiagnostics: React.FC = () => {
                                   <td className="p-2.5 text-right">
                                     <button
                                       type="button"
-                                      disabled={m.is_active || isDeletingModels}
+                                      disabled={m.is_protected || isDeletingModels}
                                       onClick={() => {
                                         setSelectedModelKeys([itemKey]);
                                         setDeleteConfirmOpen(true);
                                       }}
                                       className="p-1.5 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-900/50 text-[11px] font-semibold transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
-                                      title={m.is_active ? "Cannot delete currently active model" : "Delete model from cache"}
+                                      title={m.is_protected ? "Cannot delete a serving or configured workspace model" : "Delete model from cache"}
                                     >
                                       <Trash2 className="w-3.5 h-3.5" />
                                     </button>

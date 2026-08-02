@@ -563,6 +563,12 @@ export interface InstalledModelItem {
   context_length: number;
   model_type: string;
   is_active: boolean;
+  is_configured?: boolean;
+  is_protected?: boolean;
+  is_complete?: boolean;
+  validation_error?: string;
+  revision?: string;
+  runtime_role?: string;
   is_stub?: boolean;
   modified_at: string;
 }
@@ -591,7 +597,7 @@ export async function fetchInstalledModels(): Promise<InstalledModelsResponse> {
 
 export async function deleteInstalledModels(modelIds: string[]) {
   try {
-    return await requestJson<ApiResult>("/api/diagnostics/models", {
+    return await requestJson<ApiResult & { deleted_models: string[]; reclaimed_bytes: number; reclaimed_str: string }>("/api/diagnostics/models", {
       method: "DELETE",
       json: { model_ids: modelIds },
     });

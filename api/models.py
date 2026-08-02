@@ -394,8 +394,16 @@ class InstalledModelItem(BaseModel):
     )
     model_type: str = Field("LLM", description="Vision LLM | LLM | Embedding | Reranker")
     is_active: bool = Field(
-        False, description="True if currently loaded in active container or settings"
+        False, description="True only if this exact cache copy is loaded by a running container"
     )
+    is_configured: bool = Field(False, description="True if selected in current settings")
+    is_protected: bool = Field(
+        False, description="True if deletion would affect a serving or configured workspace model"
+    )
+    is_complete: bool = Field(False, description="True if the referenced snapshot passes validation")
+    validation_error: str = Field("", description="Snapshot validation failures")
+    revision: str = Field("", description="Commit referenced by refs/main")
+    runtime_role: str = Field("", description="Live serving role, such as OCR or Analysis")
     is_stub: bool = Field(
         False,
         description="True if folder contains only reference stub files without real weight blobs",

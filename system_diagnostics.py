@@ -739,13 +739,53 @@ def get_installed_models_data() -> dict[str, Any]:
     from settings_manager import MODEL_MAX_CONTENT_LENGTHS, load_settings
 
     settings = load_settings()
-    active_models = {
+    configured_models = {
         settings.get("model_name", ""),
         settings.get("analysis_model_name", ""),
         settings.get("embedding_model", ""),
         settings.get("reranker_model", ""),
     }
-    active_models.discard("")
+    configured_models.discard("")
+
+    # Runtime truth must come from the managed containers, not saved settings.
+    # Map each running model to the exact host cache root mounted into it so a
+    # duplicate, unused cache copy is never labelled active or protected while
+    # the copy actually serving requests remains deletable.
+    runtime_models: list[tuple[str, str, str]] = []
+    for container, role in (("olmocr", "OCR"), ("kirag_vllm_analysis", "Analysis")):
+        try:
+            inspected = subprocess.run(
+                ["docker", "inspect", container], capture_output=True, text=True,
+                timeout=3, check=False,
+            )
+            if inspected.returncode != 0:
+                continue
+            details = json.loads(inspected.stdout)[0]
+            state = details.get("State", {})
+            health = (state.get("Health") or {}).get("Status")
+            if not state.get("Running") or health not in (None, "healthy"):
+                continue
+            cmd = (details.get("Config") or {}).get("Cmd") or []
+            try:
+                serve_index = cmd.index("serve")
+                served_model = cmd[serve_index + 1]
+            except (ValueError, IndexError):
+                container_env = {}
+                for item in (details.get("Config") or {}).get("Env") or []:
+                    if "=" in item:
+                        key, value = item.split("=", 1)
+                        container_env[key] = value
+                served_model = container_env.get("KIRAG_ANALYSIS_MODEL", "")
+                if not served_model:
+                    continue
+            for mount in details.get("Mounts") or []:
+                if mount.get("Destination") == "/root/.cache/huggingface":
+                    runtime_models.append(
+                        (served_model, os.path.realpath(mount.get("Source", "")), role)
+                    )
+                    break
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError, IndexError):
+            logger.debug("Unable to inspect managed model container %s", container)
 
     cache_dirs = []
     hf_home = os.environ.get("HF_HOME")
@@ -794,6 +834,72 @@ def get_installed_models_data() -> dict[str, Any]:
                         model_id = f"{parts[0]}/{parts[1]}"
                     else:
                         model_id = item[len("models--") :]
+
+                    # Validate the currently referenced snapshot, including all
+                    # files named by a sharded safetensors index.
+                    validation_errors: list[str] = []
+                    revision = ""
+                    refs_main = os.path.join(model_path, "refs", "main")
+                    try:
+                        if os.path.isfile(refs_main):
+                            with open(refs_main, encoding="utf-8") as ref_file:
+                                revision = ref_file.read().strip()
+                    except OSError as exc:
+                        validation_errors.append(f"cannot read refs/main: {exc}")
+                    snapshots_dir = os.path.join(model_path, "snapshots")
+                    snapshot_path = (
+                        os.path.join(snapshots_dir, revision) if revision else ""
+                    )
+                    if not revision:
+                        validation_errors.append("missing refs/main")
+                    elif not os.path.isdir(snapshot_path):
+                        validation_errors.append("referenced snapshot is missing")
+                    else:
+                        snapshot_files = []
+                        for snap_root, _, snap_files in os.walk(snapshot_path):
+                            for snap_name in snap_files:
+                                snap_file = os.path.join(snap_root, snap_name)
+                                snapshot_files.append(snap_file)
+                                if os.path.islink(snap_file) and not os.path.exists(snap_file):
+                                    validation_errors.append(
+                                        f"broken snapshot link: {os.path.relpath(snap_file, snapshot_path)}"
+                                    )
+                        index_files = [
+                            path for path in snapshot_files
+                            if path.endswith(".safetensors.index.json")
+                        ]
+                        for index_file in index_files:
+                            try:
+                                with open(index_file, encoding="utf-8") as index_handle:
+                                    weight_map = json.load(index_handle).get("weight_map", {})
+                                for shard in set(weight_map.values()):
+                                    if not os.path.isfile(os.path.join(snapshot_path, shard)):
+                                        validation_errors.append(f"missing indexed shard: {shard}")
+                            except (OSError, ValueError, AttributeError) as exc:
+                                validation_errors.append(
+                                    f"invalid weight index {os.path.basename(index_file)}: {exc}"
+                                )
+
+                        lower_model_id = model_id.lower()
+                        requires_weights = not lower_model_id.startswith("docling-project/")
+                        has_snapshot_weights = any(
+                            path.endswith((".safetensors", ".bin", ".pt", ".onnx"))
+                            for path in snapshot_files
+                        )
+                        if requires_weights and not has_snapshot_weights:
+                            validation_errors.append("snapshot contains no model weights")
+
+                    incomplete_blobs = []
+                    blobs_dir = os.path.join(model_path, "blobs")
+                    if os.path.isdir(blobs_dir):
+                        incomplete_blobs = [
+                            name for name in os.listdir(blobs_dir) if name.endswith(".incomplete")
+                            and os.path.getsize(os.path.join(blobs_dir, name)) > 0
+                        ]
+                    if incomplete_blobs:
+                        validation_errors.append(
+                            f"{len(incomplete_blobs)} unfinished blob download(s)"
+                        )
 
                     # Calculate model folder size on disk (avoid double counting symlinks)
                     size_bytes = 0
@@ -859,7 +965,8 @@ def get_installed_models_data() -> dict[str, Any]:
                     else:
                         model_type = "LLM"
 
-                    is_stub = size_bytes < 1048576 and not has_real_blobs
+                    is_complete = not validation_errors
+                    is_stub = not is_complete
                     mod_time_str = (
                         time.strftime("%Y-%m-%d %H:%M", time.localtime(modified_timestamp))
                         if modified_timestamp > 0
@@ -882,7 +989,16 @@ def get_installed_models_data() -> dict[str, Any]:
                             "human_size": formatted_size,
                             "context_length": int(context_len),
                             "model_type": model_type,
-                            "is_active": False,  # Evaluated post-sort below for primary non-stub model
+                            "is_active": False,
+                            "is_configured": model_id in configured_models,
+                            "is_protected": (
+                                model_id in configured_models
+                                and cache_source == "KIRAG Workspace"
+                            ),
+                            "is_complete": is_complete,
+                            "validation_error": "; ".join(validation_errors),
+                            "revision": revision,
+                            "runtime_role": "",
                             "is_stub": is_stub,
                             "modified_at": mod_time_str,
                         }
@@ -893,12 +1009,17 @@ def get_installed_models_data() -> dict[str, Any]:
     # Sort models by size descending so complete models rank higher than stubs
     models_list.sort(key=lambda x: x["size_bytes"], reverse=True)
 
-    # Assign is_active only to the primary non-stub installation for each active model ID
-    active_marked = set()
+    # Assign runtime activity only to the exact cache mounted by the live role.
     for m in models_list:
-        if m["id"] in active_models and not m["is_stub"] and m["id"] not in active_marked:
-            m["is_active"] = True
-            active_marked.add(m["id"])
+        for served_model, mounted_hf_home, role in runtime_models:
+            expected_path = os.path.realpath(
+                os.path.join(mounted_hf_home, "hub", m["folder"])
+            )
+            if m["id"] == served_model and os.path.realpath(m["path"]) == expected_path:
+                m["is_active"] = True
+                m["is_protected"] = True
+                m["runtime_role"] = role
+                break
 
     return {
         "models": models_list,
@@ -924,32 +1045,35 @@ def delete_installed_models(model_ids: list[str]) -> tuple[bool, str, list[str],
 
     deleted_models = []
     skipped_active = []
+    failed_models: list[str] = []
     reclaimed_bytes = 0
 
     for m_id in model_ids:
-        if (
-            not isinstance(m_id, str)
-            or not m_id
-            or "\x00" in m_id
-            or os.path.isabs(m_id)
-            or ".." in m_id.split("/")
-            or "\\" in m_id
-        ):
+        if not isinstance(m_id, str) or not m_id or "\x00" in m_id or "\\" in m_id:
+            failed_models.append("invalid model identifier")
             continue
         target_info = None
-        # Match only logical identifiers; callers may not submit filesystem paths.
+        # The inventory returns canonical paths as row IDs so duplicate cache
+        # copies can be selected unambiguously. Only paths returned by a fresh
+        # inventory are accepted; arbitrary filesystem paths never are.
         for m in data["models"]:
-            if m["folder"] == m_id or m["id"] == m_id or m["name"] == m_id:
+            if (
+                m.get("path") == m_id
+                or (not os.path.isabs(m_id) and (
+                    m["folder"] == m_id or m["id"] == m_id or m["name"] == m_id
+                ))
+            ):
                 target_info = m
                 break
 
         if not target_info:
+            failed_models.append(f"{m_id}: not found in current model inventory")
             continue
 
         model_key = target_info["id"]
-        if target_info.get("is_active"):
+        if target_info.get("is_active") or target_info.get("is_protected"):
             skipped_active.append(model_key)
-            audit_event("model_delete", "skipped", model=model_key, reason="active_model")
+            audit_event("model_delete", "skipped", model=model_key, reason="protected_model")
             continue
 
         m_path = target_info["path"]
@@ -971,6 +1095,7 @@ def delete_installed_models(model_ids: list[str]) -> tuple[bool, str, list[str],
             except Exception as e:
                 audit_event("model_delete", "failure", model=model_key, error=str(e))
                 logger.error(f"Error removing model path {m_path}: {e}")
+                failed_models.append(f"{model_key}: {e}")
 
     reclaimed_str = format_bytes_human(reclaimed_bytes)
     msg_parts = []
@@ -980,17 +1105,18 @@ def delete_installed_models(model_ids: list[str]) -> tuple[bool, str, list[str],
         )
     if skipped_active:
         msg_parts.append(
-            f"Skipped {len(skipped_active)} active model(s) ({', '.join(skipped_active)})."
+            f"Skipped {len(skipped_active)} protected model(s) ({', '.join(skipped_active)})."
+        )
+    if failed_models:
+        msg_parts.append(
+            f"Failed to delete {len(failed_models)} model(s): {'; '.join(failed_models)}."
         )
 
-    if not deleted_models and skipped_active:
-        return False, " ".join(msg_parts), [], 0
-
-    if not deleted_models and not skipped_active:
+    if not deleted_models and not skipped_active and not failed_models:
         audit_event("model_delete", "no_change", requested_count=len(model_ids))
 
     return (
-        True,
+        not skipped_active and not failed_models,
         " ".join(msg_parts) if msg_parts else "No models were deleted.",
         deleted_models,
         reclaimed_bytes,

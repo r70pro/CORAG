@@ -40,12 +40,25 @@ def test_production_compose_supervises_offline_vllm():
         assert vllm["environment"]["HF_HUB_OFFLINE"] == "1"
         assert vllm["environment"]["TRANSFORMERS_OFFLINE"] == "1"
         assert str(vllm["volumes"][0]).endswith(":ro")
-        assert "--revision" in vllm["command"]
+        if service_name == "vllm":
+            assert "--revision" in vllm["command"]
         assert vllm["logging"]["options"]["max-file"] == "5"
 
     assert "8000" in str(compose["services"]["vllm"]["ports"])
     assert "8002" in str(compose["services"]["vllm-analysis"]["ports"])
-    assert "--language-model-only" in compose["services"]["vllm-analysis"]["command"]
+    analysis_launcher = (REPO_ROOT / "scripts/vllm-analysis-entrypoint.sh").read_text()
+    assert "--language-model-only" in analysis_launcher
+    assert "--reasoning-parser qwen3" in analysis_launcher
+    assert "qwen/qwen3" in analysis_launcher
+    assert "google/gemma-4-31B-it" not in analysis_launcher
+
+
+def test_analysis_switcher_pins_both_verified_models():
+    switcher = (REPO_ROOT / "scripts/switch-analysis-model.py").read_text()
+    assert '"Qwen/Qwen3.6-35B-A3B": "995ad96eacd98c81ed38be0c5b274b04031597b0"' in switcher
+    assert '"google/gemma-4-31B-it": "842da3794eaa0b77d5f08bae87a17459d91ff475"' in switcher
+    assert "--offline-check" in switcher
+    assert "wait_and_smoke" in switcher
 
 
 def test_model_deletion_emits_audit_event(tmp_path):

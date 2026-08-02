@@ -209,6 +209,18 @@ while OCR is active and the model's full configured allocation while OCR is
 stopped. Analysis runs in language-only mode because document images are
 processed by the OCR role.
 
+The verified analysis role can be switched atomically between Qwen and Gemma.
+The command verifies the immutable offline snapshot, recreates the role with
+model-specific vLLM arguments, performs a chat-completion smoke test, persists
+the selected model, and rolls back automatically on failure:
+
+```bash
+.venv/bin/python scripts/switch-analysis-model.py google/gemma-4-31B-it
+.venv/bin/python scripts/switch-analysis-model.py Qwen/Qwen3.6-35B-A3B
+```
+
+Qwen receives the `qwen3` reasoning parser; Gemma intentionally does not.
+
 ## Running KIRAG
 
 ### Desktop launcher
