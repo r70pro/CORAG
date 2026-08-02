@@ -914,8 +914,6 @@ def get_installed_models_data() -> dict[str, Any]:
                     # Calculate model folder size on disk (avoid double counting symlinks)
                     size_bytes = 0
                     modified_timestamp = 0
-                    has_real_blobs = False
-
                     try:
                         for root, _, files in os.walk(model_path):
                             for f in files:
@@ -926,8 +924,6 @@ def get_installed_models_data() -> dict[str, Any]:
                                     file_size = st.st_size
                                     if not os.path.islink(fp):
                                         size_bytes += file_size
-                                        if file_size > 1048576:  # > 1 MB weight blob
-                                            has_real_blobs = True
                                     if real_fp not in seen_real_files:
                                         seen_real_files.add(real_fp)
                                         if not os.path.islink(fp):

@@ -2,6 +2,8 @@ import "server-only";
 
 import type { NextRequest } from "next/server";
 
+import { adminProxyEnabled, isAdministrativeRoute } from "@/lib/admin-proxy-policy";
+
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
@@ -317,7 +319,12 @@ function upstreamUrl(request: NextRequest, path: string[], apiBase: URL): URL {
   return apiBase;
 }
 
-function upstreamHeaders(request: NextRequest, apiKey: string): Headers {
+function upstreamHeaders(
+  request: NextRequest,
+  apiKey: string,
+  method: string,
+  path: string[],
+): Headers {
   const headers = new Headers();
   for (const name of REQUEST_HEADER_ALLOWLIST) {
     const value = request.headers.get(name);
@@ -327,8 +334,10 @@ function upstreamHeaders(request: NextRequest, apiKey: string): Headers {
   headers.set("Accept-Encoding", "identity");
   headers.set("X-API-Key", apiKey);
 
-  const adminApiKey = process.env.KIRAG_ADMIN_API_KEY?.trim();
-  if (adminApiKey) headers.set("X-Admin-API-Key", adminApiKey);
+  if (adminProxyEnabled() && isAdministrativeRoute(method, path)) {
+    const adminApiKey = process.env.KIRAG_ADMIN_API_KEY?.trim();
+    if (adminApiKey) headers.set("X-Admin-API-Key", adminApiKey);
+  }
   return headers;
 }
 
@@ -438,7 +447,7 @@ async function proxyRequest(request: NextRequest, context: RouteContext): Promis
 
   const init: RequestInit & { duplex?: "half" } = {
     method,
-    headers: upstreamHeaders(request, apiKey),
+    headers: upstreamHeaders(request, apiKey, method, path),
     body,
     cache: "no-store",
     redirect: "manual",

@@ -16,7 +16,7 @@ router = APIRouter()
 @router.get("", response_model=dict, summary="Get current settings")
 def get_settings():
     """Return the full application settings dictionary."""
-    settings = load_settings()
+    settings = load_settings(include_env_secrets=False)
     # Mask the HF token for security
     if settings.get("hf_token"):
         settings["hf_token"] = "********"
@@ -31,7 +31,9 @@ def get_settings():
 )
 def update_settings(req: SettingsUpdateRequest):
     """Merge provided fields into the current settings and save."""
-    settings = load_settings()
+    # Environment-only secrets must not be materialized into the mutable
+    # settings file as a side effect of changing an unrelated preference.
+    settings = load_settings(include_env_secrets=False)
     update_data = req.model_dump(exclude_none=True)
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields provided to update")

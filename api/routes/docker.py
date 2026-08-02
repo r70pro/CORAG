@@ -189,8 +189,8 @@ async def start_container():
     dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
 )
 async def start_role_container(role: str):
-    from docker_manager import set_vllm_role_running
     from analysis_profiles import switch_in_progress
+    from docker_manager import set_vllm_role_running
     if role == "analysis" and switch_in_progress():
         raise HTTPException(status_code=409, detail="Analysis model switch is in progress")
 
@@ -206,8 +206,8 @@ async def start_role_container(role: str):
     dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
 )
 async def stop_role_container(role: str):
-    from docker_manager import set_vllm_role_running
     from analysis_profiles import switch_in_progress
+    from docker_manager import set_vllm_role_running
     if role == "analysis" and switch_in_progress():
         raise HTTPException(status_code=409, detail="Analysis model switch is in progress")
 

@@ -44,6 +44,16 @@ class TestSecretsConfig(unittest.TestCase):
             os.environ,
             {
                 "OLMOCR_PG_PASS": "custom_pass",
+                "OLMOCR_MINIO_ACCESS_KEY": secrets_config.DEFAULT_MINIO_ACCESS_KEY,
+                "OLMOCR_MINIO_SECRET_KEY": "custom_secret",
+            },
+        ):
+            self.assertTrue(secrets_config.credentials_are_default())
+
+        with patch.dict(
+            os.environ,
+            {
+                "OLMOCR_PG_PASS": "custom_pass",
                 "OLMOCR_MINIO_ACCESS_KEY": "custom_key",
                 "OLMOCR_MINIO_SECRET_KEY": "custom_secret",
             },
@@ -73,4 +83,3 @@ class TestSecretsConfig(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -94,6 +94,7 @@ class TestAPI(unittest.TestCase):
         data = response.json()
         self.assertEqual(data["server_url"], "http://localhost")
         self.assertEqual(data["hf_token"], "********")
+        mock_load.assert_called_once_with(include_env_secrets=False)
 
     @patch("api.routes.settings.save_settings")
     @patch("api.routes.settings.load_settings")
@@ -107,6 +108,7 @@ class TestAPI(unittest.TestCase):
         data = response.json()
         self.assertTrue(data["success"])
         mock_save.assert_called_once()
+        mock_load.assert_called_with(include_env_secrets=False)
 
         # Case 2: empty payload
         response = self.client.put("/api/settings/", json={})

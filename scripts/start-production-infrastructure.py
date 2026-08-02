@@ -11,9 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from settings_manager import MODEL_MAX_CONTENT_LENGTHS, load_settings  # noqa: E402
 from analysis_profiles import ANALYSIS_PROFILES  # noqa: E402
-
+from settings_manager import MODEL_MAX_CONTENT_LENGTHS, load_settings  # noqa: E402
 
 COMPOSE = [
     "docker", "compose", "--project-directory", str(ROOT),

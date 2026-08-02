@@ -12,11 +12,11 @@ import os
 # variable names consumed by docker-compose.rag.yml, so the app and the
 # containers stay in sync without duplicating plaintext.
 UNSAFE_DEFAULT_DB_PASSWORD = "change_me_in_production"
-UNSAFE_DEFAULT_MINIO_ACCESS_KEY = "change_me_minio_user"
+UNSAFE_DEFAULT_MINIO_ACCESS_KEY = "minio_access_5c6d3284f18b"
 UNSAFE_DEFAULT_MINIO_SECRET_KEY = "change_me_minio_secret"
 
 DEFAULT_DB_PASSWORD = UNSAFE_DEFAULT_DB_PASSWORD
-DEFAULT_MINIO_ACCESS_KEY = "minio_access_5c6d3284f18b"
+DEFAULT_MINIO_ACCESS_KEY = UNSAFE_DEFAULT_MINIO_ACCESS_KEY
 DEFAULT_MINIO_SECRET_KEY = UNSAFE_DEFAULT_MINIO_SECRET_KEY
 
 

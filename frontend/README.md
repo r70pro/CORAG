@@ -1,6 +1,6 @@
 # KIRAG frontend
 
-The frontend uses a same-origin Backend-for-Frontend route at `/api/*`. Browser code never receives the FastAPI origin or an API credential. The Next.js server streams requests to FastAPI, injects `KIRAG_API_KEY` as `X-API-Key`, optionally injects `KIRAG_ADMIN_API_KEY` for administrative controls, and streams the response back unchanged.
+The frontend uses a same-origin Backend-for-Frontend route at `/api/*`. Browser code never receives the FastAPI origin or an API credential. The Next.js server streams requests to FastAPI and injects `KIRAG_API_KEY` as `X-API-Key`. Administrative credential forwarding is disabled by default and is limited to known administrative routes when explicitly enabled.
 
 Do not create `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_KIRAG_API_KEY`, or any similar public variable. Next.js embeds `NEXT_PUBLIC_*` values in browser JavaScript. Do not put either key in `localStorage`, `sessionStorage`, IndexedDB, cookies, or application state.
 
@@ -13,6 +13,7 @@ These variables belong to the Next.js server process:
 | `KIRAG_API_URL` | No | Server-to-server FastAPI base URL; defaults to `http://127.0.0.1:8001` |
 | `KIRAG_API_KEY` | Yes | General API credential injected by the Next.js proxy |
 | `KIRAG_ADMIN_API_KEY` | For the complete UI | Credential for cleanup, deletion, indexing, settings, Docker, and other administrative actions |
+| `KIRAG_ENABLE_ADMIN_PROXY` | No | Set to `true` only for a loopback frontend or one protected by authentication on every route |
 
 The same API credentials must be configured on the FastAPI process. Keep real values in process environment variables or an untracked `frontend/.env.local`; all `.env.*` files are ignored except examples.
 
@@ -33,6 +34,7 @@ cd frontend
 export KIRAG_API_URL="http://127.0.0.1:8001"
 export KIRAG_API_KEY="replace-with-the-same-api-key"
 export KIRAG_ADMIN_API_KEY="replace-with-the-same-admin-key"
+export KIRAG_ENABLE_ADMIN_PROXY="true"
 npm ci
 npm run dev -- --hostname 127.0.0.1
 ```
@@ -51,6 +53,7 @@ Example Next.js service environment:
 KIRAG_API_URL=http://127.0.0.1:8001
 KIRAG_API_KEY=<shared-api-secret>
 KIRAG_ADMIN_API_KEY=<shared-admin-secret>
+KIRAG_ENABLE_ADMIN_PROXY=true
 ```
 
 Build once, then start the runtime with those server-side values:
