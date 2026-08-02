@@ -111,6 +111,8 @@ interface AvailableRunItem {
 const ANALYSIS_MODES = [
   "🌐 General Knowledge",
   "💬 Free Q&A",
+  "🧠 Expert Mode",
+  "⚖️ Judge Mode",
   "📋 Timeline",
   "🏥 Injury Summary",
   "🔍 Inconsistency Finder",

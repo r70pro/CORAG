@@ -464,15 +464,35 @@ The configured/query Top-K therefore does not cap those modes at a smaller
 value. If context exceeds the analysis model budget, least-relevant chunks are
 dropped until the prompt fits, and KIRAG emits a warning.
 
-The five modes are prompt templates, not deterministic report generators:
+The available modes are analytical workflows, not deterministic professional
+decision makers:
 
 | Mode | Intended output |
 |---|---|
 | Free Q&A | A source-grounded answer to the question |
+| Expert Mode | Balanced medicolegal analysis with an evidence matrix and second-pass verification |
+| Judge Mode | Neutral legal issues, findings, reasons, and provisional disposition with second-pass verification |
 | Timeline | Chronological Markdown table |
 | Injury Summary | Structured injury/treatment summary |
 | Inconsistency Finder | Compared discrepancies and gaps |
 | Medication Tracker | Medication references and changes |
+| Causation Analysis | Competing causal evidence |
+| Prognosis Analysis | Clinical and functional trajectory |
+| Work Capacity | Capacity, restrictions, and return-to-work evidence |
+| Treatment Planning | Record-supported treatment considerations |
+
+Expert and Judge modes use eight specialized derivative evidence queries in
+addition to the original question. Their first answer is withheld while a
+second model pass checks citation entailment, attribution, overstatement,
+counterevidence, legal-integrity assumptions, internal consistency, and issue
+coverage. The final pass must disclose material corrections and unresolved
+limitations. Deterministic checks also flag out-of-range source identifiers,
+answers without resolvable source tags, and a missing verification note.
+
+This is defence in depth, not an accuracy guarantee: both passes normally use
+the same configured model and the verifier sees only retrieved excerpts. The
+workflow does not establish current law, replace complete-record review, or
+constitute a medical opinion, legal advice, or judicial determination.
 
 For high-stakes work, ask narrow questions and repeat searches with appropriate
 filters. Absence from a RAG response does not prove absence from the record.

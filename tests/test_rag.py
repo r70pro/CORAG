@@ -162,6 +162,8 @@ A/Prof. Eugene T. Ek
             {
                 "general_knowledge",
                 "free_qa",
+                "expert_analysis",
+                "judge_analysis",
                 "timeline",
                 "injury_summary",
                 "inconsistency_finder",

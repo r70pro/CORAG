@@ -13,6 +13,7 @@ class AnalysisPolicy:
     comprehensive_retrieval: bool
     min_top_k: int
     score_threshold: float
+    high_assurance: bool
 
 
 _EXTRACTION_MODES = {
@@ -23,12 +24,15 @@ _EXTRACTION_MODES = {
 }
 _ANALYTICAL_MODES = {
     "free_qa",
+    "expert_analysis",
+    "judge_analysis",
     "causation",
     "prognosis",
     "work_capacity",
     "treatment_planning",
 }
 _NO_RETRIEVAL_MODES = {"general_knowledge"}
+_HIGH_ASSURANCE_MODES = {"expert_analysis", "judge_analysis"}
 
 
 def get_analysis_policy(mode: str) -> AnalysisPolicy:
@@ -39,10 +43,18 @@ def get_analysis_policy(mode: str) -> AnalysisPolicy:
         else "free_qa"
     )
     if normalized in _NO_RETRIEVAL_MODES:
-        return AnalysisPolicy(normalized, True, False, False, 0, 0.0)
+        return AnalysisPolicy(normalized, True, False, False, 0, 0.0, False)
     if normalized in _EXTRACTION_MODES:
-        return AnalysisPolicy(normalized, False, True, False, 50, 0.05)
-    return AnalysisPolicy(normalized, True, True, True, 50, 0.05)
+        return AnalysisPolicy(normalized, False, True, False, 50, 0.05, False)
+    return AnalysisPolicy(
+        normalized,
+        True,
+        True,
+        True,
+        50,
+        0.05,
+        normalized in _HIGH_ASSURANCE_MODES,
+    )
 
 
 def is_analytical_mode(mode: str) -> bool:

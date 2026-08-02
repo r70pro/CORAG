@@ -36,9 +36,9 @@ see [`medicolegal_rag_guide.md`](medicolegal_rag_guide.md).
   offline model snapshots, dedicated OCR and analysis vLLM services, ordered
   health-gated startup, systemd restart supervision, readiness probes, and
   bounded log rotation.
-- Ten chat modes: General Knowledge (without document retrieval); Free Q&A;
-  Timeline; Injury Summary; Inconsistency Finder; Medication Tracker;
-  Causation; Prognosis; Work Capacity; and Treatment Planning.
+- Twelve chat modes: General Knowledge (without document retrieval); Free Q&A;
+  Expert; Judge; Timeline; Injury Summary; Inconsistency Finder; Medication
+  Tracker; Causation; Prognosis; Work Capacity; and Treatment Planning.
 - Markdown, text, timeline CSV, analysis DOCX, and timeline DOCX exports.
 - REST API, headless CLI, diagnostics, reconciliation reporting, and managed
   vLLM/container lifecycle operations.
@@ -191,9 +191,9 @@ scoped-token requirements documented in [`.env.example`](.env.example).
 The verified Qwen 3.6 option is `Qwen/Qwen3.6-35B-A3B`; the incompatible NVIDIA
 NVFP4 checkpoint is intentionally not offered by the managed model selector.
 For Qwen3-family models, the managed container configures vLLM's `qwen3`
-reasoning parser. General Knowledge, Free Q&A, Causation, Prognosis, Work
-Capacity, and Treatment Planning enable Qwen thinking; the four structured
-extraction modes disable it.
+reasoning parser. General Knowledge, Free Q&A, Expert, Judge, Causation,
+Prognosis, Work Capacity, and Treatment Planning enable Qwen thinking; the four
+structured extraction modes disable it.
 Reasoning is a separate channel: verified administrators can view, persist,
 audit, and export it, while regular-user responses contain only the final answer.
 Completion capacity is calculated from the live served context rather than a
@@ -406,8 +406,9 @@ RAG Chat modes are server-side analysis policies, not merely labels or text
 prepended by the browser. A mode selects an LLM system prompt, a retrieval
 strategy, and (for Qwen3 models) whether the model's thinking channel is
 enabled. All modes use the same indexed corpus, embedding model, optional
-reranker, analysis endpoint, prompt-construction code, citation verifier, and
-response streamer.
+reranker, analysis endpoint, prompt-construction code, citation substitution,
+and response transport. Expert and Judge modes additionally invoke the
+high-assurance verifier described below.
 
 The authoritative definitions are in
 [`rag/analyzer.py`](rag/analyzer.py), [`rag/analysis_policy.py`](rag/analysis_policy.py),
@@ -420,6 +421,8 @@ files ever differ, the code is authoritative.
 |---|---|---:|---:|---|
 | General Knowledge | No RAG | 0 | Enabled | General model-knowledge conversation without case evidence |
 | Free Q&A | Analytical | 8 | Enabled | A source-grounded answer to the user's question |
+| Expert Mode | High assurance | 9 + verifier | Enabled | Evidence matrix, calibrated medicolegal conclusions, and verified revision |
+| Judge Mode | High assurance | 9 + verifier | Enabled | Neutral legal issues, findings, reasons, and provisional disposition |
 | Timeline | Extraction | 1 | Disabled | Oldest-first table of every dated event |
 | Injury Summary | Extraction | 1 | Disabled | Eight-section injury, treatment, and outcome report |
 | Inconsistency Finder | Extraction | 1 | Disabled | Paired-source discrepancy table with severity |
@@ -446,7 +449,7 @@ and metadata filters, disables reranking, supplies no document excerpts, and
 does not run citation substitution. It uses only the model's learned knowledge,
 the current question, and recent conversation history. It has no live web access.
 
-Extraction modes perform one vector search using the user's query. Analytical
+Extraction modes perform one vector search using the user's query. Ordinary analytical
 modes use comprehensive retrieval: the original query plus seven derivative
 queries made by appending each of these evidence focuses:
 
@@ -463,7 +466,8 @@ identity. The best score is retained, retrieval facets are recorded, and the
 final set is diversified across documents before remaining positions are
 filled by score. This is intended to expose an analytical mode to supporting,
 contrary, temporal, and opinion evidence that a single semantic query might
-miss. The evidence focuses are common to all five analytical modes; the
+miss. Expert and Judge modes instead use eight specialized medicolegal or
+legal/evidentiary facets, producing nine searches before deduplication. The
 mode-specific system prompt tells the LLM how to use that evidence.
 
 ### Message construction and generation lifecycle
@@ -513,7 +517,19 @@ When thinking is enabled, reasoning-channel tokens are kept separate from the
 final response and are only passed to the authorized reasoning-audit path.
 When thinking is disabled, content classified by a Qwen parser as reasoning is
 treated as answer content so structured extraction is not silently lost.
-Final-answer tokens are streamed to the client.
+Final-answer tokens are streamed to the client for ordinary modes. Expert and
+Judge drafts are withheld. A second complete model pass receives the same
+evidence, question, draft, and deterministic invalid-source-ID results. It
+checks citation entailment, attribution, overstatement, contrary evidence,
+unsupplied legal authorities, internal consistency, issue coverage, and
+professional boundaries. Only the revised answer is displayed. If verification
+fails, the draft is clearly marked as unverified rather than silently promoted.
+
+High-assurance output also receives deterministic checks for out-of-range
+`[Source N]` identifiers, absence of resolvable citations, and omission of the
+required verification note. These checks do not prove substantive correctness
+or make the verifier independent—the same configured analysis model performs
+both passes—so professional review remains required.
 
 In RAG modes, the LLM cites numbered placeholders such as `[Source 3]`. During streaming or
 after non-streaming generation, KIRAG replaces valid placeholders with metadata

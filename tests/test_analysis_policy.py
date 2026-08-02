@@ -1,18 +1,37 @@
-from rag.analysis_policy import get_analysis_policy
-from rag.analyzer import ContextWindowError, _validate_managed_context_invariant
-from rag.retriever import search_comprehensive
 from unittest.mock import patch
-from fastapi.security import HTTPAuthorizationCredentials
-from api.auth import has_admin_access
 
 import pytest
+from fastapi.security import HTTPAuthorizationCredentials
+
+from api.auth import has_admin_access
+from rag.analysis_policy import get_analysis_policy
+from rag.analyzer import ContextWindowError, _validate_managed_context_invariant
+from rag.retriever import (
+    EXPERT_ANALYTICAL_QUERY_FACETS,
+    JUDGE_ANALYTICAL_QUERY_FACETS,
+    search_comprehensive,
+)
 
 
 def test_free_qa_and_deep_modes_enable_thinking():
-    for mode in ("free_qa", "causation", "prognosis", "work_capacity", "treatment_planning"):
+    for mode in (
+        "free_qa",
+        "expert_analysis",
+        "judge_analysis",
+        "causation",
+        "prognosis",
+        "work_capacity",
+        "treatment_planning",
+    ):
         policy = get_analysis_policy(mode)
         assert policy.enable_thinking is True
         assert policy.comprehensive_retrieval is True
+
+
+def test_expert_and_judge_modes_require_high_assurance_verification():
+    assert get_analysis_policy("expert_analysis").high_assurance is True
+    assert get_analysis_policy("judge_analysis").high_assurance is True
+    assert get_analysis_policy("causation").high_assurance is False
 
 
 def test_extraction_modes_disable_thinking():
@@ -38,6 +57,38 @@ def test_comprehensive_retrieval_deduplicates_and_preserves_facets():
     results = search_comprehensive("causation", top_k=50, search_function=fake_search)
     assert len(results) == 1
     assert len(results[0]["retrieval_facets"]) == 8
+
+
+def test_expert_retrieval_uses_every_requested_evidence_facet():
+    def fake_search(query, **kwargs):
+        return [{"chunk_id": query, "doc_id": query, "score": 0.8, "text": query}]
+
+    results = search_comprehensive(
+        "expert causation question",
+        top_k=50,
+        analytical_facets=EXPERT_ANALYTICAL_QUERY_FACETS,
+        search_function=fake_search,
+    )
+
+    assert len(results) == len(EXPERT_ANALYTICAL_QUERY_FACETS) + 1
+    retrieved_facets = {result["retrieval_facets"][0] for result in results}
+    assert "primary question" in retrieved_facets
+    assert set(EXPERT_ANALYTICAL_QUERY_FACETS) <= retrieved_facets
+
+
+def test_judge_retrieval_uses_legal_and_evidentiary_facets():
+    def fake_search(query, **kwargs):
+        return [{"chunk_id": query, "doc_id": query, "score": 0.8, "text": query}]
+
+    results = search_comprehensive(
+        "legal question",
+        top_k=50,
+        analytical_facets=JUDGE_ANALYTICAL_QUERY_FACETS,
+        search_function=fake_search,
+    )
+
+    retrieved_facets = {result["retrieval_facets"][0] for result in results}
+    assert set(JUDGE_ANALYTICAL_QUERY_FACETS) <= retrieved_facets
 
 
 @patch.dict("os.environ", {"TESTING": "false"})

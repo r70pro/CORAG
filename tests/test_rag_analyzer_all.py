@@ -38,6 +38,8 @@ class TestRAGAnalyzerAll(unittest.TestCase):
             {
                 "general_knowledge",
                 "free_qa",
+                "expert_analysis",
+                "judge_analysis",
                 "timeline",
                 "injury_summary",
                 "inconsistency_finder",
@@ -67,6 +69,97 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         self.assertEqual(len(msgs), 8)
         self.assertEqual(msgs[1]["content"], "q4")
         self.assertEqual(msgs[-1]["role"], "user")
+
+    def test_expert_mode_has_probability_and_evidence_contract(self):
+        msgs = rag_anz.build_prompt(
+            "Did employment cause the condition?",
+            "[Source 1] contemporaneous clinical evidence",
+            "expert_analysis",
+        )
+
+        system_prompt = msgs[0]["content"]
+        self.assertIn("BALANCE-OF-PROBABILITIES METHOD", system_prompt)
+        self.assertIn("DOCUMENTED FACT", system_prompt)
+        self.assertIn("Material evidence matrix", system_prompt)
+        self.assertIn("AI-assisted documentary analysis", system_prompt)
+        self.assertIn("NON-NEGOTIABLE PROVENANCE", system_prompt)
+        self.assertIn("[Source 1] contemporaneous clinical evidence", msgs[-1]["content"])
+
+    def test_expert_mode_labels_map_to_dedicated_prompt(self):
+        self.assertEqual(rag_anz.ANALYSIS_MODE_MAP["🧠 Expert Mode"], "expert_analysis")
+        self.assertEqual(rag_anz.ANALYSIS_MODE_MAP["expert_analysis"], "expert_analysis")
+
+    def test_judge_mode_has_neutral_legal_decision_contract(self):
+        msgs = rag_anz.build_prompt(
+            "Determine the issues on the record",
+            "[Source 1] supplied evidence",
+            "judge_analysis",
+        )
+
+        system_prompt = msgs[0]["content"]
+        self.assertIn("neutral judicial-style decision analyst", system_prompt)
+        self.assertIn("Do not make demeanour findings", system_prompt)
+        self.assertIn("Provisional disposition", system_prompt)
+        self.assertIn("not a judgment", system_prompt)
+        self.assertEqual(rag_anz.ANALYSIS_MODE_MAP["⚖️ Judge Mode"], "judge_analysis")
+
+    def test_source_tag_integrity_helpers_detect_and_sanitize_invalid_ids(self):
+        text = "Supported [Sources 1, 3] but not [Source 99]."
+
+        self.assertEqual(rag_anz.source_tag_indices(text), {1, 3, 99})
+        sanitized, invalid = rag_anz.sanitize_invalid_source_tags(text, 3)
+
+        self.assertEqual(invalid, {99})
+        self.assertIn("[Sources 1, 3]", sanitized)
+        self.assertIn("[citation reference unavailable: 99]", sanitized)
+
+    @patch.object(rag_anz, "query_llm")
+    @patch.object(rag_anz, "search_comprehensive")
+    def test_judge_mode_withholds_draft_and_returns_verified_revision(
+        self, mock_search, mock_query
+    ):
+        mock_search.return_value = [
+            {
+                "chunk_id": "c1",
+                "doc_id": "d1",
+                "text": "Contemporaneous evidence",
+                "original_filename": "record.pdf",
+            }
+        ]
+        mock_query.side_effect = [
+            "WITHHELD DRAFT [Source 1]",
+            "VERIFIED FINAL [Source 1]\n\n**High-assurance verification note** — checks completed.",
+        ]
+
+        result = "".join(
+            rag_anz.analyze(
+                "Determine the issue",
+                mode="judge_analysis",
+                model_name="qwen3-test",
+                stream=True,
+            )
+        )
+
+        self.assertNotIn("WITHHELD DRAFT", result)
+        self.assertIn("VERIFIED FINAL", result)
+        self.assertIn("record.pdf", result)
+        self.assertEqual(mock_query.call_count, 2)
+        verifier_messages = mock_query.call_args_list[1].args[0]
+        self.assertIn("WITHHELD FIRST-PASS DRAFT", verifier_messages[-1]["content"])
+        self.assertIn("WITHHELD DRAFT", verifier_messages[-1]["content"])
+
+    @patch.object(rag_anz, "query_llm")
+    @patch.object(rag_anz, "search_comprehensive")
+    def test_high_assurance_mode_discloses_verifier_failure(self, mock_search, mock_query):
+        mock_search.return_value = [{"chunk_id": "c1", "text": "Evidence"}]
+        mock_query.side_effect = ["Draft [Source 1]", "⚠️ Error: verifier offline"]
+
+        result = "".join(
+            rag_anz.analyze("Question", mode="expert_analysis", stream=False)
+        )
+
+        self.assertIn("High-assurance verification unavailable", result)
+        self.assertIn("Draft", result)
 
     def test_build_general_knowledge_prompt_has_no_rag_context_or_provenance(self):
         msgs = rag_anz.build_prompt(

@@ -111,6 +111,8 @@ describe("RagChat Component", () => {
     for (const name of [
       "🌐 General Knowledge",
       "💬 Free Q&A",
+      "🧠 Expert Mode",
+      "⚖️ Judge Mode",
       "📋 Timeline",
       "🏥 Injury Summary",
       "🔍 Inconsistency Finder",

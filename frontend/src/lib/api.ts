@@ -49,7 +49,7 @@ export interface RagQueryPayload {
 
 export interface RagStreamStatus {
   type: "status";
-  stage: "starting" | "retrieving" | "preparing" | "generating" | "complete";
+  stage: "starting" | "retrieving" | "preparing" | "generating" | "verifying" | "complete";
   message: string;
   progress?: number;
 }

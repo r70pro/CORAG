@@ -37,8 +37,35 @@ _ANALYTICAL_QUERY_FACETS = (
     "functional course, work capacity, treatment response, and prognosis",
 )
 
+EXPERT_ANALYTICAL_QUERY_FACETS = (
+    "precise alleged incident, occupational exposure, duties, dose, duration, and mechanism",
+    "contemporaneous symptom onset, chronology, reporting consistency, and baseline function",
+    "primary imaging, pathology, examination findings, diagnoses, and differential diagnoses",
+    "pre-existing conditions, natural history, prior symptoms, and prior treatment",
+    "treating and independent causation opinions, reasoning, qualifications, and assumptions",
+    "alternative causes, intervening events, contrary evidence, and evidentiary inconsistencies",
+    "treatment response, longitudinal function, work capacity, prognosis, and subsequent course",
+    "missing or referenced records material to causation, diagnosis, or the legal threshold",
+)
 
-def search_comprehensive(query: str, top_k: int = 50, **kwargs) -> list[dict]:
+JUDGE_ANALYTICAL_QUERY_FACETS = (
+    "jurisdiction, cause of action, statutory test, governing authority, burden, and standard",
+    "pleadings, questions referred, concessions, and each party's material contention",
+    "chronology, agreed facts, disputed facts, contemporaneous records, and admissions",
+    "witness and expert opinions, factual assumptions, methodology, conflicts, and limitations",
+    "medical causation, legal causation, pre-existing conditions, contribution, and alternatives",
+    "documentary reliability, corroboration, inconsistency, missing evidence, and evidentiary weight",
+    "damages, work capacity, treatment, prognosis, mitigation, and functional consequences",
+    "procedural history, prior findings, requested relief, orders, and disposition",
+)
+
+
+def search_comprehensive(
+    query: str,
+    top_k: int = 50,
+    analytical_facets: tuple[str, ...] | None = None,
+    **kwargs,
+) -> list[dict]:
     """Run evidence-diverse multi-query retrieval for analytical questions.
 
     Every subquery inherits the same case and metadata filters. Results are
@@ -49,7 +76,8 @@ def search_comprehensive(query: str, top_k: int = 50, **kwargs) -> list[dict]:
     merged: dict[str, dict] = {}
     progress_callback = kwargs.pop("progress_callback", None)
     search_function = kwargs.pop("search_function", search_similar)
-    queries = [query, *(f"{query}\nEvidence focus: {facet}" for facet in _ANALYTICAL_QUERY_FACETS)]
+    facets = analytical_facets or _ANALYTICAL_QUERY_FACETS
+    queries = [query, *(f"{query}\nEvidence focus: {facet}" for facet in facets)]
     for index, subquery in enumerate(queries):
         if progress_callback:
             progress_callback(
@@ -63,7 +91,7 @@ def search_comprehensive(query: str, top_k: int = 50, **kwargs) -> list[dict]:
             **kwargs,
         ):
             key = str(result.get("chunk_id") or result.get("qdrant_point_id"))
-            facet = "primary question" if index == 0 else _ANALYTICAL_QUERY_FACETS[index - 1]
+            facet = "primary question" if index == 0 else facets[index - 1]
             existing = merged.get(key)
             if existing is None:
                 result = dict(result)

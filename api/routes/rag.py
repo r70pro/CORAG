@@ -459,7 +459,9 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
 
             def report_progress(progress: float, message: str):
                 normalized_message = message.lower()
-                if "generating" in normalized_message:
+                if "verif" in normalized_message or "assurance" in normalized_message:
+                    stage = "verifying"
+                elif "generating" in normalized_message:
                     stage = "generating"
                 elif "preparing" in normalized_message:
                     stage = "preparing"
