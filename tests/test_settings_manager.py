@@ -145,6 +145,7 @@ class TestSettingsManager(unittest.TestCase):
         with (
             patch("settings_manager.SETTINGS_FILE", self.settings_file),
             patch.dict(os.environ, environment),
+            patch("analysis_profiles.read_runtime_profile", return_value=None),
         ):
             settings = settings_manager.load_settings()
 
@@ -152,6 +153,25 @@ class TestSettingsManager(unittest.TestCase):
         self.assertEqual(settings["model_name"], "pinned-ocr")
         self.assertEqual(settings["analysis_server_url"], environment["KIRAG_ANALYSIS_SERVER_URL"])
         self.assertEqual(settings["analysis_model_name"], "pinned-analysis")
+
+    def test_verified_runtime_analysis_profile_overrides_deployment_default(self):
+        environment = {
+            "TESTING": "false",
+            "KIRAG_ANALYSIS_SERVER_URL": "http://127.0.0.1:8002/v1",
+            "KIRAG_ANALYSIS_MODEL": "Qwen/Qwen3.6-35B-A3B",
+        }
+        runtime = {
+            "model": "google/gemma-4-31B-it",
+            "revision": "842da3794eaa0b77d5f08bae87a17459d91ff475",
+        }
+        with (
+            patch("settings_manager.SETTINGS_FILE", self.settings_file),
+            patch.dict(os.environ, environment),
+            patch("analysis_profiles.read_runtime_profile", return_value=runtime),
+        ):
+            settings = settings_manager.load_settings()
+        self.assertEqual(settings["analysis_model_name"], "google/gemma-4-31B-it")
+        self.assertEqual(settings["analysis_server_url"], "http://127.0.0.1:8002/v1")
 
     def test_save_settings_success_and_exception(self):
         # 1. Success

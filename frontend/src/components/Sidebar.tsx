@@ -19,13 +19,17 @@ import {
 } from "lucide-react";
 import {
   fetchDockerStatus,
-  fetchDockerModels,
   createDockerContainer,
   shutdownDockerContainer,
   fetchSettings,
   updateSettings,
   setVllmRoleRunning,
   setStartupMode,
+  fetchAnalysisModelStatus,
+  fetchAnalysisSwitchOperation,
+  startAnalysisModelSwitch,
+  type AnalysisProfile,
+  type AnalysisSwitchOperation,
 } from "@/lib/api";
 
 export type ViewType =
@@ -47,16 +51,9 @@ interface SidebarProps {
   onDensityChange?: (density: "comfortable" | "compact") => void;
 }
 
-const DEFAULT_MODEL_MAX_LENGTHS: Record<string, number> = {
-  "allenai/olmOCR-2-7B-1025-FP8": 131072,
-  "Qwen/Qwen3.6-35B-A3B": 262144,
-  "nvidia/Phi-4-reasoning-plus-NVFP4": 32768,
-  "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4": 1048576,
-  "nvidia/Llama-3.3-70B-Instruct-NVFP4": 131072,
-  "openai/gpt-oss-120b": 131072,
-  "google/gemma-4-31B-it": 262144,
-  "Qwen/Qwen2-VL-7B-Instruct": 32768,
-};
+const OCR_MODEL = "allenai/olmOCR-2-7B-1025-FP8";
+const OCR_MAX_LENGTH = 131072;
+const TERMINAL_SWITCH_STATES = new Set(["completed", "rolled_back", "failed"]);
 
 export const Sidebar: React.FC<SidebarProps> = ({
   currentView,
@@ -76,30 +73,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const [dockerOpen, setDockerOpen] = useState<boolean>(true);
   const [hfToken, setHfToken] = useState<string>("");
-  const [dockerModel, setDockerModel] = useState<string>("allenai/olmOCR-2-7B-1025-FP8");
-  const [availableModels, setAvailableModels] = useState<string[]>([
-    "allenai/olmOCR-2-7B-1025-FP8",
-    "nvidia/Phi-4-reasoning-plus-NVFP4",
-    "Qwen/Qwen2-VL-7B-Instruct",
-  ]);
-  const [modelMaxLengths, setModelMaxLengths] = useState<Record<string, number>>(DEFAULT_MODEL_MAX_LENGTHS);
-  const [dockerPort, setDockerPort] = useState<number>(8000);
+  const [dockerModel] = useState<string>(OCR_MODEL);
   const [gpuMem, setGpuMem] = useState<number>(0.8);
   const [maxLen, setMaxLen] = useState<number>(15360);
   const [tensorParallel, setTensorParallel] = useState<number>(1);
   const [dockerStatuses, setDockerStatuses] = useState<Record<"ocr" | "analysis", string>>({ ocr: "checking", analysis: "checking" });
   const [dockerMsg, setDockerMsg] = useState<string>("");
   const [saveStatus, setSaveStatus] = useState<string>("");
+  const [analysisProfiles, setAnalysisProfiles] = useState<AnalysisProfile[]>([]);
+  const [servedAnalysisModel, setServedAnalysisModel] = useState<string>("");
+  const [configuredAnalysisModel, setConfiguredAnalysisModel] = useState<string>("");
+  const [targetAnalysisModel, setTargetAnalysisModel] = useState<string>("");
+  const [analysisOperation, setAnalysisOperation] = useState<AnalysisSwitchOperation | null>(null);
 
-  const currentMaxBoundary = modelMaxLengths[dockerModel] || 131072;
-
-  const handleModelChange = (newModel: string) => {
-    setDockerModel(newModel);
-    const boundary = modelMaxLengths[newModel] || 131072;
-    if (maxLen > boundary) {
-      setMaxLen(boundary);
-    }
-  };
+  const currentMaxBoundary = OCR_MAX_LENGTH;
+  const switchInProgress = Boolean(analysisOperation && !TERMINAL_SWITCH_STATES.has(analysisOperation.state));
 
   const navItems = [
     { id: "ingestion", label: "📥 Ingestion Pipeline", icon: FileSpreadsheet },
@@ -111,23 +99,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
   ];
 
   const loadDockerState = async () => {
-    const [ocrStatus, analysisStatus] = await Promise.all([fetchDockerStatus("ocr"), fetchDockerStatus("analysis")]);
+    const [ocrStatus, analysisStatus, modelStatus] = await Promise.all([
+      fetchDockerStatus("ocr"), fetchDockerStatus("analysis"), fetchAnalysisModelStatus(),
+    ]);
     setDockerStatuses({ ocr: ocrStatus?.status || "unknown", analysis: analysisStatus?.status || "unknown" });
     setDockerMsg(ocrStatus?.message || analysisStatus?.message || "");
-    const modelsRes = await fetchDockerModels();
-    if (modelsRes) {
-      if (modelsRes.models && modelsRes.models.length > 0) {
-        setAvailableModels((prev) => Array.from(new Set([...modelsRes.models, ...prev])));
-      }
-      if (modelsRes.max_lengths) {
-        setModelMaxLengths((prev) => ({ ...prev, ...modelsRes.max_lengths }));
-      }
+    if (modelStatus) {
+      setAnalysisProfiles(modelStatus.profiles || []);
+      setServedAnalysisModel(modelStatus.served_model || "");
+      setConfiguredAnalysisModel(modelStatus.configured_model || "");
+      setTargetAnalysisModel((current) => current || modelStatus.configured_model || modelStatus.profiles?.[0]?.model || "");
+      setAnalysisOperation(modelStatus.operation || null);
     }
     const settings = await fetchSettings();
     if (settings) {
       if (settings.hf_token && settings.hf_token !== "********") setHfToken(settings.hf_token);
-      if (settings.model_name) setDockerModel(settings.model_name);
-      if (settings.docker_port) setDockerPort(settings.docker_port);
       if (settings.docker_gpu_mem) setGpuMem(settings.docker_gpu_mem);
       if (settings.docker_max_model_len) setMaxLen(settings.docker_max_model_len);
       if (settings.docker_tensor_parallel) setTensorParallel(settings.docker_tensor_parallel);
@@ -137,27 +123,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
   useEffect(() => {
     let isMounted = true;
     const init = async () => {
-      const [statusRes, analysisStatus] = await Promise.all([fetchDockerStatus("ocr"), fetchDockerStatus("analysis")]);
+      const [statusRes, analysisStatus, modelStatus] = await Promise.all([
+        fetchDockerStatus("ocr"), fetchDockerStatus("analysis"), fetchAnalysisModelStatus(),
+      ]);
       if (!isMounted) return;
       if (statusRes) {
         setDockerStatuses({ ocr: statusRes.status || "unknown", analysis: analysisStatus?.status || "unknown" });
         setDockerMsg(statusRes.message || "");
       }
-      const modelsRes = await fetchDockerModels();
-      if (modelsRes && isMounted) {
-        if (modelsRes.models && modelsRes.models.length > 0) {
-          setAvailableModels((prev) => Array.from(new Set([...modelsRes.models, ...prev])));
-        }
-        if (modelsRes.max_lengths) {
-          setModelMaxLengths((prev) => ({ ...prev, ...modelsRes.max_lengths }));
-        }
+      if (modelStatus && isMounted) {
+        setAnalysisProfiles(modelStatus.profiles || []);
+        setServedAnalysisModel(modelStatus.served_model || "");
+        setConfiguredAnalysisModel(modelStatus.configured_model || "");
+        setTargetAnalysisModel(modelStatus.configured_model || modelStatus.profiles?.[0]?.model || "");
+        setAnalysisOperation(modelStatus.operation || null);
       }
       const settings = await fetchSettings();
       if (!isMounted) return;
       if (settings) {
         if (settings.hf_token && settings.hf_token !== "********") setHfToken(settings.hf_token);
-        if (settings.model_name) setDockerModel(settings.model_name);
-        if (settings.docker_port) setDockerPort(settings.docker_port);
         if (settings.docker_gpu_mem) setGpuMem(settings.docker_gpu_mem);
         if (settings.docker_max_model_len) setMaxLen(settings.docker_max_model_len);
         if (settings.docker_tensor_parallel) setTensorParallel(settings.docker_tensor_parallel);
@@ -168,6 +152,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
       isMounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!analysisOperation || TERMINAL_SWITCH_STATES.has(analysisOperation.state)) return;
+    const interval = window.setInterval(async () => {
+      const operation = await fetchAnalysisSwitchOperation(analysisOperation.id);
+      if (operation?.id) {
+        setAnalysisOperation(operation);
+        if (TERMINAL_SWITCH_STATES.has(operation.state)) await loadDockerState();
+      }
+    }, 3000);
+    return () => window.clearInterval(interval);
+  }, [analysisOperation]);
 
 
   const pollStatusUntilDone = (maxAttempts = 15) => {
@@ -210,7 +206,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     setDockerStatuses((prev) => ({ ...prev, ocr: "starting" }));
     const res = await createDockerContainer({
       hf_token: hfToken && hfToken !== "********" ? hfToken : undefined,
-      port: dockerPort,
+      port: 8000,
       model: dockerModel,
       gpu_mem: gpuMem,
       max_model_len: maxLen,
@@ -229,6 +225,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
     const res = await setVllmRoleRunning("analysis", running);
     setDockerMsg(res.message || `Analysis vLLM ${running ? "start" : "stop"} requested.`);
     await loadDockerState();
+  };
+
+  const handleAnalysisSwitch = async () => {
+    if (!targetAnalysisModel || switchInProgress || targetAnalysisModel === servedAnalysisModel) return;
+    const profile = analysisProfiles.find((item) => item.model === targetAnalysisModel);
+    if (!profile?.cache_complete) {
+      setDockerMsg(`Cannot switch: ${profile?.cache_error || "verified cache is incomplete"}`);
+      return;
+    }
+    const accepted = window.confirm(
+      `Switch analysis from ${servedAnalysisModel || configuredAnalysisModel} to ${targetAnalysisModel}?\n\n` +
+      `Analysis will be unavailable for approximately ${Math.ceil(profile.estimated_load_seconds / 60)} minutes. ` +
+      "The previous model will be restored automatically if validation or inference fails.",
+    );
+    if (!accepted) return;
+    setDockerMsg("Starting guarded analysis model switch…");
+    const operation = await startAnalysisModelSwitch(targetAnalysisModel);
+    if (operation?.id) {
+      setAnalysisOperation(operation);
+      setDockerMsg(operation.message);
+    } else {
+      setDockerMsg(operation?.message || "Unable to start analysis switch");
+    }
   };
 
   const handleStartupMode = async (mode: "analysis_262k" | "dual_32k" | "ocr_only") => {
@@ -251,7 +270,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     const res = await updateSettings({
       hf_token: hfToken,
       model_name: dockerModel,
-      docker_port: dockerPort,
+      docker_port: 8000,
       docker_gpu_mem: gpuMem,
       docker_max_model_len: maxLen,
       docker_tensor_parallel: tensorParallel,
@@ -316,8 +335,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       <span className={`font-mono ${dockerStatuses[role] === "ready" ? "text-emerald-400" : dockerStatuses[role] === "starting" ? "text-amber-400" : "text-rose-300"}`}>{dockerStatuses[role]}</span>
                     </div>
                     <div className="grid grid-cols-2 gap-1.5">
-                      <button type="button" onClick={() => role === "ocr" ? handleStartDocker() : handleAnalysisLifecycle(true)} className="px-2 py-1 rounded bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 border border-emerald-800/50 flex items-center justify-center gap-1"><Play className="w-3 h-3" /> Start</button>
-                      <button type="button" onClick={() => role === "ocr" ? handleStopDocker() : handleAnalysisLifecycle(false)} className="px-2 py-1 rounded bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 border border-rose-800/50 flex items-center justify-center gap-1"><Square className="w-3 h-3" /> Stop</button>
+                      <button type="button" disabled={role === "analysis" && switchInProgress} onClick={() => role === "ocr" ? handleStartDocker() : handleAnalysisLifecycle(true)} className="px-2 py-1 rounded bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 border border-emerald-800/50 flex items-center justify-center gap-1 disabled:opacity-40"><Play className="w-3 h-3" /> Start</button>
+                      <button type="button" disabled={role === "analysis" && switchInProgress} onClick={() => role === "ocr" ? handleStopDocker() : handleAnalysisLifecycle(false)} className="px-2 py-1 rounded bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 border border-rose-800/50 flex items-center justify-center gap-1 disabled:opacity-40"><Square className="w-3 h-3" /> Stop</button>
                     </div>
                   </div>
                 ))}
@@ -325,16 +344,57 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
               <div className="rounded-lg border border-indigo-800/50 bg-indigo-950/20 p-2 space-y-1.5">
                 <div className="text-[10px] font-semibold text-indigo-200">Operating mode (restored next launch)</div>
-                <button type="button" onClick={() => handleStartupMode("analysis_262k")} className="w-full px-2 py-1 rounded bg-indigo-700 hover:bg-indigo-600 text-white font-semibold">
+                <button type="button" disabled={switchInProgress} onClick={() => handleStartupMode("analysis_262k")} className="w-full px-2 py-1 rounded bg-indigo-700 hover:bg-indigo-600 text-white font-semibold disabled:opacity-40">
                   Analyse Existing Cases — 262K
                 </button>
-                <button type="button" onClick={() => handleStartupMode("dual_32k")} className="w-full px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700">
+                <button type="button" disabled={switchInProgress} onClick={() => handleStartupMode("dual_32k")} className="w-full px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 disabled:opacity-40">
                   Ingest + Analyse — OCR / 32K
                 </button>
-                <button type="button" onClick={() => handleStartupMode("ocr_only")} className="w-full px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700">
+                <button type="button" disabled={switchInProgress} onClick={() => handleStartupMode("ocr_only")} className="w-full px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 disabled:opacity-40">
                   OCR Batch Only
                 </button>
                 <p className="text-[9px] leading-snug text-slate-400">The interface remains available while the selected model profile loads.</p>
+              </div>
+
+              <div className="rounded-lg border border-cyan-800/50 bg-cyan-950/20 p-2 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-cyan-200">Analysis model</span>
+                  <span className={`text-[9px] font-mono ${servedAnalysisModel === configuredAnalysisModel ? "text-emerald-400" : "text-amber-300"}`}>
+                    {switchInProgress ? analysisOperation?.state : servedAnalysisModel ? "verified live" : "offline"}
+                  </span>
+                </div>
+                <div className="text-[9px] text-slate-400 break-all">Serving: <span className="text-slate-200">{servedAnalysisModel || "none"}</span></div>
+                <label htmlFor="analysis-profile" className="block text-slate-400">Verified target profile</label>
+                <select
+                  id="analysis-profile"
+                  value={targetAnalysisModel}
+                  disabled={switchInProgress}
+                  onChange={(event) => setTargetAnalysisModel(event.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-[10px] disabled:opacity-50"
+                >
+                  {analysisProfiles.map((profile) => (
+                    <option key={profile.model} value={profile.model} disabled={!profile.cache_complete}>
+                      {profile.display_name}{profile.cache_complete ? "" : " — cache incomplete"}
+                    </option>
+                  ))}
+                </select>
+                {analysisOperation && (
+                  <div className="space-y-1">
+                    <div className="h-1.5 rounded bg-slate-800 overflow-hidden">
+                      <div className={`h-full ${analysisOperation.state === "failed" ? "bg-rose-500" : analysisOperation.state === "rolled_back" ? "bg-amber-500" : "bg-cyan-500"}`} style={{ width: `${Math.max(0, Math.min(100, analysisOperation.progress || 0))}%` }} />
+                    </div>
+                    <div className="text-[9px] text-cyan-200">{analysisOperation.message}</div>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  disabled={switchInProgress || !targetAnalysisModel || targetAnalysisModel === servedAnalysisModel || !analysisProfiles.find((profile) => profile.model === targetAnalysisModel)?.cache_complete}
+                  onClick={handleAnalysisSwitch}
+                  className="w-full px-2 py-1 rounded bg-cyan-700 hover:bg-cyan-600 text-white font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {switchInProgress ? "Switch in progress…" : "Switch Analysis Model"}
+                </button>
+                <p className="text-[9px] leading-snug text-slate-400">Immutable cache validation, live inference test, and automatic rollback are enforced by the server.</p>
               </div>
 
               <div className="text-[10px] text-slate-400 border-t border-slate-800 pt-2">OCR provisioning settings (analysis is managed independently by the production stack).</div>
@@ -369,19 +429,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </div>
 
               <div>
-                <label htmlFor="docker-model" className="block text-slate-400 mb-0.5">Model Name</label>
-                <select
-                  id="docker-model"
-                  value={dockerModel}
-                  onChange={(e) => handleModelChange(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-[11px]"
-                >
-                  {availableModels.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
+                <label htmlFor="docker-model" className="block text-slate-400 mb-0.5">OCR Model</label>
+                <div id="docker-model" className="w-full bg-slate-950/60 border border-slate-800 rounded px-2 py-1 text-slate-300 text-[10px] break-all">
+                  {OCR_MODEL}
+                </div>
               </div>
 
               <div>
@@ -389,9 +440,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <input
                   id="docker-port"
                   type="number"
-                  value={dockerPort}
-                  onChange={(e) => setDockerPort(Number(e.target.value))}
-                  className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-[11px]"
+                  value={8000}
+                  readOnly
+                  className="w-full bg-slate-950/60 border border-slate-800 rounded px-2 py-1 text-slate-400 text-[11px]"
                 />
               </div>
 

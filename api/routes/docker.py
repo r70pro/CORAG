@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from api.auth import require_remote_lifecycle_enabled, verify_admin_key
 from api.models import (
     AnalysisContextModeRequest,
+    AnalysisSwitchRequest,
     DockerCreateRequest,
     DockerLogsResponse,
     DockerModelsResponse,
@@ -22,6 +23,46 @@ from api.models import (
 router = APIRouter()
 
 
+@router.get("/analysis/profiles", response_model=dict, summary="Verified analysis profiles")
+def get_analysis_profiles():
+    from analysis_profiles import analysis_status
+
+    return analysis_status()
+
+
+@router.get("/analysis/status", response_model=dict, summary="Live analysis model state")
+def get_analysis_model_status():
+    from analysis_profiles import analysis_status
+
+    return analysis_status()
+
+
+@router.post(
+    "/analysis/switch", response_model=dict, status_code=202,
+    dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
+    summary="Start a guarded analysis model switch",
+)
+def switch_analysis_model(req: AnalysisSwitchRequest):
+    from analysis_profiles import start_switch
+
+    try:
+        return start_switch(req.target_model)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/analysis/operations/{operation_id}", response_model=dict)
+def get_analysis_switch_operation(operation_id: str):
+    from analysis_profiles import get_operation
+
+    operation = get_operation(operation_id)
+    if not operation:
+        raise HTTPException(status_code=404, detail="Analysis switch operation not found")
+    return operation
+
+
 @router.post(
     "/analysis/context-mode",
     response_model=MessageResponse,
@@ -30,7 +71,10 @@ router = APIRouter()
 )
 async def set_analysis_context_mode(req: AnalysisContextModeRequest):
     """Use the OCR model's GPU allocation for a 262K analysis context, or restore it."""
+    from analysis_profiles import switch_in_progress
     from docker_manager import set_extended_analysis_context
+    if switch_in_progress():
+        raise HTTPException(status_code=409, detail="Analysis model switch is in progress")
 
     success, msg = await asyncio.to_thread(set_extended_analysis_context, req.extended)
     if not success:
@@ -50,7 +94,10 @@ async def set_analysis_context_mode(req: AnalysisContextModeRequest):
 )
 async def set_startup_mode(req: StartupModeRequest):
     """Apply a workflow-oriented model profile and restore it next launch."""
+    from analysis_profiles import switch_in_progress
     from docker_manager import set_extended_analysis_context, set_vllm_role_running
+    if switch_in_progress():
+        raise HTTPException(status_code=409, detail="Analysis model switch is in progress")
     from settings_manager import load_settings, save_settings
 
     if req.mode == "analysis_262k":
@@ -143,6 +190,9 @@ async def start_container():
 )
 async def start_role_container(role: str):
     from docker_manager import set_vllm_role_running
+    from analysis_profiles import switch_in_progress
+    if role == "analysis" and switch_in_progress():
+        raise HTTPException(status_code=409, detail="Analysis model switch is in progress")
 
     success, msg = await asyncio.to_thread(set_vllm_role_running, role, True)
     if not success:
@@ -157,6 +207,9 @@ async def start_role_container(role: str):
 )
 async def stop_role_container(role: str):
     from docker_manager import set_vllm_role_running
+    from analysis_profiles import switch_in_progress
+    if role == "analysis" and switch_in_progress():
+        raise HTTPException(status_code=409, detail="Analysis model switch is in progress")
 
     success, msg = await asyncio.to_thread(set_vllm_role_running, role, False)
     if not success:
@@ -202,6 +255,11 @@ async def create_container(req: DockerCreateRequest):
         model = settings.get("model_name", "allenai/olmOCR-2-7B-1025-FP8")
         if not model or model == "model":
             model = "allenai/olmOCR-2-7B-1025-FP8"
+    if model != "allenai/olmOCR-2-7B-1025-FP8":
+        raise HTTPException(
+            status_code=422,
+            detail="The production OCR endpoint only accepts allenai/olmOCR-2-7B-1025-FP8; use /analysis/switch for analysis models",
+        )
 
     explicit_hf_token = req.hf_token if req.hf_token and req.hf_token != "********" else ""
     hf_token = explicit_hf_token or settings.get("hf_token", "") or os.environ.get("HF_TOKEN", "")
@@ -238,14 +296,7 @@ async def create_container(req: DockerCreateRequest):
             "docker_max_model_len": max_model_len,
             "docker_tensor_parallel": tensor_parallel_size,
         }
-        # OCR and analysis have independent configured models even though one
-        # managed container serves them at different times.  Persisting an
-        # analysis model as ``model_name`` leaves the ingestion select with an
-        # invalid hidden value and makes the next OCR pre-flight fail.
-        if model == "allenai/olmOCR-2-7B-1025-FP8":
-            new_settings.update({"model_name": model, "server_url": server_url})
-        else:
-            new_settings.update({"analysis_model_name": model, "analysis_server_url": server_url})
+        new_settings.update({"model_name": model, "server_url": server_url})
         if explicit_hf_token:
             new_settings["hf_token"] = explicit_hf_token
         settings.update(new_settings)

@@ -169,6 +169,70 @@ export async function setStartupMode(mode: "analysis_262k" | "dual_32k" | "ocr_o
   }
 }
 
+export interface AnalysisProfile {
+  model: string;
+  display_name: string;
+  revision: string;
+  context_length: number;
+  dtype: string;
+  quantization: string;
+  reasoning_parser?: string | null;
+  estimated_load_seconds: number;
+  cache_complete: boolean;
+  cache_error: string;
+  snapshot: string;
+}
+
+export interface AnalysisSwitchOperation {
+  id: string;
+  state: string;
+  message: string;
+  progress: number;
+  target_model: string;
+  previous_model: string;
+  error?: string;
+  rollback_error?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AnalysisModelStatus {
+  configured_model: string;
+  served_model: string;
+  configuration_matches_runtime: boolean;
+  profiles: AnalysisProfile[];
+  operation?: AnalysisSwitchOperation | null;
+}
+
+export async function fetchAnalysisModelStatus(): Promise<AnalysisModelStatus | null> {
+  try {
+    return await requestJson<AnalysisModelStatus>("/api/docker/analysis/status");
+  } catch {
+    return null;
+  }
+}
+
+export async function startAnalysisModelSwitch(targetModel: string) {
+  try {
+    return await jsonPost<AnalysisSwitchOperation>("/api/docker/analysis/switch", {
+      target_model: targetModel,
+      confirmation: "SWITCH",
+    });
+  } catch (error) {
+    return { success: false, message: getErrorMessage(error) } as ApiResult;
+  }
+}
+
+export async function fetchAnalysisSwitchOperation(operationId: string) {
+  try {
+    return await requestJson<AnalysisSwitchOperation>(
+      `/api/docker/analysis/operations/${apiPathSegment(operationId)}`,
+    );
+  } catch (error) {
+    return { success: false, message: getErrorMessage(error) } as ApiResult;
+  }
+}
+
 export async function startDockerContainer(payload: {
   hf_token?: string;
   model_name?: string;
@@ -565,6 +629,8 @@ export interface InstalledModelItem {
   is_active: boolean;
   is_configured?: boolean;
   is_protected?: boolean;
+  is_switch_target?: boolean;
+  is_rollback_source?: boolean;
   is_complete?: boolean;
   validation_error?: string;
   revision?: string;

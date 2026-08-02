@@ -746,6 +746,16 @@ def get_installed_models_data() -> dict[str, Any]:
         settings.get("reranker_model", ""),
     }
     configured_models.discard("")
+    switch_target = ""
+    rollback_source = ""
+    try:
+        from analysis_profiles import TERMINAL_STATES, list_operations
+        recent_operations = list_operations(limit=1)
+        if recent_operations and recent_operations[0].get("state") not in TERMINAL_STATES:
+            switch_target = recent_operations[0].get("target_model", "")
+            rollback_source = recent_operations[0].get("previous_model", "")
+    except Exception:
+        pass
 
     # Runtime truth must come from the managed containers, not saved settings.
     # Map each running model to the exact host cache root mounted into it so a
@@ -995,6 +1005,8 @@ def get_installed_models_data() -> dict[str, Any]:
                                 model_id in configured_models
                                 and cache_source == "KIRAG Workspace"
                             ),
+                            "is_switch_target": model_id == switch_target,
+                            "is_rollback_source": model_id == rollback_source,
                             "is_complete": is_complete,
                             "validation_error": "; ".join(validation_errors),
                             "revision": revision,
@@ -1011,6 +1023,10 @@ def get_installed_models_data() -> dict[str, Any]:
 
     # Assign runtime activity only to the exact cache mounted by the live role.
     for m in models_list:
+        if m["cache_source"] == "KIRAG Workspace" and (
+            m.get("is_switch_target") or m.get("is_rollback_source")
+        ):
+            m["is_protected"] = True
         for served_model, mounted_hf_home, role in runtime_models:
             expected_path = os.path.realpath(
                 os.path.join(mounted_hf_home, "hub", m["folder"])

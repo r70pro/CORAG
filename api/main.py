@@ -47,6 +47,12 @@ async def lifespan(application: FastAPI):
     """Application lifespan — startup and shutdown hooks."""
     require_safe_bind(requested_api_bind_host())
     logger.info(f"Starting KIRAG API v{VERSION}...")
+    try:
+        from analysis_profiles import resume_pending_switch
+        if resume_pending_switch():
+            logger.warning("Resumed an interrupted analysis model switch")
+    except Exception as exc:
+        logger.error("Unable to recover analysis switch state: %s", exc)
     yield
     logger.info("Shutting down KIRAG API...")
     # Cleanup on shutdown

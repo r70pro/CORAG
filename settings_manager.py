@@ -209,6 +209,16 @@ def load_settings(*, include_env_secrets: bool = True):
         for setting_key, environment_key in env_overrides.items():
             if os.environ.get(environment_key, "").strip():
                 defaults[setting_key] = os.environ[environment_key].strip()
+        # A successfully smoke-tested UI/CLI switch is newer than deployment
+        # defaults and intentionally overrides only the analysis profile.
+        try:
+            from analysis_profiles import read_runtime_profile
+            runtime_profile = read_runtime_profile()
+            if runtime_profile:
+                defaults["analysis_model_name"] = runtime_profile["model"]
+                defaults["analysis_server_url"] = "http://127.0.0.1:8002/v1"
+        except Exception as exc:
+            logger.warning("Unable to read runtime analysis profile: %s", exc)
     return defaults
 
 

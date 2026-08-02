@@ -88,6 +88,13 @@ class StartupModeRequest(BaseModel):
     mode: str = Field(pattern="^(analysis_262k|dual_32k|ocr_only)$")
 
 
+class AnalysisSwitchRequest(BaseModel):
+    """Select one immutable, verified production analysis profile."""
+
+    target_model: str = Field(min_length=1, max_length=512)
+    confirmation: str = Field(pattern="^SWITCH$")
+
+
 class DockerStatusResponse(BaseModel):
     """vLLM container status."""
 
@@ -400,6 +407,8 @@ class InstalledModelItem(BaseModel):
     is_protected: bool = Field(
         False, description="True if deletion would affect a serving or configured workspace model"
     )
+    is_switch_target: bool = Field(False, description="Target of an active analysis switch")
+    is_rollback_source: bool = Field(False, description="Rollback source of an active analysis switch")
     is_complete: bool = Field(False, description="True if the referenced snapshot passes validation")
     validation_error: str = Field("", description="Snapshot validation failures")
     revision: str = Field("", description="Commit referenced by refs/main")

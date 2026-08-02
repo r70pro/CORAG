@@ -416,6 +416,12 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
     If ``stream=True`` (default), returns an SSE stream of text chunks.
     Otherwise returns the complete response as JSON.
     """
+    from analysis_profiles import switch_in_progress
+    if switch_in_progress():
+        raise HTTPException(
+            status_code=503,
+            detail="Analysis model switch is in progress; retry after verification completes",
+        )
     from rag.analyzer import ANALYSIS_MODE_MAP, ContextWindowError, analyze
 
     mode_key = ANALYSIS_MODE_MAP.get(req.mode, req.mode)

@@ -883,6 +883,12 @@ export const SystemDiagnostics: React.FC = () => {
                                           CONFIGURED
                                         </span>
                                       )}
+                                      {m.is_switch_target && (
+                                        <span className="px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">SWITCH TARGET</span>
+                                      )}
+                                      {m.is_rollback_source && (
+                                        <span className="px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-amber-500/20 text-amber-300 border border-amber-500/30">ROLLBACK SOURCE</span>
+                                      )}
                                       {m.copyCount && m.copyCount > 1 && (
                                         <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
                                           {m.copyCount} Cache Copies

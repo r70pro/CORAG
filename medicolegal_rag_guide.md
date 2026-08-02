@@ -4,6 +4,10 @@ This guide describes the workflow KIRAG actually implements for practitioners
 reviewing legal and medical records. For installation, deployment, API, CLI,
 and test commands, see [`README.md`](README.md).
 
+Implementation baseline: 2 August 2026. Model names, readiness, cache state,
+and container state shown in the UI are live observations; they are not proved
+by this document and must still be checked at the time of use.
+
 > KIRAG is a document-review aid. OCR, heuristic metadata extraction, semantic
 > retrieval, and LLM generation can all fail. Verify every material statement
 > against the original record before relying on it.
@@ -27,17 +31,20 @@ Use full-disk encryption, restricted filesystem permissions, protected backups,
 separate API/admin secrets, and a documented retention policy. Do not expose
 the backing-service ports publicly.
 
-For reliable single-machine production, systemd is the sole lifecycle owner.
-The browser, Gradio process, API process, and application exit handlers must not
-stop databases or inference services. Keep remote lifecycle operations disabled
-and use host-level systemd commands for planned starts, stops, and restarts.
+For reliable single-machine production, systemd owns the API, frontend, and
+infrastructure startup chain. The React UI may invoke the deliberately enabled,
+admin-authenticated managed inference-role operations described below; it does
+not own the four backing data services. Application exit handlers must not stop
+databases or inference services. Keep remote lifecycle disabled unless these
+guarded React controls are part of the deployment's intended control plane.
 
 ## The implemented workflow
 
 ```mermaid
 flowchart TD
     START[systemd starts persistent infrastructure] --> OCRMODEL[OCR vLLM :8000 healthy]
-    OCRMODEL --> ANALYSISMODEL[Analysis vLLM :8002 healthy]
+    OCRMODEL --> PROFILE[Validate pinned Qwen or Gemma profile]
+    PROFILE --> ANALYSISMODEL[Analysis vLLM :8002 healthy and smoke-tested]
     OCRMODEL --> OCR[Upload one matter and run OCR]
     OCR --> VERIFY[Compare PDF and Markdown]
     VERIFY --> INDEX[Chunk, embed, index, archive]
@@ -83,13 +90,14 @@ sudo systemctl status kirag-infrastructure kirag-api kirag-frontend
 curl --fail http://127.0.0.1:8001/readyz
 ```
 
-`kirag-infrastructure` verifies both immutable model snapshots offline, starts
+`kirag-infrastructure` verifies the required immutable model snapshots offline, starts
 Compose with health gates, then initialises the PostgreSQL schema, the
 `olmocr-pdfs` and `olmocr-markdown` MinIO buckets, and the active embedding
 model's Qdrant collection. `active (exited)` is the normal infrastructure unit
 state: its startup transaction completed and Docker continues supervising the
-containers. `/readyz` is the operational acceptance gate and stays HTTP 503
-until all four data services and both vLLM roles are usable.
+containers. `/readyz` gates the four core data services only. Use
+`/inference/ready` and the role cards for inference readiness, because an
+intentional OCR-only or analysis-only mode leaves one role unavailable.
 
 Restart only the failed layer when possible:
 
@@ -100,8 +108,11 @@ sudo systemctl restart kirag-frontend
 
 Recycling `kirag-infrastructure` interrupts both inference roles and may incur
 a long model cold start. Use it only for infrastructure/configuration changes.
-Keep `KIRAG_ENABLE_REMOTE_LIFECYCLE=false`; API lifecycle endpoints intentionally
-return 403 even with an admin key.
+With `KIRAG_ENABLE_REMOTE_LIFECYCLE=false`, mutation endpoints for inference
+lifecycle, operating mode, and analysis-profile switching intentionally return
+403 even with an admin key. A deployment that exposes those controls in React
+must set the flag deliberately, retain admin authentication, and keep the API
+on a trusted interface. Read-only status remains available independently.
 
 ### Interactive workstation
 
@@ -130,14 +141,26 @@ Both infrastructure start and stop require the admin key and the explicit
 remote-lifecycle feature flag. Do not enable that flag merely to work around a
 systemd failure; inspect the host journal and repair the service instead.
 
-## 2. Start the inference model
+## 2. Select the inference operating mode and analysis model
 
 ### Production inference roles
 
-Production does not swap models during a matter workflow. It keeps:
+Production keeps two independently managed inference roles:
 
 - `allenai/olmOCR-2-7B-1025-FP8` on `http://127.0.0.1:8000/v1` for PDF OCR;
-- `Qwen/Qwen3.6-35B-A3B` on `http://127.0.0.1:8002/v1` for text analysis.
+- one verified text-analysis profile on `http://127.0.0.1:8002/v1`.
+
+The approved, interchangeable analysis profiles are:
+
+| Profile | Pinned revision | Weights | Maximum configured context | Model-specific vLLM behavior |
+|---|---|---|---:|---|
+| `Qwen/Qwen3.6-35B-A3B` | `995ad96eacd98c81ed38be0c5b274b04031597b0` | BF16, unquantized | 262,144 | `qwen3` reasoning parser |
+| `google/gemma-4-31B-it` | `842da3794eaa0b77d5f08bae87a17459d91ff475` | BF16, unquantized | 262,144 | no reasoning parser |
+
+The similar `nvidia/Qwen3.6-35B-A3B-NVFP4` checkpoint is not one of these
+profiles and is not an interchangeable substitute. Gemma is a vision-capable
+model family, but KIRAG deliberately serves this role in language-only mode;
+document images continue through the OCR role.
 
 The models and vLLM image are pinned to immutable revisions. Model preparation
 is a controlled online deployment step; runtime mounts `$KIRAG_HF_HOME`
@@ -146,9 +169,18 @@ must pass its health check before analysis starts, preventing concurrent model
 profiling from exhausting unified GPU memory. The analysis role uses
 `--language-model-only`, because OCR owns all document-image processing.
 
-The supplied 128 GiB GB10 profile uses OCR/analysis memory high-water marks of
-0.28/0.57, context limits of 15,360/32,768, and batch limits of 4,096/8,192
-tokens. These are measured hardware settings, not universal recommendations.
+The supplied 128 GiB GB10 profile supports three persisted operating modes in
+React under **Dedicated vLLM Roles**:
+
+| React control | Runtime state | Intended work |
+|---|---|---|
+| **Analyse Only — 262K** | OCR stopped; analysis uses the selected profile's full configured 262,144-token allocation and 0.85 memory fraction | Long analysis after ingestion |
+| **Ingest + Analyse — OCR / 32K** | OCR and analysis active; analysis limited to 32,768 tokens and 0.57 memory fraction | Mixed ingestion and analysis |
+| **OCR Batch Only** | OCR active; analysis stopped | Maximum clarity for an OCR batch |
+
+The base dual-role profile uses an OCR memory high-water mark of 0.28 and
+15,360-token OCR context; analysis uses an 8,192-token batch limit. These are
+measured hardware settings, not universal recommendations.
 On different hardware, require successful cold-start, representative inference,
 adequate OS memory, and zero OOM/restart events before accepting new values.
 
@@ -161,9 +193,40 @@ docker inspect -f '{{.State.Health.Status}} restarts={{.RestartCount}} oom={{.St
 docker inspect -f '{{.State.Health.Status}} restarts={{.RestartCount}} oom={{.State.OOMKilled}}' kirag_vllm_analysis
 ```
 
-Environment inference URLs override saved UI settings in production. Do not
-press **Recreate & Run**, **Stop**, or **Shut Down** in the Gradio/sidebar
-lifecycle panel; systemd and Compose own these containers.
+### Safe switching in React
+
+Use **Dedicated vLLM Roles → Analysis model**, not the OCR model-name field:
+
+1. Confirm **Serving** identifies the currently live analysis model.
+2. Select the other entry under **Verified target profile**. A profile labelled
+   **cache incomplete** is disabled and must be repaired/downloaded first.
+3. Click **Switch Analysis Model**, read the estimated outage, and confirm.
+4. Wait for the durable operation to finish. Navigation or an API restart does
+   not discard it; the server resumes a non-terminal operation.
+5. Require **verified live** and the expected **Serving** identity before
+   submitting a medicolegal query.
+
+The guarded transaction validates `refs/main`, the pinned snapshot, symlinks,
+indexed weight shards, safetensors presence, and unfinished downloads. It then
+recreates only `kirag_vllm_analysis` with the profile-specific revision and
+arguments, waits for `/v1/models`, runs a live chat-completion smoke test, and
+only then persists the profile. If activation fails, it recreates and verifies
+the previous approved profile; the UI reports **rolled back** or **failed**
+rather than claiming success.
+
+While switching, KIRAG returns HTTP 409 for RAG queries and conflicting
+analysis lifecycle/context operations. Do not bypass the workflow with the OCR
+**Recreate** control, a settings-only model-name change, or direct container
+replacement: those paths cannot establish that configured and served identity
+match. A switch also changes model behavior: Qwen can expose a separately
+parsed reasoning channel for eligible modes, whereas Gemma produces only its
+ordinary answer channel.
+
+Environment inference URLs remain authoritative in supervised production. The
+role-specific **Start** and **Stop** buttons and the three operating-mode
+buttons are supported only when remote lifecycle is deliberately enabled and
+the request carries the admin credential. They remain disabled during a model
+switch. Systemd continues to own whole-application startup and shutdown.
 
 ### Interactive single-container mode
 
@@ -186,7 +249,7 @@ Use **Start** only when a managed container already exists. API create/start,
 stop, and shutdown operations require the dedicated admin key and explicit
 remote-lifecycle enablement.
 
-One managed container can serve the selected OCR or analysis model at a time.
+One legacy interactive container can serve the selected OCR or analysis model at a time.
 If the requested analysis model is not loaded, the analyser probes `/models`,
 uses a known equivalent where possible, otherwise falls back to the first
 loaded model and emits a warning. For reproducible work, confirm the loaded
@@ -417,29 +480,38 @@ provenance is required.
 
 ## 8. Scope and run a RAG query
 
-In supervised production, the analysis endpoint/model are pinned by environment
-to port 8002 and `Qwen/Qwen3.6-35B-A3B`; saved UI values cannot silently redirect
-the role. Free Q&A and the deep analytical modes use Qwen thinking plus
-multi-facet retrieval; Timeline, Injury Summary, Inconsistency Finder, and
-Medication Tracker disable thinking. Reasoning is parsed separately from the
-answer. It is discarded for regular roles and is visible, persisted in session
-history and the protected audit log, and optionally exported for requests
-verified with administrative credentials. The incompatible NVIDIA NVFP4
-checkpoint is intentionally excluded from the managed selector.
+In supervised production, the analysis endpoint is fixed at port 8002 and its
+identity comes from the last successfully verified Qwen or Gemma runtime
+profile; a saved UI string cannot silently redirect the role. The query path
+checks live/configured model equivalence, and switching blocks new queries until
+verification finishes.
+
+With Qwen, General Knowledge, Free Q&A, Expert, Judge, Causation, Prognosis,
+Work Capacity, and Treatment Planning can use the separately parsed Qwen
+thinking channel. Timeline, Injury Summary, Inconsistency Finder, and Medication
+Tracker disable thinking to favour direct structured output. Gemma has no
+configured reasoning parser, so these modes remain available but do not expose
+a Qwen-style reasoning channel. Parsed reasoning is discarded for regular
+roles; for administratively verified requests it may be displayed, retained in
+session history and the protected audit log, and included in an export.
 
 There is no fixed 16,000-token completion limit. KIRAG reads the analysis
 server's live context length, tokenizes the actual prompt with its thinking
 setting, and assigns all remaining capacity to generation. Managed shared mode
-is 32,768 tokens and requires OCR to be active; OCR-off mode recreates analysis
-at the configured model's full context allocation.
+is 32,768 tokens and requires OCR to be active; **Analyse Only** stops OCR and
+recreates the selected analysis profile at its full configured 262,144-token
+allocation. The live server value—not the profile's theoretical maximum—is the
+budget used for each request.
 
 In **RAG Processing**:
 
 1. Select a specific **Active Case**. “All Cases” deliberately removes the
    `run_id` filter and can mix matters.
 2. Optionally filter by document type, author, and inclusive ISO date range.
-3. Confirm analysis server/model, Top-K, reranker model/device, and reranker
-   checkbox.
+3. Confirm the live analysis identity in **Dedicated vLLM Roles**. In RAG
+   settings, confirm Top-K, reranker model/device, and reranker checkbox; the
+   managed endpoint/model fields are informational rather than a switching
+   mechanism.
 4. Choose an analysis mode and submit a precise question.
 5. Stop streaming if necessary; then verify the answer.
 
@@ -566,13 +638,44 @@ Qdrant, or MinIO data. It can also clear `/tmp/gradio`, repository
 causes later downloads. These operations are destructive and not an archival
 workflow.
 
+The **Installed Models** table scans the user Hugging Face cache, the KIRAG
+workspace cache, and the configured IQRAG cache as distinct copies. Its labels
+have specific meanings:
+
+- **SERVING · OCR/Analysis** is derived from a healthy running container's
+  actual model command and exact mounted cache path, not merely saved settings.
+- **CONFIGURED** means referenced by settings; it does not prove that this cache
+  copy is live or complete.
+- **SWITCH TARGET** and **ROLLBACK SOURCE** protect both sides of a non-terminal
+  guarded analysis switch.
+- **Incomplete** means validation found a missing `refs/main`, absent referenced
+  snapshot, broken link, missing indexed shard, no weights, or unfinished
+  download. The displayed bytes can still be large, so “Stub/Empty” is a
+  validation classification rather than a literal zero-byte claim.
+
+Deletion uses the row's canonical path so duplicate copies of the same model ID
+are unambiguous. Serving, configured KIRAG-workspace, switch-target, and rollback
+copies are protected. The API returns a normal structured result for expected
+operational failures: `success=false`, the paths/models actually deleted,
+reclaimed bytes, protected skips, and exact filesystem errors. Consequently a
+partially successful batch must not be reported as wholly deleted. A permission
+error is not repaired automatically; correct ownership/permissions outside the
+request, refresh inventory, and retry only the intended inactive cache copy.
+
 ## Production health, recovery, and evidence preservation
 
 Use separate liveness and readiness semantics:
 
 - `/livez` confirms only that FastAPI is alive;
-- `/readyz` confirms PostgreSQL, Redis, MinIO, Qdrant, OCR vLLM, and analysis
-  vLLM are usable;
+- `/readyz` confirms PostgreSQL, Redis, MinIO, and Qdrant are usable; inference
+  failures do not make the application shell unready;
+- `/inference/ready` reports OCR and analysis separately and returns a
+  `degraded` body when either role is unavailable (including by intentional
+  operating-mode choice);
+- **Dedicated vLLM Roles** additionally distinguishes configured analysis
+  identity from the model actually served and shows any durable switch;
+- **System Diagnostics → Installed Models** reports cache integrity and exact
+  runtime/cache-path association, not inference correctness;
 - the frontend returning HTTP 200 confirms page delivery, not dependency
   readiness or correctness of a medicolegal answer.
 
@@ -580,6 +683,7 @@ Quiet acceptance probes:
 
 ```bash
 curl --fail http://127.0.0.1:8001/readyz
+curl --fail http://127.0.0.1:8001/inference/ready
 curl --fail --silent --output /dev/null \
   --write-out 'Frontend HTTP %{http_code}\n' http://127.0.0.1:3000/
 docker compose -f docker-compose.rag.yml \
@@ -625,7 +729,12 @@ periodically restore to a disposable host and require schema initialisation,
 
 ## Daily close-out checklist
 
-- Confirm `/readyz` is healthy and both pinned model identities are expected.
+- Confirm `/readyz` is healthy. Use `/inference/ready` and the role cards to
+  confirm every role required by the selected operating mode.
+- Confirm OCR, when enabled, is the pinned olmOCR profile and analysis, when
+  enabled, has the intended verified Qwen or Gemma **Serving** identity.
+- Confirm the intended operating mode is active; do not assume 262K context
+  while OCR is also running.
 - Confirm the active case was correct for every saved query.
 - Verify each material claim against the original PDF page(s).
 - Remove raw `[Source N]` text and unsupported/invented metadata.

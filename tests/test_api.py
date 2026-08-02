@@ -292,7 +292,7 @@ class TestAPI(unittest.TestCase):
         payload = {
             "hf_token": "test-token",
             "port": 8000,
-            "model": "test-model",
+            "model": "allenai/olmOCR-2-7B-1025-FP8",
             "gpu_mem": 0.8,
             "max_model_len": 4096,
         }
@@ -314,7 +314,7 @@ class TestAPI(unittest.TestCase):
         with patch.dict(os.environ, {"HF_TOKEN": "environment-only-token"}):
             response = self.client.post(
                 "/api/docker/create",
-                json={"model": "test-model", "port": 8000, "max_model_len": 4096},
+                json={"model": "allenai/olmOCR-2-7B-1025-FP8", "port": 8000, "max_model_len": 4096},
             )
 
         self.assertEqual(response.status_code, 200)
@@ -326,7 +326,7 @@ class TestAPI(unittest.TestCase):
     @patch("docker_manager.create_docker_container")
     @patch("settings_manager.save_settings")
     @patch("settings_manager.load_settings")
-    def test_docker_create_keeps_ocr_and_analysis_models_independent(
+    def test_docker_create_rejects_analysis_models_for_ocr_role(
         self, mock_load, mock_save, mock_create
     ):
         mock_load.return_value = {
@@ -340,10 +340,33 @@ class TestAPI(unittest.TestCase):
             json={"model": "Qwen/Qwen3.6-35B-A3B", "port": 8000},
         )
 
+        self.assertEqual(response.status_code, 422)
+        mock_create.assert_not_called()
+        mock_save.assert_not_called()
+
+    @patch("analysis_profiles.analysis_status")
+    def test_analysis_status_endpoint(self, mock_status):
+        mock_status.return_value = {
+            "configured_model": "Qwen/Qwen3.6-35B-A3B",
+            "served_model": "Qwen/Qwen3.6-35B-A3B",
+            "configuration_matches_runtime": True,
+            "profiles": [],
+            "operation": None,
+            "runtime_state": None,
+        }
+        response = self.client.get("/api/docker/analysis/status")
         self.assertEqual(response.status_code, 200)
-        saved_settings = mock_save.call_args.args[0]
-        self.assertEqual(saved_settings["model_name"], "allenai/olmOCR-2-7B-1025-FP8")
-        self.assertEqual(saved_settings["analysis_model_name"], "Qwen/Qwen3.6-35B-A3B")
+        self.assertTrue(response.json()["configuration_matches_runtime"])
+
+    @patch("analysis_profiles.start_switch")
+    def test_analysis_switch_returns_operation(self, mock_switch):
+        mock_switch.return_value = {"id": "a" * 32, "state": "queued"}
+        response = self.client.post(
+            "/api/docker/analysis/switch",
+            json={"target_model": "google/gemma-4-31B-it", "confirmation": "SWITCH"},
+        )
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["state"], "queued")
 
     @patch("docker_manager.shutdown_docker_container")
     def test_docker_shutdown(self, mock_shutdown):

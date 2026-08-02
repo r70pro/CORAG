@@ -340,12 +340,17 @@ def set_extended_analysis_context(enabled: bool) -> tuple[bool, str]:
 
     settings = load_settings()
     analysis_model = settings.get("analysis_model_name", "Qwen/Qwen3.6-35B-A3B")
+    from analysis_profiles import ANALYSIS_PROFILES
+    if analysis_model not in ANALYSIS_PROFILES:
+        return False, f"Unsupported production analysis profile: {analysis_model}"
     full_model_context = int(MODEL_MAX_CONTENT_LENGTHS.get(analysis_model, 262144))
     target_context = full_model_context if enabled else 32768
     target_gpu = "0.85" if enabled else "0.57"
     env = os.environ.copy()
     env["KIRAG_ANALYSIS_MAX_MODEL_LEN"] = str(target_context)
     env["KIRAG_ANALYSIS_GPU_MEMORY_UTILIZATION"] = target_gpu
+    env["KIRAG_ANALYSIS_MODEL"] = analysis_model
+    env["KIRAG_ANALYSIS_MODEL_REVISION"] = ANALYSIS_PROFILES[analysis_model]["revision"]
     compose = [
         "docker", "compose", "--project-directory", str(root),
         "-f", str(compose_files[0]), "-f", str(compose_files[1]),

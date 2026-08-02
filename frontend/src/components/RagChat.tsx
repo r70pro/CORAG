@@ -30,6 +30,7 @@ import {
   triggerIndexAllRunsSSE,
   exportChatHistory,
   updateSettings,
+  fetchAnalysisModelStatus,
   fetchSettings,
   deleteRagChatHistory,
 } from "@/lib/api";
@@ -183,6 +184,7 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
   const [rerankerDevice, setRerankerDevice] = useState<string>("cuda");
   const [analysisSettingsLoaded, setAnalysisSettingsLoaded] = useState<boolean>(false);
   const [saveConfigStatus, setSaveConfigStatus] = useState<string>("");
+  const [analysisSwitching, setAnalysisSwitching] = useState<boolean>(false);
 
   // Search filters
   const [filterDocType, setFilterDocType] = useState<string>("");
@@ -303,13 +305,15 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
       setAvailableRuns(runs || []);
 
       try {
-        const settings = (await fetchSettings()) as Record<string, unknown>;
+        const [settings, modelStatus] = await Promise.all([
+          fetchSettings() as Promise<Record<string, unknown>>,
+          fetchAnalysisModelStatus(),
+        ]);
         if (isMounted && settings) {
-          if (settings.analysis_server_url) setModelUrl(String(settings.analysis_server_url));
-          else if (settings.server_url) setModelUrl(String(settings.server_url));
-
-          if (settings.analysis_model_name) setModelName(String(settings.analysis_model_name));
-          else if (settings.model_name) setModelName(String(settings.model_name));
+          setModelUrl("http://127.0.0.1:8002/v1");
+          if (modelStatus?.served_model) setModelName(modelStatus.served_model);
+          else if (settings.analysis_model_name) setModelName(String(settings.analysis_model_name));
+          setAnalysisSwitching(Boolean(modelStatus?.operation));
 
           if (settings.retrieval_top_k) setTopK(Number(settings.retrieval_top_k));
           if (typeof settings.use_reranker === "boolean") setUseReranker(settings.use_reranker);
@@ -346,6 +350,16 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
     return () => ragRequestRef.current?.cancel("RAG view closed");
   }, []);
 
+  useEffect(() => {
+    const interval = window.setInterval(async () => {
+      const status = await fetchAnalysisModelStatus();
+      if (!status) return;
+      setAnalysisSwitching(Boolean(status.operation));
+      if (status.served_model) setModelName(status.served_model);
+    }, 5000);
+    return () => window.clearInterval(interval);
+  }, []);
+
   const handleStartInfra = async () => {
     setInfraMsg("Starting services...");
     const res = await startRagInfra();
@@ -363,8 +377,6 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
   const handleSaveAnalysisConfig = async () => {
     setSaveConfigStatus("Saving...");
     const res = await updateSettings({
-      analysis_server_url: modelUrl,
-      analysis_model_name: modelName,
       retrieval_top_k: topK,
       use_reranker: useReranker,
       reranker_model: rerankerModel,
@@ -374,7 +386,7 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
   };
 
   const handleSend = () => {
-    if (!prompt.trim() || isStreaming) return;
+    if (!prompt.trim() || isStreaming || analysisSwitching) return;
 
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
@@ -789,9 +801,9 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
                       id="analysis-model-url"
                       type="text"
                       value={modelUrl}
-                      onChange={(e) => setModelUrl(e.target.value)}
+                      readOnly
                       disabled={!analysisSettingsLoaded}
-                      className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-[11px]"
+                      className="w-full bg-slate-950/60 border border-slate-800 rounded px-2 py-1 text-slate-400 text-[11px]"
                     />
                   </div>
                   <div>
@@ -800,10 +812,11 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
                       id="analysis-model-name"
                       type="text"
                       value={modelName}
-                      onChange={(e) => setModelName(e.target.value)}
+                      readOnly
                       disabled={!analysisSettingsLoaded}
-                      className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-[11px]"
+                      className="w-full bg-slate-950/60 border border-slate-800 rounded px-2 py-1 text-slate-400 text-[11px]"
                     />
+                    <p className="text-[9px] text-slate-500 mt-1">Switch verified analysis profiles from Dedicated vLLM Roles.</p>
                   </div>
                   <div className="flex justify-between items-center text-[11px] text-slate-300 pt-1">
                     <span>Top-K Retrieval:</span>
@@ -1115,13 +1128,13 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
                       <button
                         type="button"
                         onClick={handleSend}
-                        disabled={isStreaming || !prompt.trim()}
+                        disabled={isStreaming || analysisSwitching || !prompt.trim()}
                         aria-label="Send Query"
                         suppressHydrationWarning
                         className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs flex items-center gap-2 shadow-lg shadow-indigo-500/20 cursor-pointer select-none"
                       >
                         {isStreaming ? <RefreshCw className="w-4 h-4 animate-spin pointer-events-none" /> : <Send className="w-4 h-4 pointer-events-none" />}
-                        <span>{isStreaming ? "Generating…" : "Send Query"}</span>
+                        <span>{analysisSwitching ? "Model switching…" : isStreaming ? "Generating…" : "Send Query"}</span>
                       </button>
                       <button
                         type="button"
@@ -1356,12 +1369,12 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
                     <button
                       type="button"
                       onClick={handleSend}
-                      disabled={isStreaming || !prompt.trim()}
+                      disabled={isStreaming || analysisSwitching || !prompt.trim()}
                       aria-label="Send Query"
                       className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs flex items-center gap-2 shadow-lg shadow-indigo-500/20 cursor-pointer select-none"
                     >
                       {isStreaming ? <RefreshCw className="w-4 h-4 animate-spin pointer-events-none" /> : <Send className="w-4 h-4 pointer-events-none" />}
-                      <span>{isStreaming ? "Generating…" : "Send Query"}</span>
+                      <span>{analysisSwitching ? "Model switching…" : isStreaming ? "Generating…" : "Send Query"}</span>
                     </button>
                     <button
                       type="button"

@@ -56,6 +56,7 @@ dev = [
 include-package-data = false
 packages = ["api", "api.routes", "assets", "rag"]
 py-modules = [
+    "analysis_profiles",
     "app",
     "app_handlers",
     "audit_log",

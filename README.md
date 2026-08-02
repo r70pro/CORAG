@@ -220,6 +220,11 @@ the selected model, and rolls back automatically on failure:
 ```
 
 Qwen receives the `qwen3` reasoning parser; Gemma intentionally does not.
+The React sidebar exposes the same workflow under **Dedicated vLLM Roles →
+Analysis model**. It shows the actually served model, accepts only verified
+profiles, persists progress across navigation/refresh, blocks conflicting RAG
+and lifecycle actions, and reports successful activation or rollback. The OCR
+provisioning controls are role-locked to `allenai/olmOCR-2-7B-1025-FP8`.
 
 ## Running KIRAG
 

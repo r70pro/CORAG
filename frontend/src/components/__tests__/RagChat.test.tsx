@@ -20,6 +20,16 @@ jest.mock("@/lib/api", () => ({
     unique_authors: 3,
   }),
   fetchPipelineRuns: jest.fn().mockResolvedValue([]),
+  fetchSettings: jest.fn().mockResolvedValue({
+    analysis_model_name: "Qwen/Qwen3.6-35B-A3B",
+    analysis_server_url: "http://127.0.0.1:8002/v1",
+  }),
+  fetchAnalysisModelStatus: jest.fn().mockResolvedValue({
+    configured_model: "Qwen/Qwen3.6-35B-A3B",
+    served_model: "Qwen/Qwen3.6-35B-A3B",
+    profiles: [],
+    operation: null,
+  }),
   indexRun: jest.fn().mockResolvedValue({ success: true }),
   indexAllRuns: jest.fn().mockResolvedValue({ success: true }),
   exportChatHistory: jest.fn().mockResolvedValue({ success: true }),

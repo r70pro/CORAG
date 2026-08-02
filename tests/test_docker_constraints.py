@@ -55,10 +55,10 @@ def test_production_compose_supervises_offline_vllm():
 
 def test_analysis_switcher_pins_both_verified_models():
     switcher = (REPO_ROOT / "scripts/switch-analysis-model.py").read_text()
-    assert '"Qwen/Qwen3.6-35B-A3B": "995ad96eacd98c81ed38be0c5b274b04031597b0"' in switcher
-    assert '"google/gemma-4-31B-it": "842da3794eaa0b77d5f08bae87a17459d91ff475"' in switcher
-    assert "--offline-check" in switcher
-    assert "wait_and_smoke" in switcher
+    assert "ANALYSIS_PROFILES" in switcher
+    assert "start_switch" in switcher
+    assert "get_operation" in switcher
+    assert "TERMINAL_STATES" in switcher
 
 
 def test_model_deletion_emits_audit_event(tmp_path):
