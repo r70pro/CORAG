@@ -91,6 +91,39 @@ def test_judge_retrieval_uses_legal_and_evidentiary_facets():
     assert set(JUDGE_ANALYTICAL_QUERY_FACETS) <= retrieved_facets
 
 
+def test_specialized_facets_survive_sparse_overlapping_results():
+    calls = 0
+
+    def fake_search(query, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls in {1, 2, 5}:
+            return [
+                {
+                    "chunk_id": "overlap",
+                    "doc_id": "d1",
+                    "score": 0.7 + calls / 100,
+                    "text": query,
+                }
+            ]
+        return []
+
+    results = search_comprehensive(
+        "expert question",
+        top_k=50,
+        analytical_facets=EXPERT_ANALYTICAL_QUERY_FACETS,
+        search_function=fake_search,
+    )
+
+    assert calls == len(EXPERT_ANALYTICAL_QUERY_FACETS) + 1
+    assert len(results) == 1
+    assert results[0]["retrieval_facets"] == [
+        "primary question",
+        EXPERT_ANALYTICAL_QUERY_FACETS[0],
+        EXPERT_ANALYTICAL_QUERY_FACETS[3],
+    ]
+
+
 @patch.dict("os.environ", {"TESTING": "false"})
 @patch("docker_manager.get_docker_status", return_value="running")
 def test_ocr_active_requires_32k_context(_status):

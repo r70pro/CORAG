@@ -100,9 +100,9 @@ def search_comprehensive(
             else:
                 existing["retrieval_facets"].append(facet)
                 if float(result.get("score", 0)) > float(existing.get("score", 0)):
-                    facets = existing["retrieval_facets"]
+                    result_facets = existing["retrieval_facets"]
                     existing.update(result)
-                    existing["retrieval_facets"] = facets
+                    existing["retrieval_facets"] = result_facets
 
     results = sorted(merged.values(), key=lambda item: float(item.get("score", 0)), reverse=True)
     # Diversify across documents before filling remaining slots by score.
