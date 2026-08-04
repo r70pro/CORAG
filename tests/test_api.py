@@ -241,42 +241,35 @@ class TestAPI(unittest.TestCase):
 
     # ── Docker ────────────────────────────────────────────────────────────────
 
-    @patch("docker_manager.get_docker_status_str")
-    @patch("settings_manager.load_settings")
-    def test_docker_status(self, mock_settings, mock_status_str):
-        mock_settings.return_value = {}
-        mock_status_str.return_value = ("vLLM Running", "<span class='badge-success'>Ready</span>")
+    @patch("vllm_lifecycle.status")
+    def test_docker_status(self, mock_status):
+        mock_status.return_value = {"active_role": "ocr", "ready": True, "ocr": {"available": True}, "analysis": {"available": False}}
 
         response = self.client.get("/api/docker/status")
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["status"], "ready")
-        self.assertEqual(data["message"], "vLLM Running")
+        self.assertIn("OCR is ready", data["message"])
 
-    @patch("docker_manager.get_docker_status_str")
-    @patch("settings_manager.load_settings")
-    def test_docker_status_reports_foreign_container(self, mock_settings, mock_status_str):
-        mock_settings.return_value = {}
-        mock_status_str.return_value = (
-            "foreign",
-            "<span class='badge-failed'>Docker: Foreign Container</span>",
-        )
+    @patch("vllm_lifecycle.status")
+    def test_docker_status_reports_inactive_role(self, mock_status):
+        mock_status.return_value = {"active_role": "analysis", "ready": True, "ocr": {"available": False}, "analysis": {"available": True}}
 
         response = self.client.get("/api/docker/status")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "foreign")
+        self.assertEqual(response.json()["status"], "stopped")
 
-    @patch("docker_manager.start_docker_container")
-    def test_docker_start(self, mock_start):
-        mock_start.return_value = (True, "Container started")
+    @patch("vllm_lifecycle.switch_vllm")
+    @patch("settings_manager.load_settings", return_value={"startup_mode": "analysis", "analysis_model_name": "model"})
+    def test_docker_start(self, _settings, mock_start):
         response = self.client.post("/api/docker/start")
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertTrue(data["success"])
-        self.assertEqual(data["message"], "Container started")
+        self.assertEqual(data["message"], "ANALYSIS inference is ready")
 
-    @patch("docker_manager.stop_docker_container")
+    @patch("vllm_lifecycle.stop_vllm")
     def test_docker_stop(self, mock_stop):
         mock_stop.return_value = (True, "Container stopped")
         response = self.client.post("/api/docker/stop")
@@ -284,7 +277,7 @@ class TestAPI(unittest.TestCase):
         data = response.json()
         self.assertTrue(data["success"])
 
-    @patch("docker_manager.create_docker_container")
+    @patch("vllm_lifecycle.switch_vllm")
     @patch("settings_manager.save_settings")
     @patch("settings_manager.load_settings")
     def test_docker_create(self, mock_load, mock_save, mock_create):
@@ -304,7 +297,7 @@ class TestAPI(unittest.TestCase):
         self.assertTrue(data["success"])
         mock_save.assert_called_once()
 
-    @patch("docker_manager.create_docker_container")
+    @patch("vllm_lifecycle.switch_vllm")
     @patch("settings_manager.save_settings")
     @patch("settings_manager.load_settings")
     def test_docker_create_does_not_persist_environment_token(
@@ -321,7 +314,6 @@ class TestAPI(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         mock_load.assert_called_once_with(include_env_secrets=False)
-        self.assertEqual(mock_create.call_args.args[0], "environment-only-token")
         saved_settings = mock_save.call_args.args[0]
         self.assertEqual(saved_settings.get("hf_token", ""), "")
 
@@ -468,8 +460,9 @@ class TestAPI(unittest.TestCase):
         response = self.client.get("/api/pipeline/status/run1")
         self.assertEqual(response.json()["status"], "running")
 
+    @patch("vllm_lifecycle.read_state", return_value={"state": "ready", "active_role": "ocr"})
     @patch("pipeline_manager.process_pdfs")
-    def test_pipeline_start(self, mock_process):
+    def test_pipeline_start(self, mock_process, _state):
         stored_pdf = os.path.join(self.upload_dir, "stored.pdf")
         with open(stored_pdf, "wb") as pdf:
             pdf.write(self.pdf_bytes)
@@ -630,8 +623,9 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["success"])
 
+    @patch("vllm_lifecycle.read_state", return_value={"state": "ready", "active_role": "analysis"})
     @patch("rag.analyzer.analyze")
-    def test_rag_query(self, mock_analyze):
+    def test_rag_query(self, mock_analyze, _state):
         mock_analyze.return_value = ["Answer ", "chunk"]
 
         # Case 1: Streaming
@@ -716,8 +710,11 @@ class TestAPI(unittest.TestCase):
         mock_backing.return_value = {"all_healthy": False, "failed_services": ["vllm_ocr"]}
         self.assertEqual(self.client.get("/readyz").status_code, 200)
 
-    @patch("api.main._inference_endpoint_ready", side_effect=[False, True])
-    def test_inference_readiness_is_role_specific(self, _mock_ready):
+    @patch("vllm_lifecycle.status", return_value={
+        "ready": True, "active_role": "analysis",
+        "ocr": {"available": False}, "analysis": {"available": True},
+    })
+    def test_inference_readiness_is_role_specific(self, _mock_status):
         response = self.client.get("/inference/ready")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["roles"], {"ocr": False, "analysis": True})

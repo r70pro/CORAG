@@ -75,7 +75,7 @@ def get_service_latency(
         return False, 0.0, None
 
 
-def get_vllm_loading_progress(container_name: str = "olmocr") -> dict[str, Any] | None:
+def get_vllm_loading_progress(container_name: str = "kirag_vllm") -> dict[str, Any] | None:
     # Fatal error patterns that indicate vLLM has crashed or failed to load.
     # Checked before positive progress indicators so failures are surfaced
     # instead of showing "loading" indefinitely.
@@ -306,9 +306,30 @@ def check_backing_services_data(
             "latency_history": list(service_history.get(s, [])),
         }
 
+    try:
+        from vllm_lifecycle import status as vllm_slot_status
+        slot = vllm_slot_status()
+        active_role = slot.get("active_role")
+        # An inactive role is expected in the exclusive architecture and must
+        # not make the backing-services summary unhealthy.
+        for role, key in (("ocr", "vllm_ocr"), ("analysis", "vllm_analysis")):
+            if active_role in {"ocr", "analysis"} and role != active_role:
+                services_data[key]["expected_inactive"] = True
+                if key in failed_services:
+                    failed_services.remove(key)
+        all_healthy = not failed_services
+    except Exception:
+        active_role = None
+    progress = get_vllm_loading_progress("kirag_vllm")
+    role_unknown = active_role not in {"ocr", "analysis"}
     vllm_progress = {
-        "ocr": None if services_data["vllm_ocr"]["is_up"] else get_vllm_loading_progress("olmocr"),
-        "analysis": None if services_data["vllm_analysis"]["is_up"] else get_vllm_loading_progress("kirag_vllm_analysis"),
+        "ocr": progress
+        if (role_unknown or active_role == "ocr") and not services_data["vllm_ocr"]["is_up"]
+        else None,
+        "analysis": progress
+        if (role_unknown or active_role == "analysis")
+        and not services_data["vllm_analysis"]["is_up"]
+        else None,
     }
 
     return {
@@ -762,7 +783,7 @@ def get_installed_models_data() -> dict[str, Any]:
     # duplicate, unused cache copy is never labelled active or protected while
     # the copy actually serving requests remains deletable.
     runtime_models: list[tuple[str, str, str]] = []
-    for container, role in (("olmocr", "OCR"), ("kirag_vllm_analysis", "Analysis")):
+    for container, role in (("kirag_vllm", "Active inference slot"),):
         try:
             inspected = subprocess.run(
                 ["docker", "inspect", container], capture_output=True, text=True,

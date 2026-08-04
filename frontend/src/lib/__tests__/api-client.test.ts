@@ -103,6 +103,29 @@ describe("same-origin API client", () => {
     });
   });
 
+  test("normalizes Firefox input-stream failures during SSE consumption", async () => {
+    const brokenStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new TypeError("Error in input stream"));
+      },
+    });
+    global.fetch = jest.fn().mockResolvedValue(new Response(brokenStream, { status: 200 }));
+
+    const error = await new Promise<unknown>((resolve) => {
+      requestJsonSse("/api/stream", {}, {
+        onMessage: jest.fn(),
+        onError: resolve,
+        onComplete: jest.fn(),
+      });
+    });
+
+    expect(error).toMatchObject({
+      name: "ApiError",
+      status: 0,
+      message: expect.stringContaining("connection to KIRAG was interrupted"),
+    });
+  });
+
   async function collectStream(byteChunks: Uint8Array[]): Promise<string[]> {
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -165,6 +188,30 @@ describe("same-origin API client", () => {
     const completion = new Promise<string>((resolve, reject) => {
       requestJsonSse<{ chunk: string }>("/api/stream", {}, {
         onMessage: (event) => expect(event.chunk).toBe("complete"),
+        onError: reject,
+        onComplete: () => resolve("done"),
+      });
+    });
+
+    await expect(completion).resolves.toBe("done");
+  });
+
+  test("treats the SSE timeout as inactivity rather than a total runtime limit", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        for (let index = 0; index < 4; index += 1) {
+          controller.enqueue(encoder.encode(": keep-alive\n\n"));
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      },
+    });
+    global.fetch = jest.fn().mockResolvedValue(new Response(stream, { status: 200 }));
+
+    const completion = new Promise<string>((resolve, reject) => {
+      requestJsonSse("/api/stream", { timeoutMs: 25 }, {
+        onMessage: jest.fn(),
         onError: reject,
         onComplete: () => resolve("done"),
       });

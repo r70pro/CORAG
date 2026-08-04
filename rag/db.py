@@ -611,6 +611,34 @@ def get_chunks_for_document(doc_id):
             return cur.fetchall()
 
 
+def get_chunks_for_run(run_id):
+    """Return every indexed chunk for a case in stable source order.
+
+    Chronology generation must account for the complete record.  It therefore
+    reads PostgreSQL directly instead of using relevance-limited vector search.
+    """
+    if not run_id:
+        return []
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT c.chunk_id, c.doc_id, c.run_id, c.chunk_index, c.text,
+                       c.char_start, c.char_end, c.source_char_start,
+                       c.source_char_end, c.page_number, c.page_start,
+                       c.page_end, c.provenance_type, c.document_type,
+                       c.author, c.date_extracted, c.date_raw, c.section_type,
+                       c.patient_name, c.token_count, d.original_filename
+                FROM chunks c
+                JOIN documents d ON d.doc_id = c.doc_id
+                WHERE c.run_id = %s
+                ORDER BY d.original_filename, c.doc_id, c.chunk_index
+                """,
+                (run_id,),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+
 def get_chunk_by_qdrant_id(qdrant_point_id):
     """Retrieve chunk metadata by its Qdrant point ID."""
     with get_connection() as conn:
@@ -653,6 +681,42 @@ def get_chunks_by_qdrant_ids(qdrant_point_ids):
                 (qdrant_point_ids,),
             )
             return cur.fetchall()
+
+
+def search_chunks_lexical(terms, run_id=None, limit=20):
+    """Return chunks containing high-value exact evidence terms.
+
+    This deliberately complements, rather than replaces, dense retrieval.
+    Clinical investigation names and report headings are identifiers for which
+    exact lexical matching is substantially more reliable than embeddings.
+    """
+    cleaned = [str(term).strip() for term in terms if str(term).strip()]
+    if not cleaned:
+        return []
+    score_sql = " + ".join("CASE WHEN c.text ILIKE %s THEN 1 ELSE 0 END" for _ in cleaned)
+    where_sql = " OR ".join("c.text ILIKE %s" for _ in cleaned)
+    patterns = [f"%{term}%" for term in cleaned]
+    run_clause = ""
+    if run_id:
+        run_clause = " AND c.run_id = %s"
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                SELECT c.chunk_id, c.doc_id, c.run_id, c.text, c.page_number,
+                       c.source_char_start, c.source_char_end, c.page_start, c.page_end,
+                       c.provenance_type, c.document_type, c.author, c.date_extracted,
+                       c.date_raw, c.section_type, c.patient_name, d.original_filename,
+                       ({score_sql})::float / %s AS score
+                FROM chunks c
+                JOIN documents d ON d.doc_id = c.doc_id
+                WHERE ({where_sql}){run_clause}
+                ORDER BY score DESC, c.chunk_index ASC
+                LIMIT %s
+                """,
+                [*patterns, len(cleaned), *patterns, *([run_id] if run_id else []), int(limit)],
+            )
+            return [dict(row) for row in cur.fetchall()]
 
 
 def get_corpus_stats():

@@ -45,6 +45,7 @@ export interface RagQueryPayload {
   reranker_device?: string;
   reasoning_audit?: boolean;
   session_id?: string;
+  chronology_detail?: "ultra_fast" | "fast" | "thorough";
 }
 
 export interface RagStreamStatus {
@@ -161,9 +162,25 @@ export async function setExtendedAnalysisContext(extended: boolean) {
   }
 }
 
-export async function setStartupMode(mode: "analysis_262k" | "dual_32k" | "ocr_only") {
+export async function setStartupMode(mode: "analysis" | "ocr" | "stopped") {
   try {
     return await jsonPost("/api/docker/startup-mode", { mode });
+  } catch (error) {
+    return failedResult(error);
+  }
+}
+
+export async function switchVllm(role: "ocr" | "analysis", model?: string) {
+  try {
+    return await jsonPost("/api/docker/vllm/switch", { role, ...(model ? { model } : {}) });
+  } catch (error) {
+    return failedResult(error);
+  }
+}
+
+export async function stopVllm() {
+  try {
+    return await jsonPost("/api/docker/vllm/stop");
   } catch (error) {
     return failedResult(error);
   }

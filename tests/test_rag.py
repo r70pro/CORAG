@@ -249,17 +249,8 @@ A/Prof. Eugene T. Ek
         res2 = "".join(rag_anal.analyze("query", stream=True))
         self.assertEqual(res2, "response content")
 
-    @patch("rag.analyzer.search_similar")
-    @patch("rag.analyzer.query_llm_streaming")
-    def test_analyze_pipeline_analytical_mode(self, mock_query_stream, mock_search):
-        mock_search.return_value = [
-            {
-                "original_filename": "report.pdf",
-                "page_number": 1,
-                "text": "sample text"
-            }
-        ]
-        mock_query_stream.return_value = ["timeline content"]
+    @patch("rag.chronology.generate_comprehensive_chronology", return_value="timeline content")
+    def test_analyze_pipeline_analytical_mode(self, mock_chronology):
         
         list(rag_anal.analyze(
             query="generate timeline",
@@ -269,10 +260,8 @@ A/Prof. Eugene T. Ek
             stream=True
         ))
         
-        mock_search.assert_called_once()
-        called_args, called_kwargs = mock_search.call_args
-        self.assertEqual(called_kwargs["top_k"], 50)
-        self.assertEqual(called_kwargs["score_threshold"], 0.05)
+        mock_chronology.assert_called_once()
+        self.assertEqual(mock_chronology.call_args.args[0], "case_123")
 
     # ── DB Layer Expansion ──────────────────────────────────────
 
@@ -296,6 +285,9 @@ A/Prof. Eugene T. Ek
 
         # get_chunks_for_document
         rag_db.get_chunks_for_document("doc_1")
+
+        # complete-case chronology source enumeration
+        rag_db.get_chunks_for_run("run_1")
 
         # get_runs_with_stats
         mock_cur.fetchall.return_value = [

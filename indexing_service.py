@@ -170,7 +170,9 @@ class CorpusIndexingService:
                 yield f"🧠 Embedding and indexing {total_chunks_count} chunks...\n"
                 qdrant_mutation_started = True
                 for progress_info in upsert_chunks_generator(
-                    all_chunks, model_name=model_name, batch_size=32
+                    all_chunks,
+                    model_name=model_name,
+                    batch_size=max(1, int(settings.get("embedding_batch_size", 64))),
                 ):
                     stage = progress_info["stage"]
                     current = progress_info["current"]

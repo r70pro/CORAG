@@ -100,9 +100,9 @@ class TestE2ERagIntegrationFlow(unittest.TestCase):
             response_text = "".join(list(response_generator))
 
         # Assert full flow results
-        # Free Q&A uses the comprehensive analytical policy: the primary query
-        # plus seven evidence facets, all with identical case/metadata filters.
-        self.assertEqual(mock_search.call_count, 8)
+        # Interactive Free Q&A uses the primary query plus two bounded evidence
+        # facets, all with identical case/metadata filters.
+        self.assertEqual(mock_search.call_count, 3)
         self.assertIn("Dr. Gavin Weekes", response_text)
         self.assertIn("Specialist Correspondence", response_text)
         self.assertIn("Operation Record", response_text)

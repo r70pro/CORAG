@@ -139,12 +139,12 @@ SUPPORTED_MODELS = [
 
 MODEL_MAX_CONTENT_LENGTHS = {
     "allenai/olmOCR-2-7B-1025-FP8": 131072,
-    "Qwen/Qwen3.6-35B-A3B": 262144,
+    "Qwen/Qwen3.6-35B-A3B": 32768,
     "nvidia/Phi-4-reasoning-plus-NVFP4": 32768,
     "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4": 1048576,
     "nvidia/Llama-3.3-70B-Instruct-NVFP4": 131072,
     "openai/gpt-oss-120b": 131072,
-    "google/gemma-4-31B-it": 262144,
+    "google/gemma-4-31B-it": 32768,
 }
 
 
@@ -174,10 +174,12 @@ def load_settings(*, include_env_secrets: bool = True):
         "rag_auto_start_infra": False,
         # Model profile restored by the supervised infrastructure service.
         # Analysis-only avoids loading OCR unless ingestion is requested.
-        "startup_mode": "analysis_262k",
+        "startup_mode": "analysis",
         "use_reranker": True,
         "reranker_model": "BAAI/bge-reranker-large",
-        "reranker_device": "cuda",
+        # The analysis vLLM owns the shared GPU during interactive RAG. Keep the
+        # optional cross-encoder on CPU to avoid CUDA memory contention.
+        "reranker_device": "cpu",
     }
     with _SETTINGS_LOCK:
         if os.path.exists(SETTINGS_FILE):
@@ -194,6 +196,11 @@ def load_settings(*, include_env_secrets: bool = True):
                     defaults.update(user_settings)
             except Exception as e:
                 logger.error(f"Error loading settings: {e}")
+    defaults["startup_mode"] = {
+        "analysis_262k": "analysis",
+        "ocr_only": "ocr",
+        "dual_32k": "stopped",
+    }.get(defaults.get("startup_mode"), defaults.get("startup_mode", "analysis"))
     # Sync analysis_model_name if empty or missing
     if not defaults.get("analysis_model_name"):
         defaults["analysis_model_name"] = defaults.get("model_name", "allenai/olmOCR-2-7B-1025-FP8")

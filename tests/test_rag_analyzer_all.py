@@ -113,6 +113,20 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         self.assertIn("[Sources 1, 3]", sanitized)
         self.assertIn("[citation reference unavailable: 99]", sanitized)
 
+    @patch.object(rag_anz, "query_llm", return_value="Grounded [Source 1]")
+    @patch.object(rag_anz, "search_comprehensive")
+    def test_free_qa_adapts_output_and_disables_thinking(self, mock_search, mock_query):
+        mock_search.return_value = [{
+            "chunk_id": "c1", "doc_id": "d1", "text": "Primary evidence",
+            "original_filename": "record.pdf",
+        }]
+
+        result = "".join(rag_anz.analyze("Question", mode="free_qa", stream=False))
+
+        self.assertIn("Grounded", result)
+        self.assertEqual(mock_query.call_args.kwargs["max_tokens"], 1536)
+        self.assertFalse(mock_query.call_args.kwargs["enable_thinking"])
+
     @patch.object(rag_anz, "query_llm")
     @patch.object(rag_anz, "search_comprehensive")
     def test_judge_mode_withholds_draft_and_returns_verified_revision(
@@ -209,6 +223,17 @@ class TestRAGAnalyzerAll(unittest.TestCase):
         gen = rag_anz.query_llm_streaming([], "http://localhost:8000/v1", "phi-4")
         res = "".join(list(gen))
         self.assertEqual(res, "hello")
+
+    @patch("httpx.stream")
+    def test_query_llm_streaming_sends_structured_response_format(self, mock_stream):
+        mock_stream.return_value = MockStreamResponse(200, ["data: [DONE]"])
+        response_format = {"type": "json_schema", "json_schema": {"name": "page"}}
+
+        list(rag_anz.query_llm_streaming(
+            [], "http://localhost:8000/v1", "phi-4", response_format=response_format
+        ))
+
+        assert mock_stream.call_args.kwargs["json"]["response_format"] == response_format
 
     @patch("httpx.stream")
     def test_query_llm_streaming_non_200(self, mock_stream):
@@ -836,13 +861,13 @@ class TestRAGAnalyzerAll(unittest.TestCase):
     @patch("rag.analyzer.search_similar")
     @patch("rag.analyzer.query_llm")
     def test_analyze_structured_custom_threshold(self, mock_query, mock_search):
-        # Call analyze in timeline mode with score_threshold in search_kwargs (line 553->557)
+        # Call analyze in a structured non-chronology mode with a custom threshold.
         mock_search.return_value = [{"text": "chunk1", "page_number": 2}]
         mock_query.return_value = "Response"
 
         res = list(rag_anz.analyze(
             query="test",
-            mode="timeline",
+            mode="injury_summary",
             stream=False,
             score_threshold=0.1
         ))

@@ -328,13 +328,15 @@ def readiness_check():
 @app.get("/inference/ready", include_in_schema=False, dependencies=[])
 def inference_readiness_check():
     """Report role-specific inference readiness without blocking the app shell."""
-    from settings_manager import load_settings
-    settings = load_settings()
-    roles = {
-        "ocr": _inference_endpoint_ready(settings.get("server_url", "http://127.0.0.1:8000/v1")),
-        "analysis": _inference_endpoint_ready(settings.get("analysis_server_url", "http://127.0.0.1:8002/v1")),
+    from vllm_lifecycle import status as slot_status
+
+    slot = slot_status()
+    roles = {role: bool(slot.get(role, {}).get("available")) for role in ("ocr", "analysis")}
+    return {
+        "status": "ready" if slot.get("ready") else "degraded",
+        "active_role": slot.get("active_role", "stopped"),
+        "roles": roles,
     }
-    return {"status": "ready" if all(roles.values()) else "degraded", "roles": roles}
 
 
 @app.get(

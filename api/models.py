@@ -5,7 +5,7 @@ Pydantic models for KIRAG API request/response schemas.
 from __future__ import annotations
 
 from datetime import date
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -85,7 +85,14 @@ class AnalysisContextModeRequest(BaseModel):
 class StartupModeRequest(BaseModel):
     """Select and persist the model profile used for this and future sessions."""
 
-    mode: str = Field(pattern="^(analysis_262k|dual_32k|ocr_only)$")
+    mode: str = Field(pattern="^(analysis|ocr|stopped)$")
+
+
+class VllmSwitchRequest(BaseModel):
+    """Select the sole active inference role and optional analysis model."""
+
+    role: str = Field(pattern="^(ocr|analysis)$")
+    model: str | None = Field(None, min_length=1, max_length=512)
 
 
 class AnalysisSwitchRequest(BaseModel):
@@ -137,13 +144,17 @@ class RAGQueryRequest(BaseModel):
     date_to: date | None = None
     use_reranker: bool = True
     reranker_model: str = Field("BAAI/bge-reranker-large", min_length=1, max_length=512)
-    reranker_device: str = Field("cuda", min_length=1, max_length=32)
+    reranker_device: str = Field("cpu", min_length=1, max_length=32)
     stream: bool = Field(True, description="If True, response is SSE-streamed")
     reasoning_audit: bool = Field(
         False,
         description="Request visible reasoning; honored only for verified administrators",
     )
     session_id: str | None = Field(None, min_length=1, max_length=128)
+    chronology_detail: Literal["ultra_fast", "fast", "thorough"] = Field(
+        "fast",
+        description="Timeline extraction profile: deterministic dated-text index, compact model extraction, or detailed clinical fields",
+    )
 
     @model_validator(mode="after")
     def validate_date_range(self):
@@ -221,7 +232,7 @@ class SettingsUpdateRequest(BaseModel):
     retrieval_top_k: int | None = Field(None, ge=1, le=100)
     rag_auto_start_infra: bool | None = None
     startup_mode: str | None = Field(
-        None, pattern="^(analysis_262k|dual_32k|ocr_only)$"
+        None, pattern="^(analysis|ocr|stopped)$"
     )
     use_reranker: bool | None = None
     reranker_model: str | None = Field(None, min_length=1, max_length=512)

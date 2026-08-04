@@ -87,7 +87,10 @@ def test_switch_failure_rolls_back_previous_profile(tmp_path, monkeypatch):
     lock_handle = (tmp_path / "held.lock").open("a+")
     with (
         patch("analysis_profiles.validate_cached_profile", return_value=(True, "", "/snapshot")),
-        patch("analysis_profiles._compose_recreate", side_effect=[RuntimeError("load failed"), None]),
+        patch("analysis_profiles._compose_recreate", side_effect=RuntimeError("load failed")),
+        patch("vllm_lifecycle.status", return_value={
+            "ready": True, "active_model": "Qwen/Qwen3.6-35B-A3B"
+        }),
         patch("analysis_profiles._wait_for_model"),
         patch("analysis_profiles._smoke"),
         patch("analysis_profiles._activate") as activate,
@@ -96,7 +99,7 @@ def test_switch_failure_rolls_back_previous_profile(tmp_path, monkeypatch):
     stored = analysis_profiles.get_operation(operation["id"])
     assert stored["state"] == "rolled_back"
     assert "load failed" in stored["message"]
-    activate.assert_called_once_with("Qwen/Qwen3.6-35B-A3B")
+    activate.assert_not_called()
 
 
 def test_pending_operation_is_resumed_after_process_restart(tmp_path, monkeypatch):

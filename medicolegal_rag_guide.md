@@ -65,8 +65,8 @@ The four data services are distinct from the two production inference roles:
 | Redis | 6379 | Active embedding cache and counters; query/chat cache helpers also exist |
 | MinIO | 9000/9001 | PDF and Markdown object storage/console |
 | Qdrant | 6333/6334 | Dense vectors and payload filters |
-| OCR vLLM (`olmocr`) | 8000 | Vision/OCR model endpoint |
-| Analysis vLLM (`kirag_vllm_analysis`) | 8002 | Language-only RAG analysis endpoint |
+| vLLM slot (`kirag_vllm`, OCR role) | 8000 | Vision/OCR model endpoint when active |
+| vLLM slot (`kirag_vllm`, analysis role) | 8002 | Language-only RAG endpoint when active |
 
 The Compose images are digest-pinned in [`docker-compose.rag.yml`](docker-compose.rag.yml)
 and the production overlay is [`docker-compose.production.yml`](docker-compose.production.yml).
@@ -145,7 +145,7 @@ systemd failure; inspect the host journal and repair the service instead.
 
 ### Production inference roles
 
-Production keeps two independently managed inference roles:
+Production exposes two role-specific endpoints through one exclusive inference slot:
 
 - `allenai/olmOCR-2-7B-1025-FP8` on `http://127.0.0.1:8000/v1` for PDF OCR;
 - one verified text-analysis profile on `http://127.0.0.1:8002/v1`.
@@ -164,23 +164,20 @@ document images continue through the OCR role.
 
 The models and vLLM image are pinned to immutable revisions. Model preparation
 is a controlled online deployment step; runtime mounts `$KIRAG_HF_HOME`
-read-only and sets Hugging Face and Transformers offline. OCR starts first and
-must pass its health check before analysis starts, preventing concurrent model
-profiling from exhausting unified GPU memory. The analysis role uses
-`--language-model-only`, because OCR owns all document-image processing.
+read-only and sets Hugging Face and Transformers offline. The single
+`kirag_vllm` container publishes port 8000 in OCR mode or port 8002 in analysis
+mode, never both. The analysis role uses `--language-model-only`.
 
-The supplied 128 GiB GB10 profile supports three persisted operating modes in
-React under **Dedicated vLLM Roles**:
+React exposes three persisted states under **Exclusive Inference Slot**:
 
 | React control | Runtime state | Intended work |
 |---|---|---|
-| **Analyse Only — 262K** | OCR stopped; analysis uses the selected profile's full configured 262,144-token allocation and 0.85 memory fraction | Long analysis after ingestion |
-| **Ingest + Analyse — OCR / 32K** | OCR and analysis active; analysis limited to 32,768 tokens and 0.57 memory fraction | Mixed ingestion and analysis |
-| **OCR Batch Only** | OCR active; analysis stopped | Maximum clarity for an OCR batch |
+| **Switch to Analysis — :8002** | Analysis active; OCR port closed | RAG and chat |
+| **Switch to OCR — :8000** | OCR active; analysis port closed | PDF ingestion |
+| **Stop Inference** | No vLLM container | Release GPU memory |
 
-The base dual-role profile uses an OCR memory high-water mark of 0.28 and
-15,360-token OCR context; analysis uses an 8,192-token batch limit. These are
-measured hardware settings, not universal recommendations.
+The OCR profile uses a 15,360-token context; analysis profiles use their full
+verified configured context. These are measured hardware settings, not universal recommendations.
 On different hardware, require successful cold-start, representative inference,
 adequate OS memory, and zero OOM/restart events before accepting new values.
 
@@ -189,8 +186,7 @@ Verify the roles rather than relying on a UI label:
 ```bash
 curl --fail http://127.0.0.1:8000/v1/models
 curl --fail http://127.0.0.1:8002/v1/models
-docker inspect -f '{{.State.Health.Status}} restarts={{.RestartCount}} oom={{.State.OOMKilled}}' olmocr
-docker inspect -f '{{.State.Health.Status}} restarts={{.RestartCount}} oom={{.State.OOMKilled}}' kirag_vllm_analysis
+docker inspect -f '{{.State.Health.Status}} restarts={{.RestartCount}} oom={{.State.OOMKilled}}' kirag_vllm
 ```
 
 ### Safe switching in React
@@ -208,7 +204,7 @@ Use **Dedicated vLLM Roles → Analysis model**, not the OCR model-name field:
 
 The guarded transaction validates `refs/main`, the pinned snapshot, symlinks,
 indexed weight shards, safetensors presence, and unfinished downloads. It then
-recreates only `kirag_vllm_analysis` with the profile-specific revision and
+recreates the exclusive `kirag_vllm` slot with the profile-specific revision and
 arguments, waits for `/v1/models`, runs a live chat-completion smoke test, and
 only then persists the profile. If activation fails, it recreates and verifies
 the previous approved profile; the UI reports **rolled back** or **failed**
@@ -696,8 +692,7 @@ For failures, preserve evidence before changing state:
 sudo systemctl status kirag-infrastructure kirag-api kirag-frontend
 sudo journalctl -u kirag-infrastructure -u kirag-api -u kirag-frontend \
   --since today --no-pager
-docker logs --tail 200 olmocr
-docker logs --tail 200 kirag_vllm_analysis
+docker logs --tail 200 kirag_vllm
 ```
 
 An infrastructure state of `active (exited)` is normal. A model may remain

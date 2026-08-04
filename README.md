@@ -3,8 +3,8 @@
 KIRAG is a local-first workstation for converting PDFs to Markdown with an
 olmOCR-compatible vision model, indexing the extracted text, and analysing it
 with a retrieval-augmented language model. The recommended single-machine
-deployment keeps dedicated OCR and analysis vLLM engines continuously resident
-and supervises infrastructure, FastAPI, and the production Next.js frontend
+deployment uses one guarded vLLM container and keeps only the selected OCR or
+analysis model resident. It supervises infrastructure, FastAPI, and the production Next.js frontend
 with systemd. The Gradio interface is branded **IQ-RAG Client** and remains
 available as an interactive workstation mode.
 
@@ -33,8 +33,8 @@ see [`medicolegal_rag_guide.md`](medicolegal_rag_guide.md).
 - PostgreSQL registry, Redis caches, MinIO object storage, and Qdrant vector
   storage managed by Docker Compose.
 - A reliable single-machine profile with digest-pinned containers, immutable
-  offline model snapshots, dedicated OCR and analysis vLLM services, ordered
-  health-gated startup, systemd restart supervision, readiness probes, and
+  offline model snapshots, one exclusive OCR/analysis vLLM slot, guarded
+  switching, systemd restart supervision, readiness probes, and
   bounded log rotation.
 - Twelve chat modes: General Knowledge (without document retrieval); Free Q&A;
   Expert; Judge; Timeline; Injury Summary; Inconsistency Finder; Medication
@@ -88,7 +88,7 @@ The primary implementation boundaries are:
   Linux x86_64.
 - Docker Engine with the `docker compose` plugin for the RAG services.
 - An NVIDIA GPU, compatible driver, and NVIDIA Container Toolkit to use the
-  managed vLLM OCR/analysis containers (`docker run --gpus all`). A CPU Python
+  managed vLLM OCR/analysis container (`docker run --gpus all`). A CPU Python
   environment can run tests and CPU embeddings, but it does not make the
   managed vLLM container CPU-compatible.
 - Node.js/npm compatible with Next.js 16 if using the alternative frontend.
@@ -97,7 +97,8 @@ The primary implementation boundaries are:
 
 The supplied production defaults were validated on a 128 GiB NVIDIA GB10
 unified-memory host. Other GPUs require measured OCR/analysis memory sizing;
-do not assume that both default models fit on smaller hardware.
+Only one inference model is loaded at a time; each profile still requires
+representative hardware validation.
 
 PDF rendering is performed by `pypdfium2`; Poppler is not a project runtime
 requirement.
@@ -199,15 +200,11 @@ audit, and export it, while regular-user responses contain only the final answer
 Completion capacity is calculated from the live served context rather than a
 fixed 16K limit.
 
-The supervised profile overrides saved UI inference settings with its
-environment: OCR is `allenai/olmOCR-2-7B-1025-FP8` on port 8000 and analysis is
-`Qwen/Qwen3.6-35B-A3B` on port 8002. Both revisions must be immutable cached
-commits. The production Compose defaults use OCR/analysis GPU high-water marks
-of 0.28/0.57, batch limits of 4,096/8,192 tokens, and context limits of
-15,360/32,768 tokens. The managed context switch enforces 32,768 analysis tokens
-while OCR is active and the model's full configured allocation while OCR is
-stopped. Analysis runs in language-only mode because document images are
-processed by the OCR role.
+The supervised profile preserves role-specific endpoints: OCR uses port 8000
+and analysis uses port 8002. A single container named `kirag_vllm` publishes
+only the active role's port. Switching drains active requests, removes the old
+container, loads the target immutable cached revision, and smoke-tests it before
+activation. Analysis runs in language-only mode.
 
 The verified analysis role can be switched atomically between Qwen and Gemma.
 The command verifies the immutable offline snapshot, recreates the role with
@@ -263,9 +260,9 @@ kirag-api -> kirag-frontend
 
 `kirag-infrastructure` owns PostgreSQL, Redis, MinIO, Qdrant and the selected
 vLLM profile. It starts concurrently with the API and frontend, so the
-workstation is usable while models load. New installations default to
-analysis-only 262K mode; the sidebar can switch to dual OCR/32K or OCR-only and
-persists that choice for the next launch. The unit verifies both cached model
+workstation is usable while models load. New installations default to analysis
+mode; the sidebar switches exclusively between analysis, OCR, and stopped states
+and persists that choice for the next launch. The unit verifies both cached model
 commits without network access and idempotently initialises the database schema,
 object buckets, and vector collection. An infrastructure
 status of `active (exited)` is expected because it is a `RemainAfterExit`
@@ -437,7 +434,7 @@ files ever differ, the code is authoritative.
 | Mode | Policy class | Retrieval calls | Qwen thinking | Principal output contract |
 |---|---|---:|---:|---|
 | General Knowledge | No RAG | 0 | Enabled | General model-knowledge conversation without case evidence |
-| Free Q&A | Analytical | 8 | Enabled | A source-grounded answer to the user's question |
+| Free Q&A | Interactive analytical | 3 vector + targeted lexical when applicable | Disabled | A bounded, source-grounded answer to the user's question |
 | Expert Mode | High assurance | 9 + verifier | Enabled | Evidence matrix, calibrated medicolegal conclusions, and verified revision |
 | Judge Mode | High assurance | 9 + verifier | Enabled | Neutral legal issues, findings, reasons, and provisional disposition |
 | Timeline | Extraction | 1 | Disabled | Oldest-first table of every dated event |
@@ -454,19 +451,20 @@ mode and filters. On the server, the display name is normalized to an internal
 key such as `injury_summary` or `causation`. Unknown mode names fall back
 to Free Q&A policy.
 
-Every RAG mode currently enforces a minimum `top_k` of 50 and a similarity-score
-threshold of `0.05`. Therefore, selecting a UI Top-K below 50 does not reduce
-the server-side target below 50. Metadata filters for case/run, document type,
-author, and date range are applied to every retrieval call. When configured,
-the Cross-Encoder reranker and diversity ranking are part of the underlying
-similarity search for either policy class.
+Free Q&A enforces a minimum `top_k` of 16 and a similarity-score threshold of
+`0.15`. Extraction and deeper analytical modes retain a minimum `top_k` of 50
+and threshold of `0.05`. Metadata filters for case/run, document type, author,
+and date range are applied to every retrieval call. Free Q&A deliberately
+disables the large Cross-Encoder: targeted lexical retrieval plus dense search
+provides better interactive latency for named primary records. Other modes use
+the configured reranker according to their policy and request settings.
 
 General Knowledge is the exception: it makes no retrieval call, ignores case
 and metadata filters, disables reranking, supplies no document excerpts, and
 does not run citation substitution. It uses only the model's learned knowledge,
 the current question, and recent conversation history. It has no live web access.
 
-Extraction modes perform one vector search using the user's query. Ordinary analytical
+Extraction modes perform one vector search using the user's query. Deep analytical
 modes use comprehensive retrieval: the original query plus seven derivative
 queries made by appending each of these evidence focuses:
 
@@ -486,6 +484,14 @@ contrary, temporal, and opinion evidence that a single semantic query might
 miss. Expert and Judge modes instead use eight specialized medicolegal or
 legal/evidentiary facets, producing nine searches before deduplication. The
 mode-specific system prompt tells the LLM how to use that evidence.
+
+Free Q&A uses a smaller interactive plan: the original question plus two
+facets—primary records/findings responsive to each part, and material opinions,
+contrary evidence, and limitations. Questions referring to radiology or imaging
+also run deterministic lexical retrieval for named CT, X-ray, and MRI report
+headings and conclusion sections. Primary radiology reports are boosted above
+indices and later summaries. Exact repeated copies of the same signed report
+are collapsed before context assembly.
 
 ### Message construction and generation lifecycle
 
@@ -521,6 +527,12 @@ maximum output-token value further constrains that calculation. If generation
 ends because the output limit was reached, the answer receives an explicit
 incomplete-response warning.
 
+Free Q&A is separately capped at 1,280 output tokens and does not enable the
+thinking channel. This prevents a focused documentary question from consuming
+the entire remaining model context as output. The verified interactive serving
+profiles use a 32,768-token context; larger contexts should be enabled only
+after measuring KV-cache pressure and decoding throughput on the target host.
+
 Requests use temperature `0.1` by default. Models whose names contain
 `reasoning` or `r1` use `0.7` when that default would otherwise apply and
 also receive a `1.05` repetition penalty. For Qwen3-family models, KIRAG sends
@@ -554,7 +566,10 @@ from the corresponding retrieved chunk. It does not ask the model to manufacture
 that metadata. Citation replacement can include the original filename, extracted
 author, document type, source date, PDF page information, and an explicitly
 present reference/claim/accession number. External Markdown is identified as
-having no original-PDF page provenance.
+having no original-PDF page provenance. When no page map exists, citations and
+excerpt headers include stable source-character offsets. Opaque generated
+Markdown filenames are rendered as a patient/case record label when supported
+by indexed metadata.
 
 ### Shared provenance instructions for every RAG mode
 
@@ -600,8 +615,9 @@ INSTRUCTIONS:
 
 ### Free Q&A
 
-Free Q&A is an analytical mode. It performs comprehensive, evidence-diverse
-retrieval and enables Qwen thinking. It is best for a focused question that may
+Free Q&A is an interactive analytical mode. It performs focused,
+evidence-diverse retrieval with targeted primary-record lookup and keeps Qwen
+thinking disabled. It is best for a focused question that may
 require synthesis across records, rather than a predetermined report schema.
 Despite its name, it remains closed-book with respect to case facts: the prompt
 requires answers to be based only on retrieved excerpts. If the retrieved
@@ -622,10 +638,76 @@ INSTRUCTIONS:
   * The source-supported authoring physician or explicitly labeled clinic
   * Identifying report details only when present in the excerpt
 - If multiple sources discuss the same event, synthesise the information and note any differences
+- Prefer the primary report or record that directly establishes a proposition over an index, attachment list, later summary, or passing clinical-note reference
+- When the question has multiple lettered parts, answer each part directly and separately before giving supporting analysis
+- For radiology questions, identify each retrieved primary report, its date, material findings and conclusion. Never state that a report or its findings are absent when a supplied excerpt is itself that report
+- Distinguish causation of structural imaging findings from onset or aggravation of symptoms; imaging chronology alone does not establish occupational causation
 - Use ISO date format (YYYY-MM-DD) when referencing dates
 - If the answer cannot be determined from the provided excerpts, say so explicitly and suggest what additional documents might help
 - Use clear, professional language appropriate for medicolegal analysis
 ```
+
+### 2026 radiology RAG audit and acceptance result
+
+A production audit was performed after a focused medicolegal causation query
+took more than 13 minutes and incorrectly stated that the supplied excerpts did
+not contain the radiological findings. Inspection of the source established
+that the Markdown did contain the complete primary reports:
+
+- the 2021-07-07 CT lumbosacral spine/X-ray pelvis and hips report;
+- the 2022-04-01 thoracolumbar and sacral spine MRI report; and
+- the 2022-04-08 bilateral hip MRI report.
+
+The failure was therefore retrieval and orchestration failure, not missing
+source material. The principal causes were broad eight-facet retrieval for a
+narrow question, a very low similarity threshold, a 50-context minimum,
+vector-only lookup for named reports, 800-character fragmentation of radiology
+reports, weak bundle-level metadata extraction, repeated low-value citation
+metadata, CPU Cross-Encoder latency, enabled thinking, and an output allowance
+that could expand to nearly the full served context window.
+
+The corrective implementation introduced:
+
+- report-aware radiology classification and boundaries, keeping title,
+  findings, conclusion, signature, report date, and radiologist together;
+- hybrid dense and deterministic lexical retrieval for primary imaging;
+- primary-source ranking, duplicate signed-report removal, and case-scoped
+  retrieval for the acceptance query;
+- a Free Q&A policy of 16 excerpts, `0.15` threshold, three focused vector
+  searches, no CPU Cross-Encoder, no thinking channel, and a 1,280-token cap;
+- radiology-specific completeness requirements covering separate answers,
+  actual findings, pre/post-incident comparison, citations, and separation of
+  structural causation from symptomatic aggravation;
+- source-character anchors when original PDF page provenance is unavailable;
+- 32k compiled analysis profiles in place of the latency-heavy 262k eager
+  profile; and
+- GPU-accelerated planned reindexing, while ordinary concurrent query
+  embedding remains on CPU because the analysis model occupies the shared GPU.
+
+The Mennilli case was reindexed as 1,044 chunks. The accepted exact-query run
+used `Qwen/Qwen3.6-35B-A3B`, completed in **66.8 seconds**, remained below the
+three-minute target, retrieved all three primary reports, produced resolvable
+adjacent citations, and did not hit the output limit. The focused final
+regression run passed **178 tests**.
+
+The accepted methodological conclusion was:
+
+- The records do not establish that cumulative employment duties caused the
+  structural imaging abnormalities. The July 2021 CT shows that relevant
+  degeneration and disc/facet pathology predated the acute 2022-02-08 event.
+- That chronology excludes the acute event as the origin of abnormalities
+  already visible in 2021, but it does **not** prove or disprove whether duties
+  from 1999 to July 2021 contributed to their development.
+- The acute event may be temporally consistent with symptomatic aggravation
+  without proving causation of degenerative structural pathology.
+- A reliable opinion on cumulative-duty contribution requires detailed duty
+  exposure, pre-injury clinical history, and a reasoned treating or independent
+  expert opinion addressing the relevant diagnoses separately.
+
+This is a reproducible application acceptance result, not a medical or legal
+opinion. The source run did not contain an original-PDF page map, so its
+accepted citations use stable character offsets. Reingesting the original PDF
+is required for page-level citations.
 
 ### Timeline
 
@@ -951,8 +1033,7 @@ sudo journalctl -u kirag-infrastructure -u kirag-api -u kirag-frontend \
   --since today --no-pager
 docker compose -f docker-compose.rag.yml \
   -f docker-compose.production.yml ps
-docker logs --tail 200 olmocr
-docker logs --tail 200 kirag_vllm_analysis
+docker logs --tail 200 kirag_vllm
 ```
 
 Common states:

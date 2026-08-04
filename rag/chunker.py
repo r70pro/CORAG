@@ -111,11 +111,13 @@ DOC_TYPE_PATTERNS = {
         re.IGNORECASE,
     ),
     "radiology_report": re.compile(
-        r"(?:MRI\s+(?:scan|report|findings))|"
-        r"(?:CT\s+scan)|"
-        r"(?:X-ray)|"
+        r"(?:MR(?:I)?\s+(?:OF\s+|scan|report|findings|both|spine))|"
+        r"(?:CT\s+(?:OF\s+|scan))|"
+        r"(?:X[ -]?RAY)|"
         r"(?:ultrasound\s+report)|"
-        r"(?:imaging\s+findings)",
+        r"(?:imaging\s+findings)|"
+        r"(?:Laboratory:\s*I-?MED\s+Radiology)|"
+        r"(?:Name of Test:\s*(?:MRI|CT|X[ -]?RAY))",
         re.IGNORECASE,
     ),
 }
@@ -167,7 +169,16 @@ PATIENT_PATTERNS = [
 ]
 
 # ── Letter boundary detection ─────────────────────────────────
+RADIOLOGY_REPORT_BOUNDARY = re.compile(
+    r"^(?:CT\s+OF\s+.+|MR(?:I)?\s+OF\s+.+|MRI\s+BOTH\s+HIPS)$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
 LETTER_BOUNDARY_PATTERNS = [
+    # Primary investigation report titles. Bundled claim files often place the
+    # next report's request metadata immediately after the preceding signature;
+    # title boundaries keep findings and conclusions attached to the right test.
+    RADIOLOGY_REPORT_BOUNDARY,
     # Date + Letter header
     re.compile(r"^\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}\s+Letter", re.MULTILINE),
     # "Dear Dr..." at start of line
@@ -241,8 +252,60 @@ def _extract_author(text: str) -> str | None:
     return None
 
 
+def _extract_radiology_author(text: str) -> str | None:
+    """Prefer the signing radiologist over addressees/referrers."""
+    signed = re.findall(
+        r"^Dr\s+([A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-]+){1,3})\s*\n"
+        r"Electronically signed",
+        text,
+        re.MULTILINE | re.IGNORECASE,
+    )
+    if signed:
+        return f"Dr {signed[0]}"
+    matches = re.findall(
+        r"^Dr\s+([A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-]+){1,3})\s*$",
+        text,
+        re.MULTILINE,
+    )
+    return f"Dr {matches[-1]}" if matches else None
+
+
+def _extract_radiology_date(text: str) -> tuple[str | None, str | None]:
+    """Use report/signature dates, never a patient's DOB, for imaging metadata."""
+    candidates = re.findall(
+        r"(?:^|\b)(\d{1,2})(?:st|nd|rd|th)?\s+"
+        r"(January|February|March|April|May|June|July|August|September|October|November|December|"
+        r"Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+"
+        r"(\d{4})\b",
+        text,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if not candidates:
+        return None, None
+    day, month_name, year = candidates[0]
+    try:
+        month_key = month_name.lower()
+        month_number = MONTH_MAP.get(month_key)
+        if month_number is None:
+            month_number = next(
+                value for name, value in MONTH_MAP.items() if name.startswith(month_key)
+            )
+        normalized = date(int(year), month_number, int(day)).isoformat()
+    except (ValueError, KeyError):
+        return None, None
+    return normalized, f"{day} {month_name} {year}"
+
+
 def _classify_document_type(text: str) -> str:
     """Classify the document type based on content patterns."""
+    # Report title plus findings/conclusion is stronger evidence than the
+    # generic "Dear Dr" structure shared by most clinical correspondence.
+    if re.search(
+        r"\b(?:CT\s+OF|MR(?:I)?\s+OF|MRI\s+BOTH|X[ -]?RAY)\b",
+        text,
+        re.IGNORECASE,
+    ) and re.search(r"\b(?:Findings|Conclusion|Impression)\s*:", text, re.IGNORECASE):
+        return "radiology_report"
     scores = {}
     for doc_type, pattern in DOC_TYPE_PATTERNS.items():
         matches = pattern.findall(text)
@@ -320,6 +383,12 @@ def _split_into_sections(text: str) -> list[tuple[int, int, str]]:
     """
     boundary_positions = set()
     boundary_positions.add(0)
+    report_positions = {match.start() for match in RADIOLOGY_REPORT_BOUNDARY.finditer(text)}
+    report_end_positions = {
+        match.end()
+        for match in re.finditer(r"^Electronically signed[^\n]*$", text, re.MULTILINE | re.IGNORECASE)
+    }
+    boundary_positions.update(report_end_positions)
 
     for pattern in LETTER_BOUNDARY_PATTERNS:
         for match in pattern.finditer(text):
@@ -334,6 +403,10 @@ def _split_into_sections(text: str) -> list[tuple[int, int, str]]:
     for pos in sorted_positions[1:]:
         if pos - filtered_positions[-1] >= MIN_SECTION_SIZE_CHARS:
             filtered_positions.append(pos)
+        elif pos in report_positions and filtered_positions[-1] not in report_positions:
+            # Prefer the precise report title over a nearby generic "Dear Dr"
+            # or "Re:" boundary so the evidence unit starts at its identity.
+            filtered_positions[-1] = pos
 
     sections = []
     for i, start in enumerate(filtered_positions):
@@ -484,8 +557,16 @@ def chunk_document(
         effective_doc_type = section_doc_type if section_doc_type != "unknown" else doc_type
 
         # Split the section into chunks
+        # A radiology report is the minimum safe evidence unit: its identity,
+        # findings, conclusion and signatory must not be separated. Child-size
+        # chunks caused title-only hits to displace the actual findings.
+        effective_chunk_size = (
+            max(max_chunk_size, 6000)
+            if effective_doc_type == "radiology_report"
+            else max_chunk_size
+        )
         chunk_pieces = _split_section_into_chunks(
-            section_text, section_start, max_chunk_size, chunk_overlap
+            section_text, section_start, effective_chunk_size, chunk_overlap
         )
 
         for chunk_start, chunk_end, chunk_text in chunk_pieces:
@@ -499,6 +580,11 @@ def chunk_document(
             chunk_date = _parse_date(chunk_text) or section_date
             chunk_date_raw = _extract_raw_date(chunk_text) or section_date_raw
             chunk_section_type = _classify_section_type(chunk_text)
+            if effective_doc_type == "radiology_report":
+                chunk_author = _extract_radiology_author(chunk_text) or chunk_author
+                radiology_date, radiology_date_raw = _extract_radiology_date(chunk_text)
+                chunk_date = radiology_date or chunk_date
+                chunk_date_raw = radiology_date_raw or chunk_date_raw
 
             chunk_id = _make_chunk_id(doc_id, chunk_index)
 

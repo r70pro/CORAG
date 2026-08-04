@@ -84,6 +84,8 @@ py-modules = [
     "system_diagnostics",
     "ui_adapters",
     "ui_theme",
+    "vllm_lifecycle",
+    "vllm_profiles",
 ]
 
 [tool.setuptools.package-data]

@@ -5,7 +5,6 @@ import re
 import socket
 import subprocess
 import time
-from pathlib import Path
 
 import httpx
 
@@ -13,7 +12,7 @@ from audit_log import audit_event
 
 logger = logging.getLogger(__name__)
 
-CONTAINER_NAME = "olmocr"
+CONTAINER_NAME = "kirag_vllm"
 MANAGED_LABEL = "com.kirag.managed"
 MANAGED_LABEL_VALUE = "true"
 DEFAULT_MODEL = "allenai/olmOCR-2-7B-1025-FP8"
@@ -199,6 +198,20 @@ def get_cached_models_info() -> tuple[list[str], dict[str, int]]:
 
 
 def start_docker_container():
+    if os.environ.get("TESTING") != "true":
+        from settings_manager import load_settings
+        from vllm_lifecycle import switch_vllm
+        settings = load_settings()
+        role = {"analysis_262k": "analysis", "ocr_only": "ocr"}.get(
+            settings.get("startup_mode", "analysis"), settings.get("startup_mode", "analysis")
+        )
+        if role not in {"ocr", "analysis"}:
+            return False, "No inference role is selected."
+        try:
+            switch_vllm(role, settings.get("analysis_model_name") if role == "analysis" else None)
+            return True, f"{role.upper()} inference is ready."
+        except Exception as exc:
+            return False, str(exc)
     msg_parts = []
     success = True
 
@@ -272,6 +285,13 @@ def stop_docker_container():
     RAG databases have an independent lifecycle and must remain available when
     inference is deliberately restarted or reconfigured.
     """
+    if os.environ.get("TESTING") != "true":
+        try:
+            from vllm_lifecycle import stop_vllm
+            stop_vllm()
+            return True, "Inference slot stopped."
+        except Exception as exc:
+            return False, str(exc)
     status = get_docker_status()
     msg_parts = []
     success = True
@@ -302,103 +322,27 @@ def stop_docker_container():
 
 
 def set_vllm_role_running(role: str, running: bool) -> tuple[bool, str]:
-    """Start or stop one of the two managed production vLLM role containers."""
-    containers = {"ocr": "olmocr", "analysis": "kirag_vllm_analysis"}
-    container_name = containers.get(role)
-    if not container_name:
-        return False, f"Unknown vLLM role: {role}"
-    status = get_docker_status(container_name)
-    if status == "foreign":
-        return False, f"Refusing to control unmanaged container '{container_name}'."
-    if status == "not_found":
-        return False, f"Managed {role} vLLM container '{container_name}' is not installed."
-    if status == "error":
-        return False, f"Unable to inspect {role} vLLM container '{container_name}'."
-    if running and status in {"running", "restarting"}:
-        return True, f"{role.upper()} vLLM is already running."
-    if not running and status not in {"running", "restarting"}:
-        return True, f"{role.upper()} vLLM is already stopped."
-    action = "start" if running else "stop"
+    """Compatibility wrapper around the exclusive single-slot lifecycle."""
     try:
-        subprocess.run(["docker", action, container_name], check=True, capture_output=True)
-        audit_event(f"container_{action}", "success", container=container_name, role=role)
-        return True, f"{role.upper()} vLLM container {action}ed successfully."
-    except subprocess.CalledProcessError as exc:
-        error = _decode_stderr(exc)
-        audit_event(f"container_{action}", "failure", container=container_name, role=role, error=error)
-        return False, f"Failed to {action} {role} vLLM: {error}"
+        from settings_manager import load_settings
+        from vllm_lifecycle import read_state, stop_vllm, switch_vllm
+        if running:
+            model = load_settings().get("analysis_model_name") if role == "analysis" else None
+            switch_vllm(role, model)
+            return True, f"{role.upper()} vLLM is ready in the exclusive inference slot."
+        if read_state().get("active_role") != role:
+            return True, f"{role.upper()} vLLM is already inactive."
+        stop_vllm()
+        return True, "Inference slot stopped."
+    except Exception as exc:
+        return False, f"Unable to change vLLM role: {exc}"
 
 
 def set_extended_analysis_context(enabled: bool) -> tuple[bool, str]:
-    """Atomically switch between OCR-active 32K and OCR-off full context."""
-    root = Path(__file__).resolve().parent
-    compose_files = [root / "docker-compose.rag.yml", root / "docker-compose.production.yml"]
-    if not all(path.is_file() for path in compose_files):
-        return False, "Production Compose files were not found."
-
-    from settings_manager import MODEL_MAX_CONTENT_LENGTHS, load_settings
-
-    settings = load_settings()
-    analysis_model = settings.get("analysis_model_name", "Qwen/Qwen3.6-35B-A3B")
-    from analysis_profiles import ANALYSIS_PROFILES
-    if analysis_model not in ANALYSIS_PROFILES:
-        return False, f"Unsupported production analysis profile: {analysis_model}"
-    full_model_context = int(MODEL_MAX_CONTENT_LENGTHS.get(analysis_model, 262144))
-    target_context = full_model_context if enabled else 32768
-    target_gpu = "0.85" if enabled else "0.57"
-    env = os.environ.copy()
-    env["KIRAG_ANALYSIS_MAX_MODEL_LEN"] = str(target_context)
-    env["KIRAG_ANALYSIS_GPU_MEMORY_UTILIZATION"] = target_gpu
-    env["KIRAG_ANALYSIS_MODEL"] = analysis_model
-    env["KIRAG_ANALYSIS_MODEL_REVISION"] = ANALYSIS_PROFILES[analysis_model]["revision"]
-    compose = [
-        "docker", "compose", "--project-directory", str(root),
-        "-f", str(compose_files[0]), "-f", str(compose_files[1]),
-    ]
-
-    audit_event("analysis_context_mode", "attempt", extended=enabled, context=target_context)
-    try:
-        subprocess.run(["docker", "stop", "kirag_vllm_analysis"], check=False, capture_output=True)
-        if enabled:
-            # A fresh analysis-only installation may never have created OCR.
-            if get_docker_status("olmocr") != "not_found":
-                success, message = set_vllm_role_running("ocr", False)
-                if not success:
-                    raise RuntimeError(message)
-        subprocess.run(
-            [*compose, "up", "-d", "--no-deps", "--force-recreate", "vllm-analysis"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            cwd=root,
-            env=env,
-        )
-        if not enabled:
-            if get_docker_status("olmocr") == "not_found":
-                subprocess.run(
-                    [*compose, "up", "-d", "--no-deps", "vllm"],
-                    check=True, capture_output=True, text=True, timeout=300,
-                    cwd=root, env=env,
-                )
-            else:
-                success, message = set_vllm_role_running("ocr", True)
-                if not success:
-                    raise RuntimeError(message)
-        # Verify the mutually exclusive operating invariant. A transitional or
-        # mismatched state must never be reported as a successful context mode.
-        ocr_status = get_docker_status("olmocr")
-        if enabled and ocr_status in {"running", "restarting"}:
-            raise RuntimeError("OCR remained active while full analysis context was requested")
-        if not enabled and ocr_status not in {"running", "restarting"}:
-            raise RuntimeError("OCR is not active in 32K shared-context mode")
-        audit_event("analysis_context_mode", "success", extended=enabled, context=target_context)
-        mode = f"{target_context:,}-token analysis-only" if enabled else "32,768-token dual-model"
-        return True, f"Switched to {mode} mode. Analysis vLLM is starting."
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as exc:
-        error = _decode_stderr(exc) if isinstance(exc, subprocess.CalledProcessError) else str(exc)
-        audit_event("analysis_context_mode", "failure", extended=enabled, error=error)
-        return False, f"Unable to switch analysis context mode: {error}"
+    """Deprecated compatibility shim; simultaneous dual-model mode was removed."""
+    if not enabled:
+        return False, "Dual-model mode is unavailable; select either OCR or analysis."
+    return set_vllm_role_running("analysis", True)
 
 
 def resolve_vllm_image() -> str:
@@ -542,6 +486,15 @@ def wait_for_port_free(port: int, timeout: float = 5.0) -> bool:
 
 
 def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tensor_parallel_size=1):
+    if os.environ.get("TESTING") != "true":
+        if model != DEFAULT_MODEL or int(port) != 8000:
+            return False, "Only the pinned OCR profile on port 8000 may use this compatibility operation."
+        try:
+            from vllm_lifecycle import switch_vllm
+            switch_vllm("ocr")
+            return True, "OCR inference is ready in the exclusive slot."
+        except Exception as exc:
+            return False, str(exc)
     status = get_docker_status()
     # Fall back to default model if model is invalid, empty, or literally "model"
     if not model or not str(model).strip() or str(model).strip() == "model":
@@ -888,6 +841,13 @@ def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tenso
 
 
 def shutdown_docker_container():
+    if os.environ.get("TESTING") != "true":
+        try:
+            from vllm_lifecycle import stop_vllm
+            stop_vllm()
+            return True, "Inference slot stopped and removed."
+        except Exception as exc:
+            return False, str(exc)
     status = get_docker_status()
     audit_event("container_shutdown", "attempt", container=CONTAINER_NAME, status=status)
     msg_parts = []

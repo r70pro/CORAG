@@ -51,7 +51,7 @@ def _record_failure() -> None:
             )
 
 
-def request_with_retry(operation: Callable[[], T]) -> T:
+def request_with_retry(operation: Callable[[], T], *, retry_read_timeout: bool = True) -> T:
     """Retry connection/timeout and transient HTTP failures before opening the circuit."""
     last_error: Exception | None = None
     for attempt in range(_attempts()):
@@ -73,6 +73,11 @@ def request_with_retry(operation: Callable[[], T]) -> T:
         ) as exc:
             last_error = exc
             _record_failure()
+            # A read timeout after a long generation may already have consumed
+            # minutes of GPU work. Replaying it cannot resume the answer and can
+            # multiply latency without improving reliability.
+            if isinstance(exc, httpx.ReadTimeout) and not retry_read_timeout:
+                raise
             if attempt + 1 >= _attempts():
                 raise
             delay = min(0.5 * (2**attempt), 4.0) + random.uniform(0, 0.2)

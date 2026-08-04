@@ -101,9 +101,10 @@ def test_docker_read_and_switch_routes(monkeypatch: pytest.MonkeyPatch):
         "docker_manager.get_cached_models_info", lambda: (["model"], {"model": 4096})
     )
     monkeypatch.setattr("settings_manager.load_settings", lambda **kwargs: {"docker_port": 8123})
-    monkeypatch.setattr(
-        "docker_manager.get_docker_status_str", lambda port, container: (container, "Ready")
-    )
+    monkeypatch.setattr("vllm_lifecycle.status", lambda: {
+        "active_role": "ocr", "ready": True,
+        "ocr": {"available": True}, "analysis": {"available": False},
+    })
     monkeypatch.setattr("docker_manager.get_docker_logs", lambda **kwargs: "logs")
     monkeypatch.setattr("docker_manager.get_docker_status", lambda container: "running")
 
@@ -114,7 +115,7 @@ def test_docker_read_and_switch_routes(monkeypatch: pytest.MonkeyPatch):
     assert docker.get_analysis_switch_operation("operation") == {"id": "operation"}
     assert docker.get_models().models == ["model"]
     assert docker.get_status("ocr").status == "ready"
-    assert docker.get_status("analysis").message == "kirag_vllm_analysis"
+    assert docker.get_status("analysis").status == "stopped"
     assert docker.get_logs(10, "analysis").logs == "logs"
 
     monkeypatch.setattr("analysis_profiles.get_operation", lambda operation: None)
@@ -136,10 +137,14 @@ def test_docker_privileged_success_routes(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("docker_manager.shutdown_docker_container", lambda: (True, "removed"))
     monkeypatch.setattr("docker_manager.create_docker_container", lambda *args: (True, "created"))
     monkeypatch.setattr("rag.analyzer.invalidate_model_cache", lambda: None)
+    monkeypatch.setattr("vllm_lifecycle.switch_vllm", lambda *args: {"state": "completed"})
+    monkeypatch.setattr("vllm_lifecycle.stop_vllm", lambda: None)
 
     run = asyncio.run
-    assert run(docker.set_analysis_context_mode(AnalysisContextModeRequest(extended=True))).success
-    for mode in ("analysis_262k", "dual_32k", "ocr_only"):
+    with pytest.raises(HTTPException) as retired:
+        run(docker.set_analysis_context_mode(AnalysisContextModeRequest(extended=True)))
+    assert retired.value.status_code == 410
+    for mode in ("analysis", "ocr", "stopped"):
         assert run(docker.set_startup_mode(StartupModeRequest(mode=mode))).success
     assert run(docker.start_container()).success
     assert run(docker.start_role_container("analysis")).success
@@ -160,9 +165,8 @@ def test_docker_privileged_failure_routes(monkeypatch: pytest.MonkeyPatch):
         asyncio.run(docker.set_analysis_context_mode(AnalysisContextModeRequest(extended=False)))
 
     monkeypatch.setattr("analysis_profiles.switch_in_progress", lambda: False)
-    monkeypatch.setattr("docker_manager.start_docker_container", lambda: (False, "failed"))
-    monkeypatch.setattr("docker_manager.stop_docker_container", lambda: (False, "failed"))
-    monkeypatch.setattr("docker_manager.shutdown_docker_container", lambda: (False, "failed"))
+    monkeypatch.setattr("vllm_lifecycle.switch_vllm", lambda *args: (_ for _ in ()).throw(RuntimeError("failed")))
+    monkeypatch.setattr("vllm_lifecycle.stop_vllm", lambda: (_ for _ in ()).throw(RuntimeError("failed")))
     with pytest.raises(HTTPException):
         asyncio.run(docker.start_container())
     with pytest.raises(HTTPException):

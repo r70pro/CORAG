@@ -138,6 +138,7 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
   const [prompt, setPrompt] = useState<string>("");
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [analysisMode, setAnalysisMode] = useState<string>("💬 Free Q&A");
+  const [chronologyDetail, setChronologyDetail] = useState<"ultra_fast" | "fast" | "thorough">("ultra_fast");
   const isGeneralKnowledge = analysisMode === "🌐 General Knowledge";
   const [activeCase, setActiveCase] = useState<string>("");
 
@@ -181,7 +182,7 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
   const [topK, setTopK] = useState<number>(8);
   const [useReranker, setUseReranker] = useState<boolean>(true);
   const [rerankerModel, setRerankerModel] = useState<string>("BAAI/bge-reranker-large");
-  const [rerankerDevice, setRerankerDevice] = useState<string>("cuda");
+  const [rerankerDevice, setRerankerDevice] = useState<string>("cpu");
   const [analysisSettingsLoaded, setAnalysisSettingsLoaded] = useState<boolean>(false);
   const [saveConfigStatus, setSaveConfigStatus] = useState<string>("");
   const [analysisSwitching, setAnalysisSwitching] = useState<boolean>(false);
@@ -450,6 +451,7 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
         reranker_device: isGeneralKnowledge ? undefined : rerankerDevice,
         reasoning_audit: activeRole === "Admin",
         session_id: sessionIdRef.current,
+        chronology_detail: chronologyDetail,
         stream: true,
       },
       (chunk) => {
@@ -963,6 +965,21 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
                       </option>
                     ))}
                   </select>
+                  {analysisMode === "📋 Timeline" && (
+                    <label className="flex items-center gap-2 text-xs text-slate-300">
+                      <span>Chronology:</span>
+                      <select
+                        aria-label="Chronology detail"
+                        value={chronologyDetail}
+                        onChange={(event) => setChronologyDetail(event.target.value as "ultra_fast" | "fast" | "thorough")}
+                        className="bg-slate-900 border border-slate-700 rounded-xl px-3 py-1 text-xs text-slate-200 cursor-pointer"
+                      >
+                        <option value="ultra_fast">Ultra-Fast — dated-text index (&lt;10 min)</option>
+                        <option value="fast">Fast — model-extracted complete events</option>
+                        <option value="thorough">Thorough — detailed clinical fields</option>
+                      </select>
+                    </label>
+                  )}
                 </div>
 
                 {/* Export Buttons */}
@@ -1204,6 +1221,21 @@ export const RagChat: React.FC<RagChatProps> = ({ activeRole = "Clinical Reviewe
                     </option>
                   ))}
                 </select>
+                {analysisMode === "📋 Timeline" && (
+                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                    <span>Chronology:</span>
+                    <select
+                      aria-label="Chronology detail"
+                      value={chronologyDetail}
+                      onChange={(event) => setChronologyDetail(event.target.value as "ultra_fast" | "fast" | "thorough")}
+                      className="bg-slate-900 border border-slate-700 rounded-xl px-3 py-1 text-xs text-slate-200 cursor-pointer"
+                    >
+                      <option value="ultra_fast">Ultra-Fast — dated-text index (&lt;10 min)</option>
+                      <option value="fast">Fast — model-extracted complete events</option>
+                      <option value="thorough">Thorough — detailed clinical fields</option>
+                    </select>
+                  </label>
+                )}
               </div>
 
               {/* Export Buttons */}

@@ -163,6 +163,30 @@ describe("RagChat Component", () => {
     });
   });
 
+  test("Timeline defaults to ultra-fast and exposes all chronology profiles", async () => {
+    render(<RagChat />);
+
+    fireEvent.click(screen.getByRole("button", { name: "📋 Timeline" }));
+    const profile = screen.getByLabelText("Chronology detail");
+    expect(profile).toHaveValue("ultra_fast");
+    fireEvent.change(profile, { target: { value: "thorough" } });
+
+    const input = screen.getByPlaceholderText(/Ask a medicolegal question or request an audit.../i);
+    fireEvent.change(input, { target: { value: "Build a chronology" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send Query" }));
+
+    await waitFor(() => {
+      expect(triggerRagChatSSE).toHaveBeenCalledWith(
+        expect.objectContaining({ chronology_detail: "thorough" }),
+        expect.any(Function),
+        expect.any(Function),
+        expect.any(Function),
+        expect.any(Function),
+        expect.any(Function),
+      );
+    });
+  });
+
   test("omits empty optional filters from a RAG request", async () => {
     render(<RagChat />);
 

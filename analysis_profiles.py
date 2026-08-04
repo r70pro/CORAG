@@ -6,7 +6,6 @@ import fcntl
 import json
 import logging
 import os
-import subprocess
 import threading
 import time
 import urllib.request
@@ -29,7 +28,7 @@ ANALYSIS_PROFILES: dict[str, dict[str, Any]] = {
         "model": "Qwen/Qwen3.6-35B-A3B",
         "display_name": "Qwen 3.6 35B A3B",
         "revision": "995ad96eacd98c81ed38be0c5b274b04031597b0",
-        "context_length": 262144,
+        "context_length": 32768,
         "dtype": "bfloat16",
         "quantization": "none",
         "reasoning_parser": "qwen3",
@@ -39,7 +38,10 @@ ANALYSIS_PROFILES: dict[str, dict[str, Any]] = {
         "model": "google/gemma-4-31B-it",
         "display_name": "Gemma 4 31B IT",
         "revision": "842da3794eaa0b77d5f08bae87a17459d91ff475",
-        "context_length": 262144,
+        # 262k preallocates an excessive KV cache on the unified-memory GB10
+        # and reduced measured decoding to ~1 token/s. RAG evidence is bounded
+        # well below 32k, so use the production latency profile here.
+        "context_length": 32768,
         "dtype": "bfloat16",
         "quantization": "none",
         "reasoning_parser": None,
@@ -234,25 +236,9 @@ def _update(operation: dict[str, Any], state: str, message: str, progress: int) 
 
 
 def _compose_recreate(model: str) -> None:
-    from settings_manager import load_settings
+    from vllm_lifecycle import switch_vllm
 
-    profile = ANALYSIS_PROFILES[model]
-    settings = load_settings()
-    extended = settings.get("startup_mode", "analysis_262k") == "analysis_262k"
-    env = os.environ.copy()
-    env.update(
-        KIRAG_ANALYSIS_MODEL=model,
-        KIRAG_ANALYSIS_MODEL_REVISION=profile["revision"],
-        KIRAG_ANALYSIS_MAX_MODEL_LEN=str(profile["context_length"] if extended else 32768),
-        KIRAG_ANALYSIS_GPU_MEMORY_UTILIZATION="0.85" if extended else "0.57",
-    )
-    command = [
-        "docker", "compose", "--project-directory", str(ROOT),
-        "-f", str(ROOT / "docker-compose.rag.yml"),
-        "-f", str(ROOT / "docker-compose.production.yml"),
-        "up", "-d", "--no-deps", "--force-recreate", "vllm-analysis",
-    ]
-    subprocess.run(command, check=True, cwd=ROOT, env=env, capture_output=True, text=True, timeout=300)
+    switch_vllm("analysis", model)
 
 
 def _wait_for_model(operation: dict[str, Any], model: str, timeout: int = 1800) -> None:
@@ -295,6 +281,7 @@ def _activate(model: str) -> None:
     settings = load_settings()
     settings["analysis_model_name"] = model
     settings["analysis_server_url"] = ANALYSIS_URL
+    settings["startup_mode"] = "analysis"
     save_settings(settings)
     try:
         from rag.analyzer import invalidate_model_cache
@@ -327,13 +314,16 @@ def _run_switch(operation: dict[str, Any], lock_handle) -> None:
         logger.exception("Analysis switch %s failed", operation["id"])
         if previous in ANALYSIS_PROFILES and previous != target:
             try:
-                _update(operation, "rolling_back", f"Switch failed; restoring {previous}…", 90)
-                _compose_recreate(previous)
-                _wait_for_model(operation, previous)
-                _smoke(previous)
-                _activate(previous)
+                from vllm_lifecycle import status as slot_status
+
+                slot = slot_status()
+                if not slot.get("ready") or slot.get("active_model") != previous:
+                    raise RuntimeError("single-slot lifecycle could not restore the previous model")
                 operation["completed_at"] = _now()
-                _update(operation, "rolled_back", f"Switch failed and {previous} was restored: {exc}", 100)
+                _update(
+                    operation, "rolled_back",
+                    f"Switch failed and the single-slot lifecycle restored {previous}: {exc}", 100,
+                )
             except Exception as rollback_exc:
                 operation["rollback_error"] = str(rollback_exc)
                 _update(operation, "failed", f"Switch and rollback failed: {exc}; {rollback_exc}", 100)

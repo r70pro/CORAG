@@ -42,6 +42,7 @@ export interface ApiRequestHandle {
 
 interface RequestScope {
   signal: AbortSignal;
+  touch: () => void;
   close: () => void;
 }
 
@@ -83,6 +84,15 @@ function createRequestScope(externalSignal: AbortSignal | null | undefined, time
   const controller = new AbortController();
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
+  const armTimeout = () => {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+    if (timeoutMs > 0) {
+      timeoutId = setTimeout(() => {
+        controller.abort(new ApiTimeoutError(timeoutMs));
+      }, timeoutMs);
+    }
+  };
+
   const abortFromExternal = () => {
     controller.abort(externalSignal?.reason);
   };
@@ -93,14 +103,13 @@ function createRequestScope(externalSignal: AbortSignal | null | undefined, time
     externalSignal.addEventListener("abort", abortFromExternal, { once: true });
   }
 
-  if (timeoutMs > 0) {
-    timeoutId = setTimeout(() => {
-      controller.abort(new ApiTimeoutError(timeoutMs));
-    }, timeoutMs);
-  }
+  armTimeout();
 
   return {
     signal: controller.signal,
+    // Streaming responses can legitimately run for hours. Receiving any bytes,
+    // including SSE keep-alive comments, proves the request is still healthy.
+    touch: armTimeout,
     close: () => {
       if (timeoutId !== undefined) clearTimeout(timeoutId);
       externalSignal?.removeEventListener("abort", abortFromExternal);
@@ -159,7 +168,7 @@ function normalizeThrownError(error: unknown, signal: AbortSignal): unknown {
   if (signal.aborted && signal.reason !== undefined) return signal.reason;
   if (
     error instanceof TypeError &&
-    /fetch|network|failed to load|load failed/i.test(error.message)
+    /fetch|network|failed to load|load failed|input stream|stream.*error/i.test(error.message)
   ) {
     return new ApiError(
       "The connection to KIRAG was interrupted. Check that the API and frontend services are running, then retry the query.",
@@ -173,7 +182,7 @@ function normalizeThrownError(error: unknown, signal: AbortSignal): unknown {
 async function withApiResponse<T>(
   path: string,
   options: ApiRequestOptions,
-  consume: (response: Response) => Promise<T>,
+  consume: (response: Response, touch: () => void) => Promise<T>,
 ): Promise<T> {
   const { timeoutMs = DEFAULT_TIMEOUT_MS, json, headers: inputHeaders, signal: externalSignal, ...init } = options;
   const scope = createRequestScope(externalSignal, timeoutMs);
@@ -199,7 +208,8 @@ async function withApiResponse<T>(
       credentials: "same-origin",
     });
     await assertOk(response);
-    return await consume(response);
+    scope.touch();
+    return await consume(response, scope.touch);
   } catch (error) {
     throw normalizeThrownError(error, scope.signal);
   } finally {
@@ -354,6 +364,7 @@ async function consumeSse<T>(
   response: Response,
   handlers: SseHandlers<T>,
   signal?: AbortSignal,
+  touch?: () => void,
 ): Promise<void> {
   if (!response.body) {
     throw new ApiError("API returned an empty streaming response", response.status);
@@ -393,6 +404,7 @@ async function consumeSse<T>(
         }
         break;
       }
+      touch?.();
       parser.push(value);
     }
     // [DONE] is authoritative. Do not await reader.cancel(): some streaming
@@ -429,7 +441,7 @@ export function requestJsonSse<T = unknown>(
       signal: controller.signal,
       timeoutMs: options.timeoutMs ?? API_TIMEOUTS.stream,
     },
-    (response) => consumeSse(response, handlers, controller.signal),
+    (response, touch) => consumeSse(response, handlers, controller.signal, touch),
   )
     .then(finish)
     .catch((error) => {

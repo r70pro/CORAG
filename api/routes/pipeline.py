@@ -187,7 +187,7 @@ def start_pipeline(req: PipelineStartRequest):
                 return int(match.group(1))
         return 0
 
-    def event_generator():
+    def _unleased_event_generator():
         if not files:
             err_msg = "No valid input files"
             envelope = error_envelope("invalid_input_files", err_msg).model_dump(
@@ -242,6 +242,18 @@ def start_pipeline(req: PipelineStartRequest):
                 "status_badge": '<span class="badge-failed">Failed</span>',
             }
             yield f"data: {json.dumps(event_data)}\n\n"
+
+    def event_generator():
+        from vllm_lifecycle import inference_lease
+
+        try:
+            with inference_lease("ocr"):
+                yield from _unleased_event_generator()
+        except RuntimeError as exc:
+            envelope = error_envelope("ocr_role_unavailable", str(exc)).model_dump(
+                mode="json", exclude_none=True
+            )
+            yield f"data: {json.dumps(envelope)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

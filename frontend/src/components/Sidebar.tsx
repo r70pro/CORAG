@@ -250,7 +250,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
-  const handleStartupMode = async (mode: "analysis_262k" | "dual_32k" | "ocr_only") => {
+  const handleStartupMode = async (mode: "analysis" | "ocr" | "stopped") => {
     setDockerMsg("Applying and saving operating mode...");
     const res = await setStartupMode(mode);
     setDockerMsg(res.message || "Operating mode requested.");
@@ -321,37 +321,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
             onClick={() => setDockerOpen(!dockerOpen)}
             className="w-full px-3 py-2 bg-slate-900/80 flex items-center justify-between text-xs font-bold text-slate-200 cursor-pointer select-none"
           >
-            <span>🐳 Dedicated vLLM Roles</span>
+            <span>🐳 Exclusive Inference Slot</span>
             {dockerOpen ? <ChevronUp className="w-3.5 h-3.5 text-slate-400 pointer-events-none" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-400 pointer-events-none" />}
           </button>
 
           {dockerOpen && (
             <div className="p-3 space-y-2.5 text-[11px]">
-              <div className="space-y-1.5">
-                {(["ocr", "analysis"] as const).map((role) => (
-                  <div key={role} className="rounded-lg border border-slate-800 bg-slate-950/70 p-2 space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-slate-200 uppercase">{role} vLLM <span className="text-slate-500 font-mono">:{role === "ocr" ? "8000" : "8002"}</span></span>
-                      <span className={`font-mono ${dockerStatuses[role] === "ready" ? "text-emerald-400" : dockerStatuses[role] === "starting" ? "text-amber-400" : "text-rose-300"}`}>{dockerStatuses[role]}</span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-1.5">
-                      <button type="button" disabled={role === "analysis" && switchInProgress} onClick={() => role === "ocr" ? handleStartDocker() : handleAnalysisLifecycle(true)} className="px-2 py-1 rounded bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 border border-emerald-800/50 flex items-center justify-center gap-1 disabled:opacity-40"><Play className="w-3 h-3" /> Start</button>
-                      <button type="button" disabled={role === "analysis" && switchInProgress} onClick={() => role === "ocr" ? handleStopDocker() : handleAnalysisLifecycle(false)} className="px-2 py-1 rounded bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 border border-rose-800/50 flex items-center justify-center gap-1 disabled:opacity-40"><Square className="w-3 h-3" /> Stop</button>
-                    </div>
-                  </div>
-                ))}
+              <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-2 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-200">ONE ACTIVE MODEL</span>
+                  <span className="text-[9px] text-slate-400">OCR :8000 · Analysis :8002</span>
+                </div>
+                <p className="text-[9px] leading-snug text-slate-400">Switching drains active work, stops the current container, and opens only the selected role port.</p>
               </div>
 
               <div className="rounded-lg border border-indigo-800/50 bg-indigo-950/20 p-2 space-y-1.5">
                 <div className="text-[10px] font-semibold text-indigo-200">Operating mode (restored next launch)</div>
-                <button type="button" disabled={switchInProgress} onClick={() => handleStartupMode("analysis_262k")} className="w-full px-2 py-1 rounded bg-indigo-700 hover:bg-indigo-600 text-white font-semibold disabled:opacity-40">
-                  Analyse Existing Cases — 262K
+                <button type="button" disabled={switchInProgress} onClick={() => handleStartupMode("analysis")} className="w-full px-2 py-1 rounded bg-indigo-700 hover:bg-indigo-600 text-white font-semibold disabled:opacity-40">
+                  Switch to Analysis — :8002
                 </button>
-                <button type="button" disabled={switchInProgress} onClick={() => handleStartupMode("dual_32k")} className="w-full px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 disabled:opacity-40">
-                  Ingest + Analyse — OCR / 32K
+                <button type="button" disabled={switchInProgress} onClick={() => handleStartupMode("ocr")} className="w-full px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 disabled:opacity-40">
+                  Switch to OCR — :8000
                 </button>
-                <button type="button" disabled={switchInProgress} onClick={() => handleStartupMode("ocr_only")} className="w-full px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 disabled:opacity-40">
-                  OCR Batch Only
+                <button type="button" disabled={switchInProgress} onClick={() => handleStartupMode("stopped")} className="w-full px-2 py-1 rounded bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 border border-rose-800/50 disabled:opacity-40">
+                  Stop Inference
                 </button>
                 <p className="text-[9px] leading-snug text-slate-400">The interface remains available while the selected model profile loads.</p>
               </div>

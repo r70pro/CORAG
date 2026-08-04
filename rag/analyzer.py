@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import Generator
 from functools import lru_cache
 from typing import Any
@@ -21,6 +22,7 @@ import httpx
 from rag.analysis_policy import get_analysis_policy
 from rag.retriever import (
     EXPERT_ANALYTICAL_QUERY_FACETS,
+    FREE_QA_QUERY_FACETS,
     JUDGE_ANALYTICAL_QUERY_FACETS,
     format_context_for_llm,
     search_comprehensive,
@@ -110,29 +112,22 @@ def _validate_managed_context_invariant(
     served_context: int,
     full_model_context: int,
 ) -> None:
-    """Fail closed when managed OCR and analysis context states disagree."""
+    """Fail closed unless the exclusive inference slot serves analysis."""
     if os.environ.get("TESTING") == "true" or ":8002" not in server_url:
         return
     try:
-        from docker_manager import get_docker_status
+        from vllm_lifecycle import status
 
-        ocr_status = get_docker_status("olmocr")
+        slot = status()
     except Exception as exc:
         raise ContextWindowError("Unable to verify OCR state for analysis context allocation") from exc
-    if ocr_status == "running":
-        if served_context != 32768:
-            raise ContextWindowError(
-                f"OCR is active but analysis is serving {served_context:,} tokens; expected 32,768"
-            )
-    elif ocr_status in {"exited", "stopped", "created"}:
-        if served_context != full_model_context:
-            raise ContextWindowError(
-                f"OCR is inactive but analysis is serving {served_context:,} tokens; "
-                f"expected the full {full_model_context:,}-token model allocation"
-            )
-    else:
+    if not slot.get("ready") or slot.get("active_role") != "analysis":
         raise ContextWindowError(
-            f"OCR state '{ocr_status}' is not stable enough to start analysis"
+            f"Analysis inference is unavailable; active role is '{slot.get('active_role', 'stopped')}'"
+        )
+    if served_context != full_model_context:
+        raise ContextWindowError(
+            f"Analysis is serving {served_context:,} tokens; expected {full_model_context:,}"
         )
 
 
@@ -259,6 +254,10 @@ INSTRUCTIONS:
   * The source-supported authoring physician or explicitly labeled clinic
   * Identifying report details only when present in the excerpt
 - If multiple sources discuss the same event, synthesise the information and note any differences
+- Prefer the primary report or record that directly establishes a proposition over an index, attachment list, later summary, or passing clinical-note reference
+- When the question has multiple lettered parts, answer each part directly and separately before giving supporting analysis
+- For radiology questions, identify each retrieved primary report, its date, material findings and conclusion. Never state that a report or its findings are absent when a supplied excerpt is itself that report
+- Distinguish causation of structural imaging findings from onset or aggravation of symptoms; imaging chronology alone does not establish occupational causation
 - Use ISO date format (YYYY-MM-DD) when referencing dates
 - If the answer cannot be determined from the provided excerpts, say so explicitly and suggest what additional documents might help
 - Use clear, professional language appropriate for medicolegal analysis""",
@@ -405,6 +404,29 @@ NON-NEGOTIABLE PROVENANCE RULES:
 - Retain the source's original date expression. Only present a normalized ISO date when it is a valid calendar date.
 """
 
+
+def _question_specific_instructions(query: str) -> str:
+    lowered = query.lower()
+    if "radiolog" not in lowered and "imaging" not in lowered:
+        return ""
+    return """
+
+QUESTION-SPECIFIC COMPLETENESS REQUIREMENTS:
+- Start with direct, separate answers to (a) and (b); do not begin with a generic inability statement.
+- Before reaching causation, state the material findings from every supplied primary CT, X-ray, or MRI report, including normal and limiting findings.
+- Compare imaging before and after the alleged incident. Explain what that chronology supports and what it cannot establish.
+- Pre-incident imaging proves only that the February 2022 acute event did not originate abnormalities already visible in 2021. It does not prove or disprove whether cumulative duties from 1999 to July 2021 contributed to them; that requires exposure evidence and a reasoned expert opinion.
+- Do not describe imaging as progressive unless comparable studies expressly document progression.
+- If no source gives an explicit cumulative-duty causation opinion, conclude that occupational causation is not established on these excerpts; do not say the radiology findings themselves are unavailable.
+- Distinguish structural pathology from symptomatic aggravation. The temporal relationship may support aggravation of symptoms without proving that work caused degenerative imaging abnormalities.
+- Address diagnosed conditions separately and identify whether any cited clinician actually gives a reasoned causal opinion.
+- End with only the material evidence needed for a definitive expert opinion.
+- Keep the complete answer under 700 words. Synthesise material findings; do not transcribe every normal anatomical observation.
+- Cite only the best primary source for each imaging proposition and only material clinician opinions for causation. Do not append a catalogue of every retrieved source.
+- Every radiology bullet and every material clinician opinion MUST end with its supplied bracketed [Source N] token. Do not write filenames or source metadata yourself; the application renders those tokens. An answer without these bracketed tokens is incomplete.
+- Exclude sources whose extracted author or date is facially malformed or chronologically impossible unless the inconsistency itself is material.
+"""
+
 HIGH_ASSURANCE_VERIFIER_PROMPT = """You are the independent second-pass verifier for a high-stakes medicolegal documentary analysis. The draft has not been shown to the user. Audit it skeptically against the supplied excerpts and return a corrected final answer.
 
 MANDATORY CHECKS:
@@ -493,6 +515,7 @@ def build_prompt(
     context: str,
     mode: str = "free_qa",
     chat_history: list[dict] | None = None,
+    quality_instructions: str = "",
 ) -> list[dict]:
     """Build the full message list for the LLM API call.
 
@@ -528,7 +551,9 @@ def build_prompt(
 ---
 
 USER QUESTION:
-{query}"""
+{query}
+{_question_specific_instructions(query)}
+{quality_instructions}"""
 
     messages.append({"role": "user", "content": user_message})
 
@@ -622,6 +647,8 @@ def query_llm_streaming(
     max_tokens: int | None = None,
     enable_thinking: bool = False,
     reasoning_callback: Any | None = None,
+    cancellation_callback: Any | None = None,
+    response_format: dict[str, Any] | None = None,
 ) -> Generator[str, None, None]:
     """Send messages to vLLM and stream the response.
 
@@ -653,6 +680,8 @@ def query_llm_streaming(
         "max_tokens": max_tokens,
         "stream": True,
     }
+    if response_format is not None:
+        payload["response_format"] = response_format
     if is_reasoning_model:
         payload["repetition_penalty"] = 1.05
     if is_qwen3_model:
@@ -672,6 +701,9 @@ def query_llm_streaming(
 
             hit_output_limit = False
             for line in response.iter_lines():
+                if cancellation_callback and cancellation_callback():
+                    logger.info("Cancelled abandoned streaming LLM request")
+                    return
                 if not line or not line.startswith("data: "):
                     continue
 
@@ -762,7 +794,8 @@ def query_llm(
                 url,
                 json=payload,
                 timeout=httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0),
-            )
+            ),
+            retry_read_timeout=False,
         )
 
         if response.status_code != 200:
@@ -790,6 +823,8 @@ def query_llm(
         return f"⚠️ Error: Cannot connect to LLM server at {server_url}."
     except CircuitOpenError:
         return "⚠️ Error: LLM service is temporarily unavailable; retry after the recovery window."
+    except httpx.ReadTimeout:
+        return "⚠️ Error: LLM generation exceeded the 10-minute upstream response limit."
     except Exception as e:
         return f"⚠️ Error: {str(e)}"
 
@@ -810,7 +845,11 @@ def replace_source_tags_in_string(text: str, results: list[dict]) -> str:
 
             filename = result.get("original_filename")
             if filename:
-                parts.append(str(filename))
+                filename_text = str(filename)
+                if re.fullmatch(r"[0-9a-f]{32}\.md", filename_text, re.IGNORECASE):
+                    patient = str(result.get("patient_name") or "").strip()
+                    filename_text = f"{patient} record" if patient else "Indexed case record"
+                parts.append(filename_text)
 
             # Only cite author and document type when source extraction supplied them.
             author = result.get("author") or ""
@@ -824,13 +863,17 @@ def replace_source_tags_in_string(text: str, results: list[dict]) -> str:
 
             date = result.get("date_extracted") or ""
             if date:
-                parts.append(date)
+                parts.append(str(date))
 
             provenance_type = result.get("provenance_type")
             page_start = result.get("page_start")
             page_end = result.get("page_end")
             if provenance_type == "external_markdown":
                 parts.append("external Markdown; no original-PDF page provenance")
+                char_start = result.get("source_char_start")
+                char_end = result.get("source_char_end")
+                if char_start is not None and char_end is not None:
+                    parts.append(f"source characters {char_start}-{char_end}")
             elif page_start is not None and page_end is not None:
                 if page_start == page_end:
                     parts.append(f"p. {page_start}")
@@ -842,6 +885,10 @@ def replace_source_tags_in_string(text: str, results: list[dict]) -> str:
                 )
             else:
                 parts.append("original-PDF page provenance not present")
+                char_start = result.get("source_char_start")
+                char_end = result.get("source_char_end")
+                if char_start is not None and char_end is not None:
+                    parts.append(f"source characters {char_start}-{char_end}")
 
             chunk_text = result.get("text", "")
             ref_match = re.search(
@@ -953,6 +1000,8 @@ def analyze(
     max_tokens: int | None = None,
     progress_callback: Any | None = None,
     reasoning_callback: Any | None = None,
+    cancellation_callback: Any | None = None,
+    chronology_detail: str = "fast",
     **search_kwargs,
 ) -> Generator[str, None, None]:
     """Full RAG analysis pipeline: retrieve → prompt → generate.
@@ -981,19 +1030,85 @@ def analyze(
     """
     policy = get_analysis_policy(mode)
     mode = policy.mode
+    free_qa_plan = None
+    if cancellation_callback and cancellation_callback():
+        return
+    if mode == "timeline" and not run_id_filter:
+        yield (
+            "A dependable comprehensive chronology requires exactly one selected case. "
+            "Select an indexed case and regenerate; no relevance-limited timeline was produced."
+        )
+        return
+    if mode == "timeline" and run_id_filter:
+        # A comprehensive chronology is a complete-case audit, not a top-K RAG
+        # answer.  Enumerate and extract every indexed source chunk in bounded
+        # batches before deterministic validation, sorting and rendering.
+        from rag.chronology import chronology_checkpoint_dir, generate_comprehensive_chronology
+
+        def chronology_llm(
+            messages: list[dict[str, str]],
+            response_format: dict[str, Any] | None = None,
+        ) -> str:
+            parts: list[str] = []
+            received = 0
+            last_heartbeat = time.monotonic()
+            for chunk in query_llm_streaming(
+                messages,
+                server_url,
+                model_name,
+                max_tokens=max_tokens or (3072 if chronology_detail == "fast" else 6144),
+                enable_thinking=False,
+                cancellation_callback=cancellation_callback,
+                response_format=response_format,
+            ):
+                parts.append(chunk)
+                received += len(chunk)
+                now = time.monotonic()
+                if progress_callback and now - last_heartbeat >= 30:
+                    progress_callback(
+                        0.5,
+                        f"Model is actively generating structured chronology output ({received:,} characters received)...",
+                    )
+                    last_heartbeat = now
+            return "".join(parts)
+
+        yield generate_comprehensive_chronology(
+            run_id_filter,
+            chronology_llm,
+            progress_callback=progress_callback,
+            cancellation_callback=cancellation_callback,
+            checkpoint_dir=chronology_checkpoint_dir(run_id_filter),
+            detail=chronology_detail,
+        )
+        return
     results: list[dict] = []
     if policy.uses_retrieval:
         top_k = max(top_k, policy.min_top_k)
         if "score_threshold" not in search_kwargs:
             search_kwargs["score_threshold"] = policy.score_threshold
+        if mode == "free_qa":
+            # Targeted lexical + dense retrieval already supplies the named
+            # primary evidence. The large CPU cross-encoder consumed roughly
+            # half of the three-minute interactive latency budget.
+            search_kwargs["use_reranker"] = False
+        elif mode in {"timeline", "injury_summary", "inconsistency_finder", "medication_tracker"}:
+            # Extraction asks for broad coverage (at least 50 excerpts). A
+            # cross-encoder over that pool expands retrieval to 150 candidates
+            # and can occupy a CPU workstation for many minutes. Dense recall
+            # plus MMR already provides the broad evidence set these modes need.
+            search_kwargs["use_reranker"] = False
 
         # Step 1: Retrieve relevant chunks. General Knowledge bypasses this block.
         search_function = search_comprehensive if policy.comprehensive_retrieval else search_similar
         comprehensive_kwargs = {"search_function": search_similar} if policy.comprehensive_retrieval else {}
+        if policy.comprehensive_retrieval:
+            comprehensive_kwargs["cancellation_callback"] = cancellation_callback
         if mode == "expert_analysis":
             comprehensive_kwargs["analytical_facets"] = EXPERT_ANALYTICAL_QUERY_FACETS
         elif mode == "judge_analysis":
             comprehensive_kwargs["analytical_facets"] = JUDGE_ANALYTICAL_QUERY_FACETS
+        elif mode == "free_qa":
+            comprehensive_kwargs["analytical_facets"] = FREE_QA_QUERY_FACETS
         results = search_function(
             query=query,
             top_k=top_k,
@@ -1007,6 +1122,9 @@ def analyze(
             **search_kwargs,
         )
 
+        if cancellation_callback and cancellation_callback():
+            return
+
         if not results:
             yield "No relevant document excerpts found in the indexed corpus. "
             yield "Please ensure documents have been indexed using the 'Build Index' button."
@@ -1016,6 +1134,34 @@ def analyze(
             progress_callback(0.82, f"Preparing {len(results)} retrieved excerpts for analysis…")
     elif progress_callback:
         progress_callback(0.82, "Preparing general-knowledge conversation…")
+
+    # Create a deterministic task plan. This avoids a latency-costly planner LLM
+    # while giving broad/multipart Free Q&A enough room to finish.
+    quality_instructions = ""
+    if mode == "free_qa":
+        from rag.free_qa_quality import (
+            build_evidence_ledger,
+            build_quality_instructions,
+            classify_free_qa,
+            render_evidence_ledger,
+        )
+
+        free_qa_plan = classify_free_qa(query, results)
+        evidence_ledger = build_evidence_ledger(results)
+        quality_instructions = (
+            build_quality_instructions(free_qa_plan)
+            + "\n\n"
+            + render_evidence_ledger(evidence_ledger)
+        )
+        logger.info(
+            "free_qa_plan task=%s broad=%s multipart=%s evidence=%d dated=%d budget=%d",
+            free_qa_plan.task,
+            free_qa_plan.broad_scope,
+            free_qa_plan.multipart,
+            free_qa_plan.evidence_count,
+            free_qa_plan.dated_evidence_count,
+            free_qa_plan.requested_output_tokens,
+        )
 
     # Resolve the model used for analysis before calculating its prompt budget.
     resolved_model = model_name
@@ -1140,7 +1286,7 @@ def analyze(
 
     # Build prompt and check length
     context = format_context_for_llm(results) if policy.uses_retrieval else ""
-    messages = build_prompt(query, context, mode, chat_history)
+    messages = build_prompt(query, context, mode, chat_history, quality_instructions)
     estimated_total = estimate_tokens(messages)
 
     warning_msg = None
@@ -1153,7 +1299,9 @@ def analyze(
         truncated_results = list(results)
         while len(truncated_results) > 1:
             trial = truncated_results[:-1]
-            messages_trial = build_prompt(query, format_context_for_llm(trial), mode, chat_history)
+            messages_trial = build_prompt(
+                query, format_context_for_llm(trial), mode, chat_history, quality_instructions
+            )
             if estimate_tokens(messages_trial) <= max_prompt_tokens:
                 truncated_results = trial
                 break
@@ -1174,14 +1322,21 @@ def analyze(
     context = format_context_for_llm(results) if policy.uses_retrieval else ""
 
     # Step 3: Build prompt (using final resolved context)
-    messages = build_prompt(query, context, mode, chat_history)
+    messages = build_prompt(query, context, mode, chat_history, quality_instructions)
     final_prompt_tokens = estimate_tokens(messages)
     remaining_context = max_model_len - final_prompt_tokens - token_reserve
-    requested_generation_tokens = (
-        min(high_assurance_output_tokens, remaining_context)
-        if policy.high_assurance
-        else remaining_context if max_tokens is None else min(max_tokens, remaining_context)
-    )
+    if mode == "free_qa" and free_qa_plan is not None:
+        from rag.free_qa_quality import choose_generation_tokens
+
+        requested_generation_tokens = choose_generation_tokens(
+            free_qa_plan, remaining_context, max_tokens
+        )
+    else:
+        requested_generation_tokens = (
+            min(high_assurance_output_tokens, remaining_context)
+            if policy.high_assurance
+            else min(max_tokens if max_tokens is not None else 6144, remaining_context)
+        )
     if requested_generation_tokens < 1:
         raise ContextWindowError(
             "The analysis prompt leaves no context available for model generation"
@@ -1281,6 +1436,7 @@ def analyze(
         raw_stream = query_llm_streaming(
             messages, server_url, resolved_model, max_tokens=requested_generation_tokens,
             enable_thinking=policy.enable_thinking, reasoning_callback=reasoning_callback,
+            cancellation_callback=cancellation_callback,
         )
         if policy.uses_retrieval:
             yield from replace_source_tags_streaming(raw_stream, results)
@@ -1296,6 +1452,20 @@ def analyze(
             if policy.uses_retrieval
             else response_text
         )
+        if mode == "free_qa":
+            from rag.free_qa_quality import inspect_response
+
+            findings = inspect_response(response_text, len(results), results)
+            logger.info(
+                "free_qa_quality truncated=%s invalid_citations=%d false_complete=%s "
+                "unsupported_corpus=%s speculative_date_error=%s ungrounded_dates=%s",
+                findings.truncated,
+                len(findings.invalid_source_ids),
+                findings.claims_comprehensive_while_truncated,
+                findings.unsupported_corpus_characterization,
+                findings.speculative_date_error_claim,
+                ",".join(findings.ungrounded_dates),
+            )
         if warning_msg:
             yield warning_msg + processed_text
         else:

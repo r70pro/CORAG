@@ -46,6 +46,10 @@ def get_analysis_policy(mode: str) -> AnalysisPolicy:
         return AnalysisPolicy(normalized, True, False, False, 0, 0.0, False)
     if normalized in _EXTRACTION_MODES:
         return AnalysisPolicy(normalized, False, True, False, 50, 0.05, False)
+    if normalized == "free_qa":
+        # Interactive Q&A should be selective and fast. Deep, multi-facet
+        # reasoning remains available in the explicit expert modes.
+        return AnalysisPolicy(normalized, False, True, True, 16, 0.15, False)
     return AnalysisPolicy(
         normalized,
         True,

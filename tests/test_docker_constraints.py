@@ -32,25 +32,21 @@ def test_integration_compose_uses_only_disposable_storage():
 
 def test_production_compose_supervises_offline_vllm():
     compose = yaml.safe_load((REPO_ROOT / "docker-compose.production.yml").read_text())
-    for service_name in ("vllm", "vllm-analysis"):
-        vllm = compose["services"][service_name]
-        assert vllm["restart"] == "unless-stopped"
-        assert vllm["init"] is True
-        assert vllm["healthcheck"]["start_period"]
-        assert vllm["environment"]["HF_HUB_OFFLINE"] == "1"
-        assert vllm["environment"]["TRANSFORMERS_OFFLINE"] == "1"
-        assert str(vllm["volumes"][0]).endswith(":ro")
-        if service_name == "vllm":
-            assert "--revision" in vllm["command"]
-        assert vllm["logging"]["options"]["max-file"] == "5"
-
-    assert "8000" in str(compose["services"]["vllm"]["ports"])
-    assert "8002" in str(compose["services"]["vllm-analysis"]["ports"])
-    analysis_launcher = (REPO_ROOT / "scripts/vllm-analysis-entrypoint.sh").read_text()
-    assert "--language-model-only" in analysis_launcher
-    assert "--reasoning-parser qwen3" in analysis_launcher
-    assert "qwen/qwen3" in analysis_launcher
-    assert "google/gemma-4-31B-it" not in analysis_launcher
+    assert "vllm-analysis" not in compose["services"]
+    vllm = compose["services"]["vllm"]
+    assert vllm["container_name"] == "kirag_vllm"
+    assert vllm["restart"] == "unless-stopped"
+    assert vllm["init"] is True
+    assert vllm["healthcheck"]["start_period"]
+    assert vllm["environment"]["HF_HUB_OFFLINE"] == "1"
+    assert vllm["environment"]["TRANSFORMERS_OFFLINE"] == "1"
+    assert "KIRAG_VLLM_ROLE" in vllm["environment"]
+    assert "KIRAG_VLLM_MODEL" in vllm["environment"]
+    assert "KIRAG_VLLM_HOST_PORT" in str(vllm["ports"])
+    launcher = (REPO_ROOT / "scripts/vllm-entrypoint.sh").read_text()
+    assert "--language-model-only" in launcher
+    assert "--reasoning-parser qwen3" in launcher
+    assert "Invalid OCR model" in launcher
 
 
 def test_analysis_switcher_pins_both_verified_models():

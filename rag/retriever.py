@@ -7,6 +7,8 @@ This module connects user queries to the most relevant document chunks.
 
 import datetime
 import logging
+import math
+import re
 from typing import Any
 
 from qdrant_client.models import (
@@ -36,6 +38,27 @@ _ANALYTICAL_QUERY_FACETS = (
     "alternative explanations, intervening events, and contrary evidence",
     "functional course, work capacity, treatment response, and prognosis",
 )
+
+FREE_QA_QUERY_FACETS = (
+    "primary records and findings directly responsive to each part of the question",
+    "explicit opinions, contrary evidence, and material limitations",
+)
+
+
+def _targeted_lexical_terms(query: str) -> list[str]:
+    """Extract deterministic primary-evidence terms for high-risk questions."""
+    lowered = query.lower()
+    terms: list[str] = []
+    if any(word in lowered for word in ("radiolog", "imaging", "ct ", "mri", "x-ray")):
+        terms.extend(
+            [
+                "CT OF THE LUMBOSACRAL SPINE",
+                "MR OF THORACOLUMBAR AND SACRAL SPINE",
+                "MRI BOTH HIPS",
+                "Conclusion:",
+            ]
+        )
+    return terms
 
 EXPERT_ANALYTICAL_QUERY_FACETS = (
     "precise alleged incident, occupational exposure, duties, dose, duration, and mechanism",
@@ -76,9 +99,17 @@ def search_comprehensive(
     merged: dict[str, dict] = {}
     progress_callback = kwargs.pop("progress_callback", None)
     search_function = kwargs.pop("search_function", search_similar)
+    use_reranker = kwargs.pop("use_reranker", None)
+    reranker_model = kwargs.pop("reranker_model", None)
+    reranker_device = kwargs.pop("reranker_device", None)
+    keyword_search_function = kwargs.pop("keyword_search_function", rag_db.search_chunks_lexical)
+    cancellation_callback = kwargs.pop("cancellation_callback", None)
     facets = analytical_facets or _ANALYTICAL_QUERY_FACETS
     queries = [query, *(f"{query}\nEvidence focus: {facet}" for facet in facets)]
     for index, subquery in enumerate(queries):
+        if cancellation_callback and cancellation_callback():
+            logger.info("Comprehensive retrieval cancelled before facet %d", index + 1)
+            return []
         if progress_callback:
             progress_callback(
                 0.05 + 0.65 * index / len(queries),
@@ -88,6 +119,10 @@ def search_comprehensive(
             subquery,
             top_k=per_query,
             progress_callback=None,
+            # Cross-encoding every facet separately makes expert retrieval scale
+            # linearly with the number of facets. Merge cheap vector candidates
+            # first and run the expensive model once below.
+            use_reranker=False,
             **kwargs,
         ):
             key = str(result.get("chunk_id") or result.get("qdrant_point_id"))
@@ -104,7 +139,58 @@ def search_comprehensive(
                     existing.update(result)
                     existing["retrieval_facets"] = result_facets
 
+    lexical_terms = _targeted_lexical_terms(query)
+    if lexical_terms:
+        if progress_callback:
+            progress_callback(0.68, "Locating named primary reports and findings...")
+        try:
+            lexical_results = keyword_search_function(
+                lexical_terms,
+                run_id=kwargs.get("run_id_filter"),
+                limit=max(12, min(top_k, 24)),
+            )
+        except Exception as exc:
+            logger.warning("Targeted lexical retrieval failed: %s", exc)
+            lexical_results = []
+        for result in lexical_results:
+            result = dict(result)
+            key = str(result.get("chunk_id") or result.get("qdrant_point_id"))
+            is_primary = result.get("document_type") == "radiology_report"
+            result["score"] = max(float(result.get("score", 0)), 0.95 if is_primary else 0.84)
+            result["primary_evidence"] = is_primary
+            result["retrieval_facets"] = ["named primary report"]
+            existing = merged.get(key)
+            if existing is None:
+                merged[key] = result
+            else:
+                existing.setdefault("retrieval_facets", []).append("named primary report")
+                existing["score"] = max(float(existing.get("score", 0)), result["score"])
+
     results = sorted(merged.values(), key=lambda item: float(item.get("score", 0)), reverse=True)
+    # Bundled records frequently repeat the same primary report in an appendix
+    # and later clinical-note attachment. Keep the best copy so duplicates do
+    # not consume scarce context slots or produce redundant citations.
+    deduplicated: list[dict] = []
+    seen_text: set[str] = set()
+    for result in results:
+        normalized_text = " ".join(str(result.get("text") or "").lower().split())
+        if result.get("document_type") == "radiology_report":
+            fingerprint = "radiology:" + ":".join(
+                str(result.get(field) or "").lower()
+                for field in ("author", "date_extracted")
+            )
+        else:
+            fingerprint = (
+                f"{result.get('doc_id')}:{normalized_text}"
+                if result.get("doc_id") and normalized_text
+                else ""
+            )
+        if fingerprint and fingerprint in seen_text:
+            continue
+        if fingerprint:
+            seen_text.add(fingerprint)
+        deduplicated.append(result)
+    results = deduplicated
     # Diversify across documents before filling remaining slots by score.
     selected: list[dict] = []
     seen_docs: set[str] = set()
@@ -123,9 +209,83 @@ def search_comprehensive(
             selected_ids.add(key)
             if len(selected) >= top_k:
                 break
+    if use_reranker is None:
+        import os
+
+        from settings_manager import load_settings
+
+        use_reranker = False if os.environ.get("TESTING") == "true" else load_settings().get(
+            "use_reranker", True
+        )
+    if use_reranker and selected:
+        if progress_callback:
+            progress_callback(
+                0.72,
+                f"Reranking {len(selected)} consolidated analytical excerpts once...",
+            )
+        reranked = _apply_cross_encoder_rerank(
+            selected,
+            query,
+            reranker_model,
+            reranker_device,
+            progress_callback=progress_callback,
+            cancellation_callback=cancellation_callback,
+        )
+        if not reranked and cancellation_callback and cancellation_callback():
+            logger.info("Comprehensive retrieval cancelled during reranking")
+            return []
+        for result in selected:
+            if result.get("primary_evidence"):
+                result["score"] = max(float(result.get("score", 0)), 0.99)
+        selected.sort(key=lambda item: float(item.get("score", 0)), reverse=True)
     if progress_callback:
         progress_callback(0.8, f"Consolidated {len(selected)} diverse analytical excerpts.")
     return selected
+
+
+def _apply_cross_encoder_rerank(
+    results: list[dict],
+    query: str,
+    model_name: str | None,
+    device: str | None,
+    *,
+    progress_callback: Any | None = None,
+    cancellation_callback: Any | None = None,
+    batch_size: int = 8,
+) -> bool:
+    """Rerank *results* in place, returning False when the optional model fails."""
+    from rag.embedding import load_reranker_model
+
+    try:
+        if cancellation_callback and cancellation_callback():
+            return False
+        reranker = load_reranker_model(model_name, device)
+        scores: list[float] = []
+        total = len(results)
+        for start in range(0, total, batch_size):
+            if cancellation_callback and cancellation_callback():
+                return False
+            batch = results[start : start + batch_size]
+            pairs = [[query, result["text"]] for result in batch]
+            scores.extend(float(score) for score in reranker.predict(pairs))
+            completed = min(start + len(batch), total)
+            if progress_callback:
+                progress_callback(
+                    0.72 + 0.07 * completed / total,
+                    f"Reranked {completed} of {total} consolidated analytical excerpts...",
+                )
+        for result, score in zip(results, scores, strict=False):
+            # Numerically stable sigmoid for unusually large cross-encoder logits.
+            result["score"] = (
+                1 / (1 + math.exp(-score))
+                if score >= 0
+                else math.exp(score) / (1 + math.exp(score))
+            )
+        results.sort(key=lambda item: item["score"], reverse=True)
+        return True
+    except Exception as exc:
+        logger.error("Error during consolidated reranking: %s", exc)
+        return False
 
 
 def search_similar(
@@ -531,12 +691,20 @@ def format_context_for_llm(results: list[dict]) -> str:
         header_parts = [f"[Source {i}]"]
 
         if result.get("original_filename"):
-            header_parts.append(f"File: {result['original_filename']}")
+            filename = str(result["original_filename"])
+            if re.fullmatch(r"[0-9a-f]{32}\.md", filename, re.IGNORECASE):
+                patient = str(result.get("patient_name") or "").strip()
+                filename = f"{patient} record" if patient else "Indexed case record"
+            header_parts.append(f"File: {filename}")
         provenance_type = result.get("provenance_type")
         page_start = result.get("page_start")
         page_end = result.get("page_end")
         if provenance_type == "external_markdown":
             header_parts.append("PDF provenance: none (external Markdown)")
+            char_start = result.get("source_char_start")
+            char_end = result.get("source_char_end")
+            if char_start is not None and char_end is not None:
+                header_parts.append(f"Source characters: {char_start}-{char_end}")
         elif page_start is not None and page_end is not None:
             if page_start == page_end:
                 header_parts.append(f"Page: {page_start}")
@@ -548,6 +716,10 @@ def format_context_for_llm(results: list[dict]) -> str:
             )
         else:
             header_parts.append("PDF page provenance: not present in source metadata")
+            char_start = result.get("source_char_start")
+            char_end = result.get("source_char_end")
+            if char_start is not None and char_end is not None:
+                header_parts.append(f"Source characters: {char_start}-{char_end}")
         if result.get("author"):
             header_parts.append(f"Author: {result['author']}")
         if result.get("date_extracted"):

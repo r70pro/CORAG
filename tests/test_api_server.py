@@ -83,8 +83,9 @@ class TestAPIServer(unittest.TestCase):
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.json()["error"]["code"], "internal_error")
 
+    @patch("vllm_lifecycle.read_state", return_value={"state": "ready", "active_role": "analysis"})
     @patch("rag.analyzer.analyze")
-    def test_chat_endpoint(self, mock_analyze):
+    def test_chat_endpoint(self, mock_analyze, _state):
 
         mock_analyze.return_value = ["Hello ", "world"]
 

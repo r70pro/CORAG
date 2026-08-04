@@ -18,9 +18,60 @@ from api.models import (
     DockerStatusResponse,
     MessageResponse,
     StartupModeRequest,
+    VllmSwitchRequest,
 )
 
 router = APIRouter()
+
+
+@router.get("/vllm/status", response_model=dict, summary="Single inference-slot status")
+def get_vllm_status():
+    from vllm_lifecycle import status
+
+    return status()
+
+
+@router.post(
+    "/vllm/switch", response_model=dict, status_code=202,
+    dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
+    summary="Switch the exclusive vLLM inference slot",
+)
+async def switch_vllm_slot(req: VllmSwitchRequest):
+    from settings_manager import load_settings, save_settings
+    from vllm_lifecycle import switch_vllm
+
+    settings = load_settings()
+    model = req.model or settings.get("analysis_model_name") if req.role == "analysis" else None
+    try:
+        operation = await asyncio.to_thread(switch_vllm, req.role, model)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    settings["startup_mode"] = req.role
+    if req.role == "analysis" and model:
+        settings["analysis_model_name"] = model
+    save_settings(settings)
+    return operation
+
+
+@router.post(
+    "/vllm/stop", response_model=MessageResponse,
+    dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
+)
+async def stop_vllm_slot():
+    from settings_manager import load_settings, save_settings
+    from vllm_lifecycle import stop_vllm
+    try:
+        await asyncio.to_thread(stop_vllm)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    settings = load_settings()
+    settings["startup_mode"] = "stopped"
+    save_settings(settings)
+    return MessageResponse(success=True, message="Inference slot stopped")
 
 
 @router.get("/analysis/profiles", response_model=dict, summary="Verified analysis profiles")
@@ -70,20 +121,11 @@ def get_analysis_switch_operation(operation_id: str):
     dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
 )
 async def set_analysis_context_mode(req: AnalysisContextModeRequest):
-    """Use the OCR model's GPU allocation for a 262K analysis context, or restore it."""
-    from analysis_profiles import switch_in_progress
-    from docker_manager import set_extended_analysis_context
-    if switch_in_progress():
-        raise HTTPException(status_code=409, detail="Analysis model switch is in progress")
-
-    success, msg = await asyncio.to_thread(set_extended_analysis_context, req.extended)
-    if not success:
-        raise HTTPException(status_code=503, detail=msg)
-    from settings_manager import load_settings, save_settings
-    settings = load_settings()
-    settings["startup_mode"] = "analysis_262k" if req.extended else "dual_32k"
-    save_settings(settings)
-    return MessageResponse(success=True, message=msg)
+    """Reject the retired shared-GPU mode with an actionable response."""
+    raise HTTPException(
+        status_code=410,
+        detail="Context mode was retired; switch the exclusive slot to OCR or analysis.",
+    )
 
 
 @router.post(
@@ -94,23 +136,22 @@ async def set_analysis_context_mode(req: AnalysisContextModeRequest):
 )
 async def set_startup_mode(req: StartupModeRequest):
     """Apply a workflow-oriented model profile and restore it next launch."""
-    from analysis_profiles import switch_in_progress
-    from docker_manager import set_extended_analysis_context, set_vllm_role_running
-    if switch_in_progress():
-        raise HTTPException(status_code=409, detail="Analysis model switch is in progress")
     from settings_manager import load_settings, save_settings
-
-    if req.mode == "analysis_262k":
-        success, msg = await asyncio.to_thread(set_extended_analysis_context, True)
-    elif req.mode == "dual_32k":
-        success, msg = await asyncio.to_thread(set_extended_analysis_context, False)
-    else:
-        analysis_ok, analysis_msg = await asyncio.to_thread(set_vllm_role_running, "analysis", False)
-        ocr_ok, ocr_msg = await asyncio.to_thread(set_vllm_role_running, "ocr", True)
-        success, msg = analysis_ok and ocr_ok, f"{analysis_msg} {ocr_msg}"
-    if not success:
-        raise HTTPException(status_code=503, detail=msg)
+    from vllm_lifecycle import stop_vllm, switch_vllm
     settings = load_settings()
+
+    try:
+        if req.mode == "stopped":
+            await asyncio.to_thread(stop_vllm)
+            msg = "Inference slot stopped."
+        else:
+            model = settings.get("analysis_model_name") if req.mode == "analysis" else None
+            await asyncio.to_thread(switch_vllm, req.mode, model)
+            msg = f"{req.mode.upper()} inference is ready."
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     settings["startup_mode"] = req.mode
     save_settings(settings)
     return MessageResponse(success=True, message=f"Operating mode saved. {msg}")
@@ -128,16 +169,13 @@ def get_models():
 @router.get("/status", response_model=DockerStatusResponse, summary="Get container status")
 def get_status(role: str = Query("ocr", pattern="^(ocr|analysis)$")):
     """Return the current vLLM inference container status."""
-    from docker_manager import get_docker_status_str
-    from settings_manager import load_settings
-
-    settings = load_settings()
-    is_analysis = role == "analysis"
-    port = 8002 if is_analysis else settings.get("docker_port", 8000)
-    container = "kirag_vllm_analysis" if is_analysis else "olmocr"
-    status_text, badge_html = get_docker_status_str(port, container)
+    from vllm_lifecycle import status as slot_status
+    slot = slot_status()
+    available = bool(slot.get(role, {}).get("available"))
+    status_text = f"{role.upper()} is {'ready' if available else 'inactive'}; active role: {slot.get('active_role', 'stopped')}"
+    badge_html = "<span class='badge-success'>Inference Server: Ready</span>" if available else "<span class='badge-stopped'>Role: Inactive</span>"
     # Derive a machine-readable status from the badge
-    status = "unknown"
+    status = "ready" if available else "stopped"
     if "Ready" in badge_html or "badge-success" in badge_html:
         status = "ready"
     elif "Foreign Container" in badge_html:
@@ -161,7 +199,7 @@ def get_logs(
     """Return stdout/stderr logs from the vLLM container."""
     from docker_manager import get_docker_logs, get_docker_status
 
-    container = "kirag_vllm_analysis" if role == "analysis" else "olmocr"
+    container = "kirag_vllm"
     logs = get_docker_logs(tail=tail, container_name=container)
     status = get_docker_status(container)
     return DockerLogsResponse(logs=logs, container_status=status)
@@ -174,13 +212,20 @@ def get_logs(
     dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
 )
 async def start_container():
-    """Start the existing vLLM inference container."""
-    from docker_manager import start_docker_container
-
-    success, msg = await asyncio.to_thread(start_docker_container)
-    if not success:
-        raise HTTPException(status_code=503, detail=msg or "Unable to start container")
-    return MessageResponse(success=success, message=msg)
+    """Restore the persisted role in the exclusive inference slot."""
+    from settings_manager import load_settings
+    from vllm_lifecycle import switch_vllm
+    settings = load_settings()
+    role = settings.get("startup_mode", "analysis")
+    role = {"analysis_262k": "analysis", "ocr_only": "ocr"}.get(role, role)
+    if role not in {"ocr", "analysis"}:
+        raise HTTPException(status_code=409, detail="No inference role is selected")
+    model = settings.get("analysis_model_name") if role == "analysis" else None
+    try:
+        await asyncio.to_thread(switch_vllm, role, model)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return MessageResponse(success=True, message=f"{role.upper()} inference is ready")
 
 
 @router.post(
@@ -224,13 +269,8 @@ async def stop_role_container(role: str):
     dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
 )
 async def stop_container():
-    """Stop the running vLLM inference container."""
-    from docker_manager import stop_docker_container
-
-    success, msg = await asyncio.to_thread(stop_docker_container)
-    if not success:
-        raise HTTPException(status_code=500, detail=msg or "Unable to stop container")
-    return MessageResponse(success=success, message=msg)
+    """Stop the exclusive inference slot after active work drains."""
+    return await stop_vllm_slot()
 
 
 @router.post(
@@ -240,70 +280,25 @@ async def stop_container():
     dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
 )
 async def create_container(req: DockerCreateRequest):
-    """Create or recreate the vLLM inference container with the given parameters."""
-    import os
-
-    from docker_manager import create_docker_container
+    """Compatibility endpoint that now performs a guarded OCR-role switch."""
     from settings_manager import load_settings, save_settings
+    from vllm_lifecycle import switch_vllm
+    from vllm_profiles import OCR_MODEL
 
-    # Keep environment-only credentials in memory. Model recreation must not
-    # copy HF_TOKEN into the tracked settings file unless the request explicitly
-    # asks to save a token.
-    settings = load_settings(include_env_secrets=False)
-    model = req.model
-    if not model or model == "model":
-        model = settings.get("model_name", "allenai/olmOCR-2-7B-1025-FP8")
-        if not model or model == "model":
-            model = "allenai/olmOCR-2-7B-1025-FP8"
-    if model != "allenai/olmOCR-2-7B-1025-FP8":
+    if req.model != OCR_MODEL or req.port != 8000:
         raise HTTPException(
             status_code=422,
-            detail="The production OCR endpoint only accepts allenai/olmOCR-2-7B-1025-FP8; use /analysis/switch for analysis models",
+            detail="The create endpoint is restricted to the pinned OCR profile on port 8000",
         )
 
-    explicit_hf_token = req.hf_token if req.hf_token and req.hf_token != "********" else ""
-    hf_token = explicit_hf_token or settings.get("hf_token", "") or os.environ.get("HF_TOKEN", "")
-
-    port = req.port if req.port else settings.get("docker_port", 8000)
-    gpu_mem = req.gpu_mem if req.gpu_mem else settings.get("docker_gpu_mem", 0.8)
-    max_model_len = (
-        req.max_model_len if req.max_model_len else settings.get("docker_max_model_len", 15360)
-    )
-    tensor_parallel_size = (
-        req.tensor_parallel_size
-        if req.tensor_parallel_size
-        else settings.get("docker_tensor_parallel", 1)
-    )
-
-    success, msg = await asyncio.to_thread(
-        create_docker_container, hf_token, port, model, gpu_mem, max_model_len, tensor_parallel_size
-    )
-
-    # Invalidate stale model resolution cache after container recreation
+    settings = load_settings(include_env_secrets=False)
     try:
-        from rag.analyzer import invalidate_model_cache
-
-        invalidate_model_cache()
-    except Exception:
-        pass
-
-    # Persist the new settings
-    if success:
-        server_url = f"http://localhost:{port}/v1"
-        new_settings = {
-            "docker_port": port,
-            "docker_gpu_mem": gpu_mem,
-            "docker_max_model_len": max_model_len,
-            "docker_tensor_parallel": tensor_parallel_size,
-        }
-        new_settings.update({"model_name": model, "server_url": server_url})
-        if explicit_hf_token:
-            new_settings["hf_token"] = explicit_hf_token
-        settings.update(new_settings)
-        save_settings(settings)
-    else:
-        raise HTTPException(status_code=503, detail=msg or "Unable to create container")
-    return MessageResponse(success=success, message=msg)
+        await asyncio.to_thread(switch_vllm, "ocr")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    settings.update({"startup_mode": "ocr", "model_name": OCR_MODEL, "server_url": "http://127.0.0.1:8000/v1"})
+    save_settings(settings)
+    return MessageResponse(success=True, message="OCR inference is ready in the exclusive slot")
 
 
 @router.post(
@@ -313,10 +308,5 @@ async def create_container(req: DockerCreateRequest):
     dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
 )
 async def shutdown_container():
-    """Stop and remove the vLLM inference container."""
-    from docker_manager import shutdown_docker_container
-
-    success, msg = await asyncio.to_thread(shutdown_docker_container)
-    if not success:
-        raise HTTPException(status_code=500, detail=msg or "Unable to remove container")
-    return MessageResponse(success=success, message=msg)
+    """Stop and remove the exclusive vLLM inference slot."""
+    return await stop_vllm_slot()

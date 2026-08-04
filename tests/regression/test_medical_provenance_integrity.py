@@ -8,6 +8,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from rag.analyzer import replace_source_tags_in_string
+from datetime import date
+
 from rag.chunker import _parse_date, chunk_document, chunk_documents_from_run
 from rag.metadata_helper import get_case_timeline
 from rag.metadata_helper import _build_metadata
@@ -202,7 +204,7 @@ def test_citations_use_exact_ranges_and_mark_external_markdown():
             "provenance_type": "original_pdf",
             "document_type": "specialist_letter",
             "author": None,
-            "date_extracted": "2024-02-29",
+            "date_extracted": date(2024, 2, 29),
             "text": "Accession Number: IMG-77",
         },
         {
@@ -213,6 +215,8 @@ def test_citations_use_exact_ranges_and_mark_external_markdown():
             "document_type": None,
             "author": None,
             "date_extracted": None,
+            "source_char_start": 100,
+            "source_char_end": 220,
             "text": "External note.",
         },
     ]
@@ -223,8 +227,10 @@ def test_citations_use_exact_ranges_and_mark_external_markdown():
     assert "Accession Number: IMG-77" in citation
     assert "note.md" in citation
     assert "external Markdown; no original-PDF page provenance" in citation
+    assert "source characters 100-220" in citation
     assert "p. 1" not in citation
 
     context = format_context_for_llm(results)
     assert "Pages: 7-8" in context
     assert "PDF provenance: none (external Markdown)" in context
+    assert "Source characters: 100-220" in context

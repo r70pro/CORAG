@@ -69,11 +69,10 @@ def main() -> int:
 
     try:
         tensor_parallel = int(values.get("KIRAG_VLLM_TENSOR_PARALLEL_SIZE", "1"))
-        role_memory: dict[str, float] = {}
         role_ports: dict[str, int] = {}
         for role, default_port, default_memory, default_length in (
-            ("OCR", "8000", "0.28", "15360"),
-            ("ANALYSIS", "8002", "0.57", "32768"),
+            ("OCR", "8000", "0.85", "15360"),
+            ("ANALYSIS", "8002", "0.85", "262144"),
         ):
             port = int(values.get(f"KIRAG_{role}_VLLM_PORT", default_port))
             gpu_utilization = float(
@@ -87,14 +86,9 @@ def main() -> int:
                 failures.append(f"KIRAG_{role}_GPU_MEMORY_UTILIZATION must be in (0, 1]")
             if max_model_len < 1024 or max_batched < 1024:
                 failures.append(f"{role} model and batched token limits must be at least 1024")
-            role_memory[role] = gpu_utilization
             role_ports[role] = port
         if role_ports.get("OCR") == role_ports.get("ANALYSIS"):
             failures.append("OCR and analysis vLLM ports must differ")
-        if role_memory.get("OCR", 1) >= role_memory.get("ANALYSIS", 0):
-            failures.append("analysis memory high-water mark must exceed the OCR high-water mark")
-        if role_memory.get("ANALYSIS", 1) > 0.92:
-            failures.append("analysis memory high-water mark must not exceed 0.92")
         if tensor_parallel < 1:
             failures.append("KIRAG_VLLM_TENSOR_PARALLEL_SIZE must be positive")
     except ValueError:

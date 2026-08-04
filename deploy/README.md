@@ -86,10 +86,10 @@ kirag-infrastructure -> kirag-api -> kirag-frontend
 
 Infrastructure uses `docker-compose.rag.yml` plus
 `docker-compose.production.yml`. Compose waits for PostgreSQL, Redis, MinIO,
-Qdrant, dedicated OCR vLLM on port 8000, and dedicated analysis vLLM on port
-8002. OCR is health-gated before analysis starts because shared-memory vLLM
-initialization must be sequential. Keeping both immutable models resident removes model-replacement downtime
-from normal OCR and analysis work. Systemd then initializes schemas/buckets/vector
+Qdrant and one exclusive `kirag_vllm` inference slot. OCR publishes port 8000;
+analysis publishes port 8002; only the active role's port is open. Guarded
+switching drains active work and verifies the target model before activation.
+Systemd then initializes schemas/buckets/vector
 collections idempotently. API and frontend failures restart with a bounded
 systemd start limit. An explicit service stop does not become a restart loop.
 
@@ -99,8 +99,7 @@ systemd start limit. An explicit service stop does not become a restart loop.
 systemctl status kirag-infrastructure kirag-api kirag-frontend
 curl --fail http://127.0.0.1:8001/livez
 curl --fail http://127.0.0.1:8001/readyz
-curl --fail http://127.0.0.1:8000/v1/models
-curl --fail http://127.0.0.1:8002/v1/models
+curl --fail http://127.0.0.1:8001/inference/ready
 journalctl -u kirag-api -u kirag-frontend --since today
 docker compose -f docker-compose.rag.yml -f docker-compose.production.yml ps
 ```

@@ -457,11 +457,12 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
 
     if req.stream:
 
-        def event_generator():
+        def _unleased_event_generator():
             # The analyzer and local model are synchronous. Run them in a worker so
             # progress can be delivered immediately and keep-alives can cross every
             # proxy while a non-streaming model call is in progress.
             events: queue.Queue[tuple[str, object]] = queue.Queue()
+            cancelled = threading.Event()
 
             def report_progress(progress: float, message: str):
                 normalized_message = message.lower()
@@ -501,6 +502,8 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
                         stream=True,
                         progress_callback=report_progress,
                         reasoning_callback=report_reasoning,
+                        cancellation_callback=cancelled.is_set,
+                        chronology_detail=req.chronology_detail,
                         use_reranker=req.use_reranker,
                         reranker_model=req.reranker_model,
                         reranker_device=req.reranker_device,
@@ -547,35 +550,50 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
             )
             yield f"data: {json.dumps({'type': 'status', 'stage': 'starting', 'message': starting_message, 'progress': 0.0})}\n\n"
 
-            while True:
-                try:
-                    event_type, payload = events.get(timeout=10.0)
-                except queue.Empty:
-                    # SSE comments are ignored by clients but prevent idle proxy and
-                    # browser connections from being dropped during long inference.
-                    yield ": keep-alive\n\n"
-                    continue
+            try:
+                while True:
+                    try:
+                        event_type, payload = events.get(timeout=10.0)
+                    except queue.Empty:
+                        # SSE comments are ignored by clients but prevent idle proxy and
+                        # browser connections from being dropped during long inference.
+                        yield ": keep-alive\n\n"
+                        continue
 
-                if event_type == "status":
-                    status = payload
-                    yield f"data: {json.dumps({'type': 'status', **status})}\n\n"
-                elif event_type == "content":
-                    yield f"data: {json.dumps({'type': 'content', 'chunk': payload})}\n\n"
-                elif event_type == "reasoning":
-                    yield f"data: {json.dumps({'type': 'reasoning', 'chunk': payload})}\n\n"
-                elif event_type == "done":
-                    yield f"data: {json.dumps({'type': 'status', 'stage': 'complete', 'message': 'Analysis complete.', 'progress': 1.0})}\n\n"
-                    yield "data: [DONE]\n\n"
-                    break
-                elif event_type == "error":
-                    exc = payload
-                    if isinstance(exc, ContextWindowError):
-                        envelope = error_envelope("context_window_exceeded", str(exc))
-                    else:
-                        logger.error("Streaming RAG query failed", exc_info=(type(exc), exc, exc.__traceback__))
-                        envelope = error_envelope("rag_query_failed", "RAG query failed")
-                    yield f"data: {envelope.model_dump_json(exclude_none=True)}\n\n"
-                    break
+                    if event_type == "status":
+                        status = payload
+                        yield f"data: {json.dumps({'type': 'status', **status})}\n\n"
+                    elif event_type == "content":
+                        yield f"data: {json.dumps({'type': 'content', 'chunk': payload})}\n\n"
+                    elif event_type == "reasoning":
+                        yield f"data: {json.dumps({'type': 'reasoning', 'chunk': payload})}\n\n"
+                    elif event_type == "done":
+                        yield f"data: {json.dumps({'type': 'status', 'stage': 'complete', 'message': 'Analysis complete.', 'progress': 1.0})}\n\n"
+                        yield "data: [DONE]\n\n"
+                        break
+                    elif event_type == "error":
+                        exc = payload
+                        if isinstance(exc, ContextWindowError):
+                            envelope = error_envelope("context_window_exceeded", str(exc))
+                        else:
+                            logger.error("Streaming RAG query failed", exc_info=(type(exc), exc, exc.__traceback__))
+                            envelope = error_envelope("rag_query_failed", "RAG query failed")
+                        yield f"data: {envelope.model_dump_json(exclude_none=True)}\n\n"
+                        break
+            finally:
+                # Closing the browser stream must stop its worker at the next
+                # retrieval/generation boundary; otherwise each retry leaves a
+                # full analysis consuming CPU/GPU behind the new request.
+                cancelled.set()
+
+        def event_generator():
+            from vllm_lifecycle import inference_lease
+
+            try:
+                with inference_lease("analysis"):
+                    yield from _unleased_event_generator()
+            except RuntimeError as exc:
+                yield f"data: {error_envelope('analysis_role_unavailable', str(exc)).model_dump_json(exclude_none=True)}\n\n"
 
         return StreamingResponse(
             event_generator(),
@@ -591,7 +609,9 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
             if expose_reasoning:
                 full_reasoning += chunk
         try:
-            for chunk in analyze(
+            from vllm_lifecycle import inference_lease
+            with inference_lease("analysis"):
+                chunks = analyze(
                 query=req.query,
                 mode=mode_key,
                 server_url=req.model_url,
@@ -606,10 +626,12 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
                 stream=False,
                 use_reranker=req.use_reranker,
                 reasoning_callback=collect_reasoning,
+                chronology_detail=req.chronology_detail,
                 reranker_model=req.reranker_model,
                 reranker_device=req.reranker_device,
-            ):
-                full_response += chunk
+                )
+                for chunk in chunks:
+                    full_response += chunk
         except ContextWindowError as exc:
             raise HTTPException(
                 status_code=422,
