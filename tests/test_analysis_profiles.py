@@ -1,8 +1,14 @@
 import json
-from pathlib import Path
 from unittest.mock import patch
 
 import analysis_profiles
+
+
+def test_qwen36_profile_preserves_native_context_window():
+    assert (
+        analysis_profiles.ANALYSIS_PROFILES["Qwen/Qwen3.6-35B-A3B"]["context_length"]
+        == 262_144
+    )
 
 
 def _temporary_runtime(tmp_path, monkeypatch):

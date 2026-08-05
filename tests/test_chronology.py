@@ -9,6 +9,7 @@ from rag.chronology import (
     ChronologyAudit,
     ChronologyEvent,
     _batch_checkpoint_path,
+    _ultra_fast_events,
     build_batches,
     deduplicate_events,
     display_date,
@@ -16,10 +17,11 @@ from rag.chronology import (
     normalize_event_date,
     parse_batch_response,
     render_chronology,
+    segment_chronology_units,
 )
 
 
-def source(chunk_id="c1", doc_id="d1", text="14 February 2022 consultation with sudden sharp stabbing pain"):
+def source(chunk_id="c1", doc_id="d1", text="14 February 2022 consultation with sudden sharp stabbing pain; acute low-back injury; Ibuprofen prescribed"):
     return {
         "chunk_id": chunk_id,
         "doc_id": doc_id,
@@ -86,6 +88,62 @@ def test_parse_rejects_invented_source_quote():
     assert rejected == 1
 
 
+def test_parse_rejects_clinical_duration_misread_as_1952_date():
+    events, rejected = parse_batch_response(
+        json.dumps({"events": [event_mapping(
+            event_date="1952-02-01",
+            date_original="1-2/52",
+            source_quote="review in 1-2/52",
+        )]}),
+        [source(text="Symptoms stable; review in 1-2/52.")],
+    )
+
+    assert events == []
+    assert rejected == 1
+
+
+def test_parse_rejects_dob_as_chronology_event_date():
+    events, rejected = parse_batch_response(
+        json.dumps({"events": [event_mapping(date_role="date_of_birth")]}),
+        [source()],
+    )
+
+    assert events == []
+    assert rejected == 1
+
+
+def test_parse_rejects_date_not_present_in_cited_source():
+    events, rejected = parse_batch_response(
+        json.dumps({"events": [event_mapping()], "complete": True}),
+        [source(text="sudden sharp stabbing pain")],
+    )
+
+    assert events == []
+    assert rejected == 1
+
+
+def test_parse_removes_provider_not_grounded_in_source_or_metadata():
+    events, rejected = parse_batch_response(
+        json.dumps({"events": [event_mapping(provider="Dr Invented")]}),
+        [source()],
+    )
+
+    assert rejected == 0
+    assert events[0].provider == MISSING
+    assert any("provider not grounded" in warning for warning in events[0].warnings)
+
+
+def test_parse_removes_descriptive_claim_not_grounded_in_source():
+    events, rejected = parse_batch_response(
+        json.dumps({"events": [event_mapping(diagnosis="Metastatic cancer")]}),
+        [source()],
+    )
+
+    assert rejected == 0
+    assert events[0].diagnosis == MISSING
+    assert any("diagnosis not grounded" in warning for warning in events[0].warnings)
+
+
 def test_parse_rejects_placeholder_leak_and_non_contiguous_multi_source_quote():
     batch = [source("c1"), source("c2", text="a second documented passage")]
     payload = {"events": [
@@ -147,11 +205,11 @@ def test_render_has_required_columns_sorted_dates_and_completeness_statement():
 @patch("rag.chronology.rag_db.get_chunks_for_run")
 def test_complete_pipeline_accounts_for_every_chunk_and_reports_failed_batches(mock_chunks, _documents):
     mock_chunks.return_value = [
-        source("c1", text="sudden sharp stabbing pain " + "A" * 30_000),
+        source("c1", text="14 February 2022 sudden sharp stabbing pain " + "A" * 30_000),
         source("c2", text="B" * 30_000),
     ]
     responses = iter([
-        json.dumps({"events": [event_mapping()]}),
+        json.dumps({"events": [event_mapping()], "complete": True}),
         "not json",
         "still not json",
     ])
@@ -165,7 +223,8 @@ def test_complete_pipeline_accounts_for_every_chunk_and_reports_failed_batches(m
 
     # Force one source per batch for this test without coupling production's
     # batch size to the fixture.
-    assert "Source chunks audited: **2/2**" in result
+    assert "Source chunks successfully processed: **1/2**" in result
+    assert "INCOMPLETE CHRONOLOGY" in result
     assert "14/02/2022" in result
     assert "Failed extraction batches: **1**" in result
     assert progress[0][1].startswith("Enumerated 2 documents")
@@ -179,9 +238,7 @@ def test_valid_batches_resume_from_private_checkpoint(mock_chunks, _documents, t
 
     def llm(_messages):
         calls.append(True)
-        payload = {"events": [event_mapping()]}
-        if len(calls) == 2:
-            payload["complete"] = True
+        payload = {"events": [event_mapping()], "complete": True}
         return json.dumps(payload)
 
     first = generate_comprehensive_chronology("case-1", llm, checkpoint_dir=tmp_path)
@@ -196,12 +253,11 @@ def test_valid_batches_resume_from_private_checkpoint(mock_chunks, _documents, t
 @patch("rag.chronology.rag_db.get_documents_for_run", return_value=[{"doc_id": "d1"}])
 @patch("rag.chronology.rag_db.get_chunks_for_run")
 def test_truncated_dense_batch_is_adaptively_split(mock_chunks, _documents):
-    mock_chunks.return_value = [source("c1"), source("c2", text="sudden sharp stabbing pain second record")]
+    mock_chunks.return_value = [source("c1"), source("c2", text="14 February 2022 sudden sharp stabbing pain second record")]
     responses = iter([
-        "truncated",
-        "still truncated",
-        json.dumps({"events": [event_mapping()]}),
-        json.dumps({"events": [event_mapping()]}),
+        "⚠️ Incomplete response",
+        json.dumps({"events": [event_mapping()], "complete": True}),
+        json.dumps({"events": [event_mapping()], "complete": True}),
     ])
     progress = []
 
@@ -258,19 +314,33 @@ def test_ultra_fast_scans_all_chunks_and_semantically_filters_candidates(mock_ch
     assert "14/02/2022" in result
     assert "04/03/2022" in result
     assert "07/2023 [Date Incomplete]" in result
-    assert "Source chunks completed: **3/3**" in result
+    assert "Source chunks successfully processed: **3/3**" in result
     assert "bounded semantic filtering" in result.lower()
     assert len(calls) == 1
+
+
+def test_ultra_fast_keeps_multiple_historical_dates_clause_local():
+    events, rejected, completed = _ultra_fast_events([
+        source(text="2004 - Plastic surgery to my hand (skin graft); 2000? - Fibroadenomas at both breasts.")
+    ])
+
+    assert rejected == 0
+    assert completed == 1
+    by_date = {event.event_date: event for event in events}
+    assert "Plastic surgery" in by_date["2004"].source_quote
+    assert "Plastic surgery" not in by_date["2000"].source_quote
+    assert "Fibroadenomas" in by_date["2000"].source_quote
+    assert by_date["2000"].event_type != "Procedure/treatment"
 
 
 @patch("rag.chronology.rag_db.get_documents_for_run", return_value=[{"doc_id": "d1"}])
 @patch("rag.chronology.rag_db.get_chunks_for_run")
 def test_recursive_splitting_continues_beyond_one_level(mock_chunks, _documents):
     mock_chunks.return_value = [
-        source(f"c{index}", text=f"sudden sharp stabbing pain source {index}")
+        source(f"c{index}", text=f"14 February 2022 sudden sharp stabbing pain source {index}")
         for index in range(4)
     ]
-    valid = json.dumps({"events": [event_mapping()]})
+    valid = json.dumps({"events": [event_mapping()], "complete": True})
     responses = iter([
         "⚠️ Incomplete response",
         "⚠️ Incomplete response",
@@ -293,9 +363,7 @@ def test_fast_and_thorough_checkpoints_are_isolated(mock_chunks, _documents, tmp
 
     def llm(_messages):
         calls.append(True)
-        payload = {"events": [event_mapping()]}
-        if len(calls) == 2:
-            payload["complete"] = True
+        payload = {"events": [event_mapping()], "complete": True}
         return json.dumps(payload)
 
     generate_comprehensive_chronology("case-1", llm, checkpoint_dir=tmp_path, detail="thorough")
@@ -338,10 +406,10 @@ def test_rejected_fast_page_is_not_repaired_or_checkpointed(mock_chunks, _docume
 @patch("rag.chronology.rag_db.get_documents_for_run", return_value=[{"doc_id": "d1"}])
 @patch("rag.chronology.rag_db.get_chunks_for_run")
 def test_fast_mode_checkpoints_each_bounded_continuation_page(mock_chunks, _documents, tmp_path):
-    mock_chunks.return_value = [source()]
+    mock_chunks.return_value = [source(text="14 February 2022 consultation with sudden sharp stabbing pain; follow-up plan documented")]
     responses = iter([
         {"events": [event_mapping()], "complete": False},
-        {"events": [event_mapping(event_type="Follow-up")], "complete": True},
+        {"events": [event_mapping(event_type="Follow-up", source_quote="follow-up plan documented")], "complete": True},
     ])
     formats = []
 
@@ -357,7 +425,7 @@ def test_fast_mode_checkpoints_each_bounded_continuation_page(mock_chunks, _docu
     assert all(item["json_schema"]["schema"]["properties"]["events"]["maxItems"] == 12 for item in formats)
     assert len(list(tmp_path.glob("batch-*-page-*.json"))) == 2
     assert "Valid extraction pages checkpointed: **2**" in result
-    assert "Source chunks completed: **1/1**" in result
+    assert "Source chunks successfully processed: **1/1**" in result
 
 
 def test_build_batches_never_drops_oversized_source():
@@ -373,11 +441,26 @@ def test_build_batches_honours_small_chunk_cap():
     assert [len(batch) for batch in batches] == [3, 3, 1]
 
 
+def test_segments_multiple_encounters_without_splitting_single_reports():
+    combined = source(text=(
+        "Surgery consultation Recorded by: Dr A Visit date: 01/02/2022\nFirst event\n"
+        "Telehealth consultation Recorded by: Dr B Visit date: 02/02/2022\nSecond event"
+    ))
+
+    units = segment_chronology_units([combined])
+
+    assert len(units) == 2
+    assert "First event" in units[0]["text"] and "Second event" not in units[0]["text"]
+    assert "Second event" in units[1]["text"]
+    assert units[0]["chunk_id"] != units[1]["chunk_id"]
+    assert segment_chronology_units([source(text="One narrative report")])[0]["text"] == "One narrative report"
+
+
 @patch("rag.chronology.rag_db.get_documents_for_run", return_value=[{"doc_id": "d1"}])
 @patch("rag.chronology.rag_db.get_chunks_for_run")
 def test_fast_batches_run_concurrently_and_render_deterministically(mock_chunks, _documents):
     mock_chunks.return_value = [
-        source(f"c{index}", doc_id=f"d{index}", text=f"documented pain source {index}")
+        source(f"c{index}", doc_id=f"d{index}", text=f"14 February 2022 documented pain source {index}")
         for index in range(6)
     ]
     lock = threading.Lock()
@@ -393,7 +476,7 @@ def test_fast_batches_run_concurrently_and_render_deterministically(mock_chunks,
         with lock:
             active -= 1
         text = messages[-1]["content"]
-        quote = next(line for line in text.splitlines() if line.startswith("documented pain"))
+        quote = next(line for line in text.splitlines() if "documented pain" in line)
         return json.dumps({
             "events": [event_mapping(source_quote=quote, source_ids=[1])],
             "complete": True,
@@ -403,7 +486,7 @@ def test_fast_batches_run_concurrently_and_render_deterministically(mock_chunks,
         result = generate_comprehensive_chronology("case-1", llm, detail="fast")
 
     assert peak_active > 1
-    assert "Source chunks completed: **6/6**" in result
+    assert "Source chunks successfully processed: **6/6**" in result
 
 
 @patch("rag.chronology.rag_db.get_documents_for_run", return_value=[{"doc_id": "d1"}])

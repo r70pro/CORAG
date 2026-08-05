@@ -28,7 +28,10 @@ ANALYSIS_PROFILES: dict[str, dict[str, Any]] = {
         "model": "Qwen/Qwen3.6-35B-A3B",
         "display_name": "Qwen 3.6 35B A3B",
         "revision": "995ad96eacd98c81ed38be0c5b274b04031597b0",
-        "context_length": 32768,
+        # Qwen3.6 is native at 262,144 tokens. Keep ordinary RAG prompts bounded
+        # at the request layer rather than disabling the model's long-context
+        # capability for whole-case audit and reconciliation workloads.
+        "context_length": 262144,
         "dtype": "bfloat16",
         "quantization": "none",
         "reasoning_parser": "qwen3",
