@@ -82,7 +82,10 @@ def read_runtime_profile() -> dict[str, Any] | None:
     try:
         value = json.loads(PROFILE_STATE.read_text(encoding="utf-8"))
         model = value.get("model")
-        if model in ANALYSIS_PROFILES and value.get("revision") == ANALYSIS_PROFILES[model]["revision"]:
+        if (
+            model in ANALYSIS_PROFILES
+            and value.get("revision") == ANALYSIS_PROFILES[model]["revision"]
+        ):
             return value
     except (OSError, ValueError, TypeError):
         pass
@@ -127,7 +130,9 @@ def validate_cached_profile(model: str) -> tuple[bool, str, str]:
                 errors.append(f"invalid weight index {index.name}")
         if not list(snapshot.glob("*.safetensors")):
             errors.append("snapshot has no safetensors weights")
-    incomplete = [path for path in (repository / "blobs").glob("*.incomplete") if path.stat().st_size]
+    incomplete = [
+        path for path in (repository / "blobs").glob("*.incomplete") if path.stat().st_size
+    ]
     if incomplete:
         errors.append(f"{len(incomplete)} unfinished download(s)")
     return not errors, "; ".join(errors), str(snapshot)
@@ -150,14 +155,18 @@ def analysis_status() -> dict[str, Any]:
     profile_rows = []
     for model, profile in ANALYSIS_PROFILES.items():
         complete, error, snapshot = validate_cached_profile(model)
-        profile_rows.append({**profile, "cache_complete": complete, "cache_error": error, "snapshot": snapshot})
+        profile_rows.append(
+            {**profile, "cache_complete": complete, "cache_error": error, "snapshot": snapshot}
+        )
     return {
         "configured_model": configured["model"],
         "served_model": live,
         "configuration_matches_runtime": live == configured["model"],
         "runtime_state": runtime,
         "profiles": profile_rows,
-        "operation": operations[0] if operations and operations[0].get("state") not in TERMINAL_STATES else None,
+        "operation": operations[0]
+        if operations and operations[0].get("state") not in TERMINAL_STATES
+        else None,
     }
 
 
@@ -183,7 +192,9 @@ def list_operations(limit: int = 20) -> list[dict[str, Any]]:
     if not OPERATIONS_DIR.is_dir():
         return []
     rows = []
-    for path in sorted(OPERATIONS_DIR.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+    for path in sorted(
+        OPERATIONS_DIR.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True
+    ):
         try:
             rows.append(json.loads(path.read_text(encoding="utf-8")))
         except (OSError, ValueError):
@@ -216,15 +227,20 @@ def resume_pending_switch() -> bool:
             lock_handle.close()
             return False
         operation = operations[0]
-        operation.setdefault("events", []).append({
-            "at": _now(), "state": operation.get("state", "queued"),
-            "message": "Resuming guarded switch after API restart",
-            "progress": operation.get("progress", 0),
-        })
+        operation.setdefault("events", []).append(
+            {
+                "at": _now(),
+                "state": operation.get("state", "queued"),
+                "message": "Resuming guarded switch after API restart",
+                "progress": operation.get("progress", 0),
+            }
+        )
         _save_operation(operation)
         _active_thread = threading.Thread(
-            target=_run_switch, args=(operation, lock_handle),
-            name=f"analysis-switch-{operation['id'][:8]}", daemon=True,
+            target=_run_switch,
+            args=(operation, lock_handle),
+            name=f"analysis-switch-{operation['id'][:8]}",
+            daemon=True,
         )
         _active_thread.start()
         return True
@@ -253,22 +269,28 @@ def _wait_for_model(operation: dict[str, Any], model: str, timeout: int = 1800) 
         elapsed = int(timeout - max(0, deadline - time.monotonic()))
         estimate = max(1, int(ANALYSIS_PROFILES[model]["estimated_load_seconds"]))
         progress = min(82, 25 + int(55 * elapsed / estimate))
-        operation.update(message=f"Loading {ANALYSIS_PROFILES[model]['display_name']}…", progress=progress)
+        operation.update(
+            message=f"Loading {ANALYSIS_PROFILES[model]['display_name']}…", progress=progress
+        )
         _save_operation(operation)
         time.sleep(5)
     raise TimeoutError(f"analysis endpoint did not serve {model} within {timeout} seconds")
 
 
 def _smoke(model: str) -> None:
-    payload = json.dumps({
-        "model": model,
-        "messages": [{"role": "user", "content": "Reply with exactly READY"}],
-        "temperature": 0,
-        "max_tokens": 64,
-    }).encode()
+    payload = json.dumps(
+        {
+            "model": model,
+            "messages": [{"role": "user", "content": "Reply with exactly READY"}],
+            "temperature": 0,
+            "max_tokens": 64,
+        }
+    ).encode()
     request = urllib.request.Request(
-        f"{ANALYSIS_URL}/chat/completions", payload,
-        {"Content-Type": "application/json"}, method="POST",
+        f"{ANALYSIS_URL}/chat/completions",
+        payload,
+        {"Content-Type": "application/json"},
+        method="POST",
     )
     with urllib.request.urlopen(request, timeout=180) as response:
         result = json.load(response)
@@ -278,9 +300,15 @@ def _smoke(model: str) -> None:
 
 def _activate(model: str) -> None:
     profile = ANALYSIS_PROFILES[model]
-    state = {"model": model, "revision": profile["revision"], "updated_at": _now(), "last_verified_at": _now()}
+    state = {
+        "model": model,
+        "revision": profile["revision"],
+        "updated_at": _now(),
+        "last_verified_at": _now(),
+    }
     _atomic_json(PROFILE_STATE, state)
     from settings_manager import load_settings, save_settings
+
     settings = load_settings()
     settings["analysis_model_name"] = model
     settings["analysis_server_url"] = ANALYSIS_URL
@@ -288,6 +316,7 @@ def _activate(model: str) -> None:
     save_settings(settings)
     try:
         from rag.analyzer import invalidate_model_cache
+
         invalidate_model_cache()
     except Exception:
         pass
@@ -304,7 +333,12 @@ def _run_switch(operation: dict[str, Any], lock_handle) -> None:
             raise RuntimeError(error)
         _update(operation, "creating_container", "Recreating the analysis role…", 20)
         _compose_recreate(target)
-        _update(operation, "loading_weights", f"Loading {ANALYSIS_PROFILES[target]['display_name']}…", 25)
+        _update(
+            operation,
+            "loading_weights",
+            f"Loading {ANALYSIS_PROFILES[target]['display_name']}…",
+            25,
+        )
         _wait_for_model(operation, target)
         _update(operation, "running_smoke_test", "Running live chat-completion smoke test…", 88)
         _smoke(target)
@@ -324,12 +358,16 @@ def _run_switch(operation: dict[str, Any], lock_handle) -> None:
                     raise RuntimeError("single-slot lifecycle could not restore the previous model")
                 operation["completed_at"] = _now()
                 _update(
-                    operation, "rolled_back",
-                    f"Switch failed and the single-slot lifecycle restored {previous}: {exc}", 100,
+                    operation,
+                    "rolled_back",
+                    f"Switch failed and the single-slot lifecycle restored {previous}: {exc}",
+                    100,
                 )
             except Exception as rollback_exc:
                 operation["rollback_error"] = str(rollback_exc)
-                _update(operation, "failed", f"Switch and rollback failed: {exc}; {rollback_exc}", 100)
+                _update(
+                    operation, "failed", f"Switch and rollback failed: {exc}; {rollback_exc}", 100
+                )
         else:
             _update(operation, "failed", f"Analysis switch failed: {exc}", 100)
     finally:
@@ -373,8 +411,10 @@ def start_switch(target_model: str) -> dict[str, Any]:
         }
         _save_operation(operation)
         _active_thread = threading.Thread(
-            target=_run_switch, args=(operation, lock_handle),
-            name=f"analysis-switch-{operation['id'][:8]}", daemon=True,
+            target=_run_switch,
+            args=(operation, lock_handle),
+            name=f"analysis-switch-{operation['id'][:8]}",
+            daemon=True,
         )
         _active_thread.start()
         return operation

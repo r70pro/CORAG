@@ -386,7 +386,9 @@ def _split_into_sections(text: str) -> list[tuple[int, int, str]]:
     report_positions = {match.start() for match in RADIOLOGY_REPORT_BOUNDARY.finditer(text)}
     report_end_positions = {
         match.end()
-        for match in re.finditer(r"^Electronically signed[^\n]*$", text, re.MULTILINE | re.IGNORECASE)
+        for match in re.finditer(
+            r"^Electronically signed[^\n]*$", text, re.MULTILINE | re.IGNORECASE
+        )
     }
     boundary_positions.update(report_end_positions)
 

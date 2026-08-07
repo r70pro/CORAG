@@ -308,6 +308,7 @@ def check_backing_services_data(
 
     try:
         from vllm_lifecycle import status as vllm_slot_status
+
         slot = vllm_slot_status()
         active_role = slot.get("active_role")
         # An inactive role is expected in the exclusive architecture and must
@@ -771,6 +772,7 @@ def get_installed_models_data() -> dict[str, Any]:
     rollback_source = ""
     try:
         from analysis_profiles import TERMINAL_STATES, list_operations
+
         recent_operations = list_operations(limit=1)
         if recent_operations and recent_operations[0].get("state") not in TERMINAL_STATES:
             switch_target = recent_operations[0].get("target_model", "")
@@ -786,8 +788,11 @@ def get_installed_models_data() -> dict[str, Any]:
     for container, role in (("kirag_vllm", "Active inference slot"),):
         try:
             inspected = subprocess.run(
-                ["docker", "inspect", container], capture_output=True, text=True,
-                timeout=3, check=False,
+                ["docker", "inspect", container],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
             )
             if inspected.returncode != 0:
                 continue
@@ -878,9 +883,7 @@ def get_installed_models_data() -> dict[str, Any]:
                     except OSError as exc:
                         validation_errors.append(f"cannot read refs/main: {exc}")
                     snapshots_dir = os.path.join(model_path, "snapshots")
-                    snapshot_path = (
-                        os.path.join(snapshots_dir, revision) if revision else ""
-                    )
+                    snapshot_path = os.path.join(snapshots_dir, revision) if revision else ""
                     if not revision:
                         validation_errors.append("missing refs/main")
                     elif not os.path.isdir(snapshot_path):
@@ -896,7 +899,8 @@ def get_installed_models_data() -> dict[str, Any]:
                                         f"broken snapshot link: {os.path.relpath(snap_file, snapshot_path)}"
                                     )
                         index_files = [
-                            path for path in snapshot_files
+                            path
+                            for path in snapshot_files
                             if path.endswith(".safetensors.index.json")
                         ]
                         for index_file in index_files:
@@ -924,7 +928,9 @@ def get_installed_models_data() -> dict[str, Any]:
                     blobs_dir = os.path.join(model_path, "blobs")
                     if os.path.isdir(blobs_dir):
                         incomplete_blobs = [
-                            name for name in os.listdir(blobs_dir) if name.endswith(".incomplete")
+                            name
+                            for name in os.listdir(blobs_dir)
+                            if name.endswith(".incomplete")
                             and os.path.getsize(os.path.join(blobs_dir, name)) > 0
                         ]
                     if incomplete_blobs:
@@ -1019,8 +1025,7 @@ def get_installed_models_data() -> dict[str, Any]:
                             "is_active": False,
                             "is_configured": model_id in configured_models,
                             "is_protected": (
-                                model_id in configured_models
-                                and cache_source == "KIRAG Workspace"
+                                model_id in configured_models and cache_source == "KIRAG Workspace"
                             ),
                             "is_switch_target": model_id == switch_target,
                             "is_rollback_source": model_id == rollback_source,
@@ -1045,9 +1050,7 @@ def get_installed_models_data() -> dict[str, Any]:
         ):
             m["is_protected"] = True
         for served_model, mounted_hf_home, role in runtime_models:
-            expected_path = os.path.realpath(
-                os.path.join(mounted_hf_home, "hub", m["folder"])
-            )
+            expected_path = os.path.realpath(os.path.join(mounted_hf_home, "hub", m["folder"]))
             if m["id"] == served_model and os.path.realpath(m["path"]) == expected_path:
                 m["is_active"] = True
                 m["is_protected"] = True
@@ -1090,11 +1093,9 @@ def delete_installed_models(model_ids: list[str]) -> tuple[bool, str, list[str],
         # copies can be selected unambiguously. Only paths returned by a fresh
         # inventory are accepted; arbitrary filesystem paths never are.
         for m in data["models"]:
-            if (
-                m.get("path") == m_id
-                or (not os.path.isabs(m_id) and (
-                    m["folder"] == m_id or m["id"] == m_id or m["name"] == m_id
-                ))
+            if m.get("path") == m_id or (
+                not os.path.isabs(m_id)
+                and (m["folder"] == m_id or m["id"] == m_id or m["name"] == m_id)
             ):
                 target_info = m
                 break

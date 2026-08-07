@@ -49,6 +49,7 @@ async def lifespan(application: FastAPI):
     logger.info(f"Starting KIRAG API v{VERSION}...")
     try:
         from analysis_profiles import resume_pending_switch
+
         if resume_pending_switch():
             logger.warning("Resumed an interrupted analysis model switch")
     except Exception as exc:
@@ -122,7 +123,10 @@ app.add_middleware(UploadRequestLimitMiddleware)
 def _authentication_error(request: Request):
     """Return a typed authentication error, or ``None`` when access is allowed."""
 
-    if request.url.path in {"/health", "/livez", "/readyz", "/inference/ready"} or request.method == "OPTIONS":
+    if (
+        request.url.path in {"/health", "/livez", "/readyz", "/inference/ready"}
+        or request.method == "OPTIONS"
+    ):
         return None
 
     auth_header = request.headers.get("authorization", "")
@@ -317,9 +321,7 @@ def readiness_check():
             status_code=503,
             detail={
                 "status": "not_ready",
-                "failed_services": sorted(
-                    set(failed_core)
-                ),
+                "failed_services": sorted(set(failed_core)),
             },
         )
     return {"status": "ready"}

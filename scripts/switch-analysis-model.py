@@ -34,12 +34,16 @@ def main() -> int:
             raise RuntimeError(f"Switch operation disappeared: {operation_id}")
         marker = f"{current['state']}:{current.get('message', '')}:{current.get('progress', 0)}"
         if marker != last_state:
-            print(json.dumps({
-                "id": operation_id,
-                "state": current["state"],
-                "progress": current.get("progress", 0),
-                "message": current.get("message", ""),
-            }))
+            print(
+                json.dumps(
+                    {
+                        "id": operation_id,
+                        "state": current["state"],
+                        "progress": current.get("progress", 0),
+                        "message": current.get("message", ""),
+                    }
+                )
+            )
             last_state = marker
         if current["state"] in TERMINAL_STATES:
             return 0 if current["state"] == "completed" else 1

@@ -201,6 +201,7 @@ def start_docker_container():
     if os.environ.get("TESTING") != "true":
         from settings_manager import load_settings
         from vllm_lifecycle import switch_vllm
+
         settings = load_settings()
         role = {"analysis_262k": "analysis", "ocr_only": "ocr"}.get(
             settings.get("startup_mode", "analysis"), settings.get("startup_mode", "analysis")
@@ -288,6 +289,7 @@ def stop_docker_container():
     if os.environ.get("TESTING") != "true":
         try:
             from vllm_lifecycle import stop_vllm
+
             stop_vllm()
             return True, "Inference slot stopped."
         except Exception as exc:
@@ -326,6 +328,7 @@ def set_vllm_role_running(role: str, running: bool) -> tuple[bool, str]:
     try:
         from settings_manager import load_settings
         from vllm_lifecycle import read_state, stop_vllm, switch_vllm
+
         if running:
             model = load_settings().get("analysis_model_name") if role == "analysis" else None
             switch_vllm(role, model)
@@ -488,9 +491,13 @@ def wait_for_port_free(port: int, timeout: float = 5.0) -> bool:
 def create_docker_container(hf_token, port, model, gpu_mem, max_model_len, tensor_parallel_size=1):
     if os.environ.get("TESTING") != "true":
         if model != DEFAULT_MODEL or int(port) != 8000:
-            return False, "Only the pinned OCR profile on port 8000 may use this compatibility operation."
+            return (
+                False,
+                "Only the pinned OCR profile on port 8000 may use this compatibility operation.",
+            )
         try:
             from vllm_lifecycle import switch_vllm
+
             switch_vllm("ocr")
             return True, "OCR inference is ready in the exclusive slot."
         except Exception as exc:
@@ -844,6 +851,7 @@ def shutdown_docker_container():
     if os.environ.get("TESTING") != "true":
         try:
             from vllm_lifecycle import stop_vllm
+
             stop_vllm()
             return True, "Inference slot stopped and removed."
         except Exception as exc:

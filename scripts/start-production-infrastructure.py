@@ -15,9 +15,14 @@ from settings_manager import load_settings  # noqa: E402
 from vllm_lifecycle import stop_vllm, switch_vllm  # noqa: E402
 
 COMPOSE = [
-    "docker", "compose", "--project-directory", str(ROOT),
-    "-f", str(ROOT / "docker-compose.rag.yml"),
-    "-f", str(ROOT / "docker-compose.production.yml"),
+    "docker",
+    "compose",
+    "--project-directory",
+    str(ROOT),
+    "-f",
+    str(ROOT / "docker-compose.rag.yml"),
+    "-f",
+    str(ROOT / "docker-compose.production.yml"),
 ]
 
 
@@ -31,7 +36,11 @@ def main() -> None:
 
     # Make databases available independently of multi-minute model loading.
     run("up", "--detach", "--wait", "--wait-timeout", "300", "postgres", "redis", "minio", "qdrant")
-    subprocess.run([str(ROOT / ".venv/bin/python"), str(ROOT / "cli.py"), "rag", "infra", "init"], check=True, cwd=ROOT)
+    subprocess.run(
+        [str(ROOT / ".venv/bin/python"), str(ROOT / "cli.py"), "rag", "infra", "init"],
+        check=True,
+        cwd=ROOT,
+    )
 
     # Migrate legacy persisted modes without ever restoring simultaneous models.
     mode = {"analysis_262k": "analysis", "ocr_only": "ocr", "dual_32k": "stopped"}.get(mode, mode)

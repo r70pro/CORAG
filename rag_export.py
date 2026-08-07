@@ -108,7 +108,9 @@ def _parse_markdown_table_row(line):
     return cells
 
 
-def export_chat_markdown(history, mode="Free Q&A", active_case="All Cases", include_reasoning=False):
+def export_chat_markdown(
+    history, mode="Free Q&A", active_case="All Cases", include_reasoning=False
+):
     """Export a chat session as a Markdown file.
 
     Args:

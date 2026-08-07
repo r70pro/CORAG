@@ -97,9 +97,7 @@ def _resolve_hf_home():
 if "HF_HOME" not in os.environ:
     os.environ["HF_HOME"] = _resolve_hf_home()
 
-_DEFAULT_SETTINGS_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "settings.json"
-)
+_DEFAULT_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
 SETTINGS_FILE = os.path.abspath(
     os.path.expanduser(os.environ.get("KIRAG_SETTINGS_FILE", _DEFAULT_SETTINGS_FILE))
 )
@@ -220,6 +218,7 @@ def load_settings(*, include_env_secrets: bool = True):
         # defaults and intentionally overrides only the analysis profile.
         try:
             from analysis_profiles import read_runtime_profile
+
             runtime_profile = read_runtime_profile()
             if runtime_profile:
                 defaults["analysis_model_name"] = runtime_profile["model"]

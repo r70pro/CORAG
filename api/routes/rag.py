@@ -50,10 +50,19 @@ router = APIRouter(route_class=LimitedUploadRoute)
 logger = logging.getLogger(__name__)
 
 
-@router.delete("/chat/history/{session_id}", response_model=MessageResponse, summary="Delete RAG chat history")
+@router.delete(
+    "/chat/history/{session_id}", response_model=MessageResponse, summary="Delete RAG chat history"
+)
 def delete_chat_history(session_id: str):
     """Permanently remove the server-side cache for one browser chat thread."""
-    if not session_id or len(session_id) > 128 or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in session_id):
+    if (
+        not session_id
+        or len(session_id) > 128
+        or any(
+            char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+            for char in session_id
+        )
+    ):
         raise HTTPException(status_code=422, detail="Invalid chat session ID")
     try:
         from rag.cache import clear_chat_history
@@ -62,6 +71,7 @@ def delete_chat_history(session_id: str):
         return MessageResponse(success=True, message="Chat thread deleted")
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Unable to delete chat thread") from exc
+
 
 # ── Case Management & Deletion ────────────────────────────────────────────────
 
@@ -322,20 +332,27 @@ def export_chat_session(req: ExportChatRequest, is_admin: bool = Depends(has_adm
     if not (req.include_reasoning and is_admin):
         history = [
             {key: value for key, value in item.items() if key != "reasoning"}
-            if isinstance(item, dict) else item
+            if isinstance(item, dict)
+            else item
             for item in history
         ]
     fmt = req.export_format.lower()
     case_label = req.case_id or "All Cases"
 
     if fmt == "md":
-        path = export_chat_markdown(history, mode=req.mode, active_case=case_label, include_reasoning=req.include_reasoning)
+        path = export_chat_markdown(
+            history, mode=req.mode, active_case=case_label, include_reasoning=req.include_reasoning
+        )
     elif fmt == "txt":
-        path = export_chat_text(history, mode=req.mode, active_case=case_label, include_reasoning=req.include_reasoning)
+        path = export_chat_text(
+            history, mode=req.mode, active_case=case_label, include_reasoning=req.include_reasoning
+        )
     elif fmt == "csv":
         path = export_timeline_csv(req.history, active_case=case_label)
     elif fmt == "docx":
-        path = export_chat_docx(history, mode=req.mode, active_case=case_label, include_reasoning=req.include_reasoning)
+        path = export_chat_docx(
+            history, mode=req.mode, active_case=case_label, include_reasoning=req.include_reasoning
+        )
     elif fmt == "timeline_docx":
         path = export_timeline_docx(req.history, active_case=case_label)
     else:
@@ -417,6 +434,7 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
     Otherwise returns the complete response as JSON.
     """
     from analysis_profiles import switch_in_progress
+
     if switch_in_progress():
         raise HTTPException(
             status_code=503,
@@ -474,14 +492,13 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
                     stage = "preparing"
                 else:
                     stage = "retrieving"
-                events.put(
-                    ("status", {"stage": stage, "progress": progress, "message": message})
-                )
+                events.put(("status", {"stage": stage, "progress": progress, "message": message}))
 
             def produce():
                 try:
                     reasoning_audit_parts: list[str] = []
                     answer_parts: list[str] = []
+
                     def report_reasoning(chunk: str):
                         if expose_reasoning:
                             reasoning_audit_parts.append(chunk)
@@ -513,10 +530,9 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
                     if req.session_id:
                         try:
                             from rag.cache import get_chat_history, save_chat_history
+
                             saved = get_chat_history(req.session_id)
-                            saved.append(
-                                {"role": "user", "content": req.query, "mode": mode_key}
-                            )
+                            saved.append({"role": "user", "content": req.query, "mode": mode_key})
                             assistant_message = {
                                 "role": "assistant",
                                 "content": "".join(answer_parts),
@@ -530,6 +546,7 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
                             logger.exception("Unable to persist RAG chat history")
                     if reasoning_audit_parts:
                         from audit_log import audit_event
+
                         audit_event(
                             "llm_reasoning_audit",
                             "success",
@@ -576,7 +593,10 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
                         if isinstance(exc, ContextWindowError):
                             envelope = error_envelope("context_window_exceeded", str(exc))
                         else:
-                            logger.error("Streaming RAG query failed", exc_info=(type(exc), exc, exc.__traceback__))
+                            logger.error(
+                                "Streaming RAG query failed",
+                                exc_info=(type(exc), exc, exc.__traceback__),
+                            )
                             envelope = error_envelope("rag_query_failed", "RAG query failed")
                         yield f"data: {envelope.model_dump_json(exclude_none=True)}\n\n"
                         break
@@ -604,31 +624,34 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
         # Non-streaming: collect full response
         full_response = ""
         full_reasoning = ""
+
         def collect_reasoning(chunk: str):
             nonlocal full_reasoning
             if expose_reasoning:
                 full_reasoning += chunk
+
         try:
             from vllm_lifecycle import inference_lease
+
             with inference_lease("analysis"):
                 chunks = analyze(
-                query=req.query,
-                mode=mode_key,
-                server_url=req.model_url,
-                model_name=req.model_name,
-                top_k=req.top_k,
-                chat_history=chat_history,
-                run_id_filter=req.case_id,
-                doc_type_filter=req.doc_type,
-                author_filter=req.author,
-                date_from=date_from,
-                date_to=date_to,
-                stream=False,
-                use_reranker=req.use_reranker,
-                reasoning_callback=collect_reasoning,
-                chronology_detail=req.chronology_detail,
-                reranker_model=req.reranker_model,
-                reranker_device=req.reranker_device,
+                    query=req.query,
+                    mode=mode_key,
+                    server_url=req.model_url,
+                    model_name=req.model_name,
+                    top_k=req.top_k,
+                    chat_history=chat_history,
+                    run_id_filter=req.case_id,
+                    doc_type_filter=req.doc_type,
+                    author_filter=req.author,
+                    date_from=date_from,
+                    date_to=date_to,
+                    stream=False,
+                    use_reranker=req.use_reranker,
+                    reasoning_callback=collect_reasoning,
+                    chronology_detail=req.chronology_detail,
+                    reranker_model=req.reranker_model,
+                    reranker_device=req.reranker_device,
                 )
                 for chunk in chunks:
                     full_response += chunk
@@ -651,13 +674,19 @@ def rag_query(req: RAGQueryRequest, is_admin: bool = Depends(has_admin_access)):
             ) from exc
         if full_reasoning:
             from audit_log import audit_event
+
             audit_event(
-                "llm_reasoning_audit", "success", case_id=req.case_id,
-                mode=mode_key, model=req.model_name, reasoning=full_reasoning,
+                "llm_reasoning_audit",
+                "success",
+                case_id=req.case_id,
+                mode=mode_key,
+                model=req.model_name,
+                reasoning=full_reasoning,
             )
         if req.session_id:
             try:
                 from rag.cache import get_chat_history, save_chat_history
+
                 saved = get_chat_history(req.session_id)
                 saved.append({"role": "user", "content": req.query, "mode": mode_key})
                 assistant_message = {

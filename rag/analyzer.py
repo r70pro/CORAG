@@ -120,7 +120,9 @@ def _validate_managed_context_invariant(
 
         slot = status()
     except Exception as exc:
-        raise ContextWindowError("Unable to verify OCR state for analysis context allocation") from exc
+        raise ContextWindowError(
+            "Unable to verify OCR state for analysis context allocation"
+        ) from exc
     if not slot.get("ready") or slot.get("active_role") != "analysis":
         raise ContextWindowError(
             f"Analysis inference is unavailable; active role is '{slot.get('active_role', 'stopped')}'"
@@ -426,6 +428,7 @@ QUESTION-SPECIFIC COMPLETENESS REQUIREMENTS:
 - Every radiology bullet and every material clinician opinion MUST end with its supplied bracketed [Source N] token. Do not write filenames or source metadata yourself; the application renders those tokens. An answer without these bracketed tokens is incomplete.
 - Exclude sources whose extracted author or date is facially malformed or chronologically impossible unless the inconsistency itself is material.
 """
+
 
 HIGH_ASSURANCE_VERIFIER_PROMPT = """You are the independent second-pass verifier for a high-stakes medicolegal documentary analysis. The draft has not been shown to the user. Audit it skeptically against the supplied excerpts and return a corrected final answer.
 
@@ -1100,7 +1103,9 @@ def analyze(
 
         # Step 1: Retrieve relevant chunks. General Knowledge bypasses this block.
         search_function = search_comprehensive if policy.comprehensive_retrieval else search_similar
-        comprehensive_kwargs = {"search_function": search_similar} if policy.comprehensive_retrieval else {}
+        comprehensive_kwargs = (
+            {"search_function": search_similar} if policy.comprehensive_retrieval else {}
+        )
         if policy.comprehensive_retrieval:
             comprehensive_kwargs["cancellation_callback"] = cancellation_callback
         if mode == "expert_analysis":
@@ -1434,8 +1439,12 @@ def analyze(
         if warning_msg:
             yield warning_msg
         raw_stream = query_llm_streaming(
-            messages, server_url, resolved_model, max_tokens=requested_generation_tokens,
-            enable_thinking=policy.enable_thinking, reasoning_callback=reasoning_callback,
+            messages,
+            server_url,
+            resolved_model,
+            max_tokens=requested_generation_tokens,
+            enable_thinking=policy.enable_thinking,
+            reasoning_callback=reasoning_callback,
             cancellation_callback=cancellation_callback,
         )
         if policy.uses_retrieval:
@@ -1444,8 +1453,12 @@ def analyze(
             yield from raw_stream
     else:
         response_text = query_llm(
-            messages, server_url, resolved_model, max_tokens=requested_generation_tokens,
-            enable_thinking=policy.enable_thinking, reasoning_callback=reasoning_callback,
+            messages,
+            server_url,
+            resolved_model,
+            max_tokens=requested_generation_tokens,
+            enable_thinking=policy.enable_thinking,
+            reasoning_callback=reasoning_callback,
         )
         processed_text = (
             replace_source_tags_in_string(response_text, results)

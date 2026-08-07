@@ -99,9 +99,7 @@ async def upload_pipeline_files(
             metadata_path = resolve_file_under(
                 upload_dir, f"{stored_name}.metadata.json", {".json"}
             )
-            metadata_path.write_text(
-                json.dumps({"original_name": original_name}), encoding="utf-8"
-            )
+            metadata_path.write_text(json.dumps({"original_name": original_name}), encoding="utf-8")
             created_paths.append(metadata_path)
             saved_paths.append(stored_name)
             metadata.append({"file_path": stored_name, "original_name": original_name})
@@ -153,18 +151,14 @@ def start_pipeline(req: PipelineStartRequest):
             raise HTTPException(status_code=400, detail="Input file not found")
         original_filename = filename
         try:
-            metadata_path = resolve_file_under(
-                upload_dir, f"{filename}.metadata.json", {".json"}
-            )
+            metadata_path = resolve_file_under(upload_dir, f"{filename}.metadata.json", {".json"})
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             candidate_name = unescape(str(metadata.get("original_name", "")))
             validate_filename(candidate_name, {".pdf"})
             original_filename = candidate_name
         except (OSError, ValueError, TypeError, json.JSONDecodeError, PathSecurityError):
             logger.warning("Upload provenance metadata is unavailable for %s", filename)
-        file_ref = SimpleNamespace(
-            name=str(resolved_path), original_filename=original_filename
-        )
+        file_ref = SimpleNamespace(name=str(resolved_path), original_filename=original_filename)
         files.append(file_ref)
 
     def _extract_int_stat(val: object) -> int:

@@ -60,6 +60,7 @@ def _targeted_lexical_terms(query: str) -> list[str]:
         )
     return terms
 
+
 EXPERT_ANALYTICAL_QUERY_FACETS = (
     "precise alleged incident, occupational exposure, duties, dose, duration, and mechanism",
     "contemporaneous symptom onset, chronology, reporting consistency, and baseline function",
@@ -176,8 +177,7 @@ def search_comprehensive(
         normalized_text = " ".join(str(result.get("text") or "").lower().split())
         if result.get("document_type") == "radiology_report":
             fingerprint = "radiology:" + ":".join(
-                str(result.get(field) or "").lower()
-                for field in ("author", "date_extracted")
+                str(result.get(field) or "").lower() for field in ("author", "date_extracted")
             )
         else:
             fingerprint = (
@@ -214,8 +214,10 @@ def search_comprehensive(
 
         from settings_manager import load_settings
 
-        use_reranker = False if os.environ.get("TESTING") == "true" else load_settings().get(
-            "use_reranker", True
+        use_reranker = (
+            False
+            if os.environ.get("TESTING") == "true"
+            else load_settings().get("use_reranker", True)
         )
     if use_reranker and selected:
         if progress_callback:

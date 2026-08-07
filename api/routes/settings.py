@@ -38,11 +38,12 @@ def update_settings(req: SettingsUpdateRequest):
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields provided to update")
     if "analysis_model_name" in update_data or "analysis_server_url" in update_data:
-        requested_model = update_data.get("analysis_model_name", settings.get("analysis_model_name"))
+        requested_model = update_data.get(
+            "analysis_model_name", settings.get("analysis_model_name")
+        )
         requested_url = update_data.get("analysis_server_url", settings.get("analysis_server_url"))
-        if (
-            requested_model != settings.get("analysis_model_name")
-            or requested_url != settings.get("analysis_server_url")
+        if requested_model != settings.get("analysis_model_name") or requested_url != settings.get(
+            "analysis_server_url"
         ):
             raise HTTPException(
                 status_code=422,

@@ -345,7 +345,9 @@ def make_backing_services_html(data: dict[str, Any]) -> str:
         if os.path.exists("/.dockerenv") or os.environ.get("IS_DOCKER")
         else "Host OS"
     )
-    vllm_model_name = data.get("vllm_models", {}).get("ocr") or data.get("vllm_model", "None Loaded")
+    vllm_model_name = data.get("vllm_models", {}).get("ocr") or data.get(
+        "vllm_model", "None Loaded"
+    )
     analysis_model_name = data.get("vllm_models", {}).get("analysis") or "None Loaded"
     if not vllm_model_name:
         vllm_model_name = "None Loaded"

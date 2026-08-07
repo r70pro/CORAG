@@ -28,9 +28,14 @@ LEASE_LOCK = RUNTIME_DIR / "inference.lock"
 CONTAINER_NAME = "kirag_vllm"
 LEGACY_CONTAINERS = ("olmocr", "kirag_vllm_analysis")
 COMPOSE = [
-    "docker", "compose", "--project-directory", str(ROOT),
-    "-f", str(ROOT / "docker-compose.rag.yml"),
-    "-f", str(ROOT / "docker-compose.production.yml"),
+    "docker",
+    "compose",
+    "--project-directory",
+    str(ROOT),
+    "-f",
+    str(ROOT / "docker-compose.rag.yml"),
+    "-f",
+    str(ROOT / "docker-compose.production.yml"),
 ]
 
 
@@ -61,7 +66,12 @@ def read_state() -> dict[str, Any]:
             return value
     except (OSError, ValueError):
         pass
-    return {"schema_version": 2, "desired_role": "stopped", "active_role": "stopped", "state": "stopped"}
+    return {
+        "schema_version": 2,
+        "desired_role": "stopped",
+        "active_role": "stopped",
+        "state": "stopped",
+    }
 
 
 def read_operation() -> dict[str, Any] | None:
@@ -75,7 +85,9 @@ def read_operation() -> dict[str, Any] | None:
 def _container_status(name: str = CONTAINER_NAME) -> str:
     result = subprocess.run(
         ["docker", "inspect", "-f", "{{.State.Status}}", name],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if result.returncode == 0:
         return result.stdout.strip().lower()
@@ -87,7 +99,9 @@ def _container_status(name: str = CONTAINER_NAME) -> str:
 def _is_managed(name: str) -> bool:
     result = subprocess.run(
         ["docker", "inspect", "-f", '{{index .Config.Labels "com.kirag.managed"}}', name],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     return result.returncode == 0 and result.stdout.strip().lower() == "true"
 
@@ -99,10 +113,19 @@ def _quarantine_legacy_containers() -> None:
         if status == "not_found":
             continue
         if not _is_managed(name):
-            raise RuntimeError(f"Legacy container name '{name}' is occupied by an unmanaged container")
-        subprocess.run(["docker", "update", "--restart=no", name], check=True, capture_output=True, text=True)
+            raise RuntimeError(
+                f"Legacy container name '{name}' is occupied by an unmanaged container"
+            )
+        subprocess.run(
+            ["docker", "update", "--restart=no", name], check=True, capture_output=True, text=True
+        )
         if status in {"running", "restarting", "paused"}:
-            subprocess.run(["docker", "stop", "--time", "120", name], check=True, capture_output=True, text=True)
+            subprocess.run(
+                ["docker", "stop", "--time", "120", name],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
 
 
 def _validate_profile_cache(profile: dict[str, Any]) -> None:
@@ -120,7 +143,9 @@ def _validate_profile_cache(profile: dict[str, Any]) -> None:
 
 def _served_model(port: int, timeout: float = 3) -> str:
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=timeout) as response:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/v1/models", timeout=timeout
+        ) as response:
             return str(json.load(response).get("data", [{}])[0].get("id", ""))
     except (OSError, ValueError, IndexError, TypeError):
         return ""
@@ -139,7 +164,9 @@ def inference_lease(role: str) -> Iterator[None]:
     """Hold a shared cross-process lease for the complete inference operation."""
     state = read_state()
     if state.get("state") != "ready" or state.get("active_role") != role:
-        raise RuntimeError(f"{role.upper()} inference is unavailable; active role is {state.get('active_role', 'stopped')}")
+        raise RuntimeError(
+            f"{role.upper()} inference is unavailable; active role is {state.get('active_role', 'stopped')}"
+        )
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     handle = open(LEASE_LOCK, "a+", encoding="utf-8")
     try:
@@ -171,15 +198,19 @@ def _smoke(profile: dict[str, Any]) -> None:
         if _served_model(OCR_PORT, timeout=10) != profile["model"]:
             raise RuntimeError("OCR model identity verification failed")
         return
-    payload = json.dumps({
-        "model": profile["model"],
-        "messages": [{"role": "user", "content": "Reply with exactly READY"}],
-        "temperature": 0,
-        "max_tokens": 32,
-    }).encode()
+    payload = json.dumps(
+        {
+            "model": profile["model"],
+            "messages": [{"role": "user", "content": "Reply with exactly READY"}],
+            "temperature": 0,
+            "max_tokens": 32,
+        }
+    ).encode()
     request = urllib.request.Request(
-        f"http://127.0.0.1:{ANALYSIS_PORT}/v1/chat/completions", payload,
-        {"Content-Type": "application/json"}, method="POST",
+        f"http://127.0.0.1:{ANALYSIS_PORT}/v1/chat/completions",
+        payload,
+        {"Content-Type": "application/json"},
+        method="POST",
     )
     with urllib.request.urlopen(request, timeout=180) as response:
         result = json.load(response)
@@ -194,9 +225,18 @@ def _stop_and_remove() -> None:
     if status == "error":
         raise RuntimeError("unable to inspect the managed vLLM container")
     if status in {"running", "restarting", "paused"}:
-        subprocess.run(["docker", "stop", "--time", "120", CONTAINER_NAME], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["docker", "stop", "--time", "120", CONTAINER_NAME],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
     deadline = time.monotonic() + 30
-    while time.monotonic() < deadline and _container_status() not in {"exited", "created", "not_found"}:
+    while time.monotonic() < deadline and _container_status() not in {
+        "exited",
+        "created",
+        "not_found",
+    }:
         time.sleep(1)
     if _container_status() not in {"exited", "created", "not_found"}:
         raise RuntimeError("old vLLM process did not exit; refusing to start another model")
@@ -209,7 +249,12 @@ def _create(profile: dict[str, Any]) -> None:
     env.update(compose_environment(profile))
     subprocess.run(
         [*COMPOSE, "up", "-d", "--no-deps", "--force-recreate", "vllm"],
-        cwd=ROOT, env=env, check=True, capture_output=True, text=True, timeout=300,
+        cwd=ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=300,
     )
 
 
@@ -229,7 +274,9 @@ def _activate(profile: dict[str, Any], desired_role: str) -> None:
     _atomic_json(STATE_FILE, state)
 
 
-def switch_vllm(role: str, analysis_model: str | None = None, *, drain_timeout: int = 600) -> dict[str, Any]:
+def switch_vllm(
+    role: str, analysis_model: str | None = None, *, drain_timeout: int = 600
+) -> dict[str, Any]:
     """Synchronously switch the single inference slot and roll back on failure."""
     target = profile_for(role, analysis_model)
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
@@ -241,14 +288,20 @@ def switch_vllm(role: str, analysis_model: str | None = None, *, drain_timeout: 
             raise RuntimeError("Another vLLM lifecycle operation is already running") from exc
         previous_state = read_state()
         operation = {
-            "id": uuid.uuid4().hex, "target_role": role, "target_model": target["model"],
+            "id": uuid.uuid4().hex,
+            "target_role": role,
+            "target_model": target["model"],
             "previous_role": previous_state.get("active_role", "stopped"),
             "previous_model": previous_state.get("active_model"),
-            "created_at": _now(), "events": [],
+            "created_at": _now(),
+            "events": [],
         }
         _validate_profile_cache(target)
         _update_operation(operation, "validating", "Validated immutable target profile", 5)
-        _atomic_json(STATE_FILE, {**previous_state, "desired_role": role, "state": "draining", "updated_at": _now()})
+        _atomic_json(
+            STATE_FILE,
+            {**previous_state, "desired_role": role, "state": "draining", "updated_at": _now()},
+        )
         lease = open(LEASE_LOCK, "a+", encoding="utf-8")
         try:
             deadline = time.monotonic() + drain_timeout
@@ -258,20 +311,31 @@ def switch_vllm(role: str, analysis_model: str | None = None, *, drain_timeout: 
                     break
                 except BlockingIOError:
                     if time.monotonic() >= deadline:
-                        raise TimeoutError("active inference did not drain before the switch timeout")
+                        raise TimeoutError(
+                            "active inference did not drain before the switch timeout"
+                        )
                     time.sleep(1)
             _update_operation(operation, "stopping", "Stopping the previous inference profile", 15)
             _quarantine_legacy_containers()
             _stop_and_remove()
-            _update_operation(operation, "creating", f"Creating {role} profile on port {target['host_port']}", 30)
+            _update_operation(
+                operation, "creating", f"Creating {role} profile on port {target['host_port']}", 30
+            )
             _create(target)
             _update_operation(operation, "loading", f"Loading {target['model']}", 45)
             _wait_for_model(target, max(300, int(target["estimated_load_seconds"]) * 3))
             _update_operation(operation, "smoke_testing", "Verifying the live model", 90)
             _smoke(target)
             _activate(target, role)
-            _update_operation(operation, "completed", f"{role.upper()} inference is ready on port {target['host_port']}", 100)
-            audit_event("vllm_switch", "success", role=role, model=target["model"], port=target["host_port"])
+            _update_operation(
+                operation,
+                "completed",
+                f"{role.upper()} inference is ready on port {target['host_port']}",
+                100,
+            )
+            audit_event(
+                "vllm_switch", "success", role=role, model=target["model"], port=target["host_port"]
+            )
             return operation
         except Exception as exc:
             operation["error"] = str(exc)
@@ -279,22 +343,52 @@ def switch_vllm(role: str, analysis_model: str | None = None, *, drain_timeout: 
             previous_model = previous_state.get("active_model")
             if previous_role in {"ocr", "analysis"}:
                 try:
-                    _update_operation(operation, "rolling_back", "Restoring the previous verified profile", 92)
+                    _update_operation(
+                        operation, "rolling_back", "Restoring the previous verified profile", 92
+                    )
                     _stop_and_remove()
-                    previous = profile_for(previous_role, previous_model if previous_role == "analysis" else None)
+                    previous = profile_for(
+                        previous_role, previous_model if previous_role == "analysis" else None
+                    )
                     _create(previous)
                     _wait_for_model(previous, max(300, int(previous["estimated_load_seconds"]) * 3))
                     _smoke(previous)
                     _activate(previous, str(previous_state.get("desired_role", previous_role)))
-                    _update_operation(operation, "rolled_back", f"Switch failed; restored {previous_role}: {exc}", 100)
+                    _update_operation(
+                        operation,
+                        "rolled_back",
+                        f"Switch failed; restored {previous_role}: {exc}",
+                        100,
+                    )
                 except Exception as rollback_exc:
                     operation["rollback_error"] = str(rollback_exc)
                     _stop_and_remove()
-                    _atomic_json(STATE_FILE, {**previous_state, "active_role": "stopped", "state": "failed", "updated_at": _now()})
-                    _update_operation(operation, "failed", f"Switch and rollback failed: {exc}; {rollback_exc}", 100)
+                    _atomic_json(
+                        STATE_FILE,
+                        {
+                            **previous_state,
+                            "active_role": "stopped",
+                            "state": "failed",
+                            "updated_at": _now(),
+                        },
+                    )
+                    _update_operation(
+                        operation,
+                        "failed",
+                        f"Switch and rollback failed: {exc}; {rollback_exc}",
+                        100,
+                    )
             else:
                 _stop_and_remove()
-                _atomic_json(STATE_FILE, {**previous_state, "active_role": "stopped", "state": "failed", "updated_at": _now()})
+                _atomic_json(
+                    STATE_FILE,
+                    {
+                        **previous_state,
+                        "active_role": "stopped",
+                        "state": "failed",
+                        "updated_at": _now(),
+                    },
+                )
                 _update_operation(operation, "failed", f"Switch failed: {exc}", 100)
             audit_event("vllm_switch", "failure", role=role, model=target["model"], error=str(exc))
             raise
@@ -313,7 +407,10 @@ def stop_vllm(*, drain_timeout: int = 600) -> None:
     try:
         fcntl.flock(lifecycle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         state = read_state()
-        _atomic_json(STATE_FILE, {**state, "desired_role": "stopped", "state": "draining", "updated_at": _now()})
+        _atomic_json(
+            STATE_FILE,
+            {**state, "desired_role": "stopped", "state": "draining", "updated_at": _now()},
+        )
         lease = open(LEASE_LOCK, "a+", encoding="utf-8")
         deadline = time.monotonic() + drain_timeout
         while True:
@@ -326,7 +423,16 @@ def stop_vllm(*, drain_timeout: int = 600) -> None:
                 time.sleep(1)
         _quarantine_legacy_containers()
         _stop_and_remove()
-        _atomic_json(STATE_FILE, {"schema_version": 2, "desired_role": "stopped", "active_role": "stopped", "state": "stopped", "updated_at": _now()})
+        _atomic_json(
+            STATE_FILE,
+            {
+                "schema_version": 2,
+                "desired_role": "stopped",
+                "active_role": "stopped",
+                "state": "stopped",
+                "updated_at": _now(),
+            },
+        )
     finally:
         if lease is not None:
             fcntl.flock(lease, fcntl.LOCK_UN)
@@ -339,7 +445,9 @@ def status() -> dict[str, Any]:
     state = read_state()
     container_status = _container_status()
     active_role = state.get("active_role", "stopped")
-    port = OCR_PORT if active_role == "ocr" else ANALYSIS_PORT if active_role == "analysis" else None
+    port = (
+        OCR_PORT if active_role == "ocr" else ANALYSIS_PORT if active_role == "analysis" else None
+    )
     served = _served_model(port) if port and container_status == "running" else ""
     ready = state.get("state") == "ready" and served == state.get("active_model")
     return {
@@ -348,7 +456,13 @@ def status() -> dict[str, Any]:
         "container_status": container_status,
         "served_model": served,
         "ready": ready,
-        "ocr": {"endpoint": f"http://127.0.0.1:{OCR_PORT}/v1", "available": ready and active_role == "ocr"},
-        "analysis": {"endpoint": f"http://127.0.0.1:{ANALYSIS_PORT}/v1", "available": ready and active_role == "analysis"},
+        "ocr": {
+            "endpoint": f"http://127.0.0.1:{OCR_PORT}/v1",
+            "available": ready and active_role == "ocr",
+        },
+        "analysis": {
+            "endpoint": f"http://127.0.0.1:{ANALYSIS_PORT}/v1",
+            "available": ready and active_role == "analysis",
+        },
         "operation": read_operation(),
     }

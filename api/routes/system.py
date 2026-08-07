@@ -27,7 +27,9 @@ def require_app_shutdown_enabled() -> None:
     if os.environ.get("TESTING") == "true":
         return
     if os.environ.get("KIRAG_ENABLE_APP_SHUTDOWN") != "true":
-        raise HTTPException(status_code=403, detail="App shutdown is disabled by KIRAG_ENABLE_APP_SHUTDOWN")
+        raise HTTPException(
+            status_code=403, detail="App shutdown is disabled by KIRAG_ENABLE_APP_SHUTDOWN"
+        )
 
 
 @router.post(

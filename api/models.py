@@ -231,9 +231,7 @@ class SettingsUpdateRequest(BaseModel):
     chunk_overlap: int | None = Field(None, ge=0, le=99_999)
     retrieval_top_k: int | None = Field(None, ge=1, le=100)
     rag_auto_start_infra: bool | None = None
-    startup_mode: str | None = Field(
-        None, pattern="^(analysis|ocr|stopped)$"
-    )
+    startup_mode: str | None = Field(None, pattern="^(analysis|ocr|stopped)$")
     use_reranker: bool | None = None
     reranker_model: str | None = Field(None, min_length=1, max_length=512)
     reranker_device: str | None = Field(None, min_length=1, max_length=32)
@@ -419,8 +417,12 @@ class InstalledModelItem(BaseModel):
         False, description="True if deletion would affect a serving or configured workspace model"
     )
     is_switch_target: bool = Field(False, description="Target of an active analysis switch")
-    is_rollback_source: bool = Field(False, description="Rollback source of an active analysis switch")
-    is_complete: bool = Field(False, description="True if the referenced snapshot passes validation")
+    is_rollback_source: bool = Field(
+        False, description="Rollback source of an active analysis switch"
+    )
+    is_complete: bool = Field(
+        False, description="True if the referenced snapshot passes validation"
+    )
     validation_error: str = Field("", description="Snapshot validation failures")
     revision: str = Field("", description="Commit referenced by refs/main")
     runtime_role: str = Field("", description="Live serving role, such as OCR or Analysis")

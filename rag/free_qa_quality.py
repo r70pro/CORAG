@@ -8,10 +8,9 @@ model call to the latency-sensitive Free Q&A path.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
-from typing import Iterable
-
 
 _DATE_RE = re.compile(
     r"\b(?:19|20)\d{2}[-/.](?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\d|3[01])\b"
@@ -19,8 +18,14 @@ _DATE_RE = re.compile(
 )
 _MULTIPART_RE = re.compile(r"(?:^|\s)(?:\([a-z]\)|[a-z]\)|\d+[.)])\s", re.I)
 _BROAD_TERMS = (
-    "comprehensive", "complete", "all records", "every record", "chronology",
-    "timeline", "entire history", "full history",
+    "comprehensive",
+    "complete",
+    "all records",
+    "every record",
+    "chronology",
+    "timeline",
+    "entire history",
+    "full history",
 )
 _COMPARISON_TERMS = ("compare", "difference", "conflict", "inconsisten", "versus", " vs ")
 
@@ -63,13 +68,28 @@ def build_evidence_ledger(results: Iterable[dict]) -> tuple[EvidenceLedgerEntry,
         text = str(item.get("text", ""))
         doc_type = item.get("document_type")
         type_text = f"{doc_type or ''} {text[:300]}".lower()
-        indirect = any(term in type_text for term in ("index", "attachment list", "document review"))
-        substantive = any(term in text.lower() for term in (
-            "history of injury", "presenting complaint", "symptom", "diagnos",
-            "examination", "clinical finding", "treatment", "medication",
-            "work capacity", "return to work", "prognosis", "radiology",
-            "impression", "assessment",
-        ))
+        indirect = any(
+            term in type_text for term in ("index", "attachment list", "document review")
+        )
+        substantive = any(
+            term in text.lower()
+            for term in (
+                "history of injury",
+                "presenting complaint",
+                "symptom",
+                "diagnos",
+                "examination",
+                "clinical finding",
+                "treatment",
+                "medication",
+                "work capacity",
+                "return to work",
+                "prognosis",
+                "radiology",
+                "impression",
+                "assessment",
+            )
+        )
         document_date = item.get("date_extracted") or item.get("document_date")
         parsed_document_date = _iso_date(document_date)
         referenced_dates = []
@@ -86,15 +106,19 @@ def build_evidence_ledger(results: Iterable[dict]) -> tuple[EvidenceLedgerEntry,
             and parsed_document_date
             and any(referenced > parsed_document_date for referenced in referenced_dates)
         )
-        entries.append(EvidenceLedgerEntry(
-            source_id=index,
-            document_date=str(document_date) if document_date else None,
-            document_type=str(doc_type) if doc_type else None,
-            author=str(item.get("author")) if item.get("author") else None,
-            evidence_status="indirect index/reference" if indirect else "retrieved record excerpt",
-            date_conflict=conflict,
-            substantive_clinical_content=substantive,
-        ))
+        entries.append(
+            EvidenceLedgerEntry(
+                source_id=index,
+                document_date=str(document_date) if document_date else None,
+                document_type=str(doc_type) if doc_type else None,
+                author=str(item.get("author")) if item.get("author") else None,
+                evidence_status="indirect index/reference"
+                if indirect
+                else "retrieved record excerpt",
+                date_conflict=conflict,
+                substantive_clinical_content=substantive,
+            )
+        )
     return tuple(entries)
 
 
@@ -168,14 +192,20 @@ def build_quality_instructions(plan: FreeQAPlan) -> str:
         "- Never call the answer comprehensive if the retrieved excerpts or available space do not cover the requested scope.",
     ]
     if plan.task == "chronology":
-        lines.extend([
-            "- For chronology, prioritize substantive injury, symptoms, diagnosis, investigation, treatment, work-capacity, claim, decision, and outcome events—not a catalogue of filenames.",
-            "- Present dated events oldest first, with a separate short section for date conflicts or uncertain dates.",
-        ])
+        lines.extend(
+            [
+                "- For chronology, prioritize substantive injury, symptoms, diagnosis, investigation, treatment, work-capacity, claim, decision, and outcome events—not a catalogue of filenames.",
+                "- Present dated events oldest first, with a separate short section for date conflicts or uncertain dates.",
+            ]
+        )
     elif plan.task == "comparison":
-        lines.append("- Compare the same proposition across sources and state whether any difference is material.")
+        lines.append(
+            "- Compare the same proposition across sources and state whether any difference is material."
+        )
     if plan.compact:
-        lines.append("- Use compact entries or a table so full coverage fits; avoid repeating citation metadata already rendered by the application.")
+        lines.append(
+            "- Use compact entries or a table so full coverage fits; avoid repeating citation metadata already rendered by the application."
+        )
     return "\n".join(lines)
 
 
@@ -228,19 +258,25 @@ def inspect_response(
     evidence = list(results)
     ledger = build_evidence_ledger(evidence)
     indirect_count = sum(entry.evidence_status == "indirect index/reference" for entry in ledger)
-    corpus_claim = bool(re.search(
-        r"\b(?:documents?|records?|excerpts?)\b[^.]{0,100}\b"
-        r"(?:primarily|mostly|largely)\b[^.]{0,80}\b"
-        r"(?:index|indices|administrative|lack(?:ing)? substantive|insubstantial)",
-        text, re.I,
-    ))
+    corpus_claim = bool(
+        re.search(
+            r"\b(?:documents?|records?|excerpts?)\b[^.]{0,100}\b"
+            r"(?:primarily|mostly|largely)\b[^.]{0,80}\b"
+            r"(?:index|indices|administrative|lack(?:ing)? substantive|insubstantial)",
+            text,
+            re.I,
+        )
+    )
     unsupported_corpus = bool(corpus_claim and ledger and indirect_count * 2 <= len(ledger))
-    speculative_date_error = bool(re.search(
-        r"\b(?:date|dates|metadata)\b[^.]{0,120}\b"
-        r"(?:likely|probably|apparently|appear(?:s)? to be)\b[^.]{0,80}\b"
-        r"(?:error|placeholder|ocr|template|default)",
-        text, re.I,
-    ))
+    speculative_date_error = bool(
+        re.search(
+            r"\b(?:date|dates|metadata)\b[^.]{0,120}\b"
+            r"(?:likely|probably|apparently|appear(?:s)? to be)\b[^.]{0,80}\b"
+            r"(?:error|placeholder|ocr|template|default)",
+            text,
+            re.I,
+        )
+    )
     grounded_dates: set[str] = set()
     for item in evidence:
         grounded_dates.update(_canonical_dates(str(item.get("text", ""))))

@@ -32,7 +32,9 @@ def get_vllm_status():
 
 
 @router.post(
-    "/vllm/switch", response_model=dict, status_code=202,
+    "/vllm/switch",
+    response_model=dict,
+    status_code=202,
     dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
     summary="Switch the exclusive vLLM inference slot",
 )
@@ -58,12 +60,14 @@ async def switch_vllm_slot(req: VllmSwitchRequest):
 
 
 @router.post(
-    "/vllm/stop", response_model=MessageResponse,
+    "/vllm/stop",
+    response_model=MessageResponse,
     dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
 )
 async def stop_vllm_slot():
     from settings_manager import load_settings, save_settings
     from vllm_lifecycle import stop_vllm
+
     try:
         await asyncio.to_thread(stop_vllm)
     except RuntimeError as exc:
@@ -89,7 +93,9 @@ def get_analysis_model_status():
 
 
 @router.post(
-    "/analysis/switch", response_model=dict, status_code=202,
+    "/analysis/switch",
+    response_model=dict,
+    status_code=202,
     dependencies=[Depends(verify_admin_key), Depends(require_remote_lifecycle_enabled)],
     summary="Start a guarded analysis model switch",
 )
@@ -138,6 +144,7 @@ async def set_startup_mode(req: StartupModeRequest):
     """Apply a workflow-oriented model profile and restore it next launch."""
     from settings_manager import load_settings, save_settings
     from vllm_lifecycle import stop_vllm, switch_vllm
+
     settings = load_settings()
 
     try:
@@ -170,10 +177,15 @@ def get_models():
 def get_status(role: str = Query("ocr", pattern="^(ocr|analysis)$")):
     """Return the current vLLM inference container status."""
     from vllm_lifecycle import status as slot_status
+
     slot = slot_status()
     available = bool(slot.get(role, {}).get("available"))
     status_text = f"{role.upper()} is {'ready' if available else 'inactive'}; active role: {slot.get('active_role', 'stopped')}"
-    badge_html = "<span class='badge-success'>Inference Server: Ready</span>" if available else "<span class='badge-stopped'>Role: Inactive</span>"
+    badge_html = (
+        "<span class='badge-success'>Inference Server: Ready</span>"
+        if available
+        else "<span class='badge-stopped'>Role: Inactive</span>"
+    )
     # Derive a machine-readable status from the badge
     status = "ready" if available else "stopped"
     if "Ready" in badge_html or "badge-success" in badge_html:
@@ -215,6 +227,7 @@ async def start_container():
     """Restore the persisted role in the exclusive inference slot."""
     from settings_manager import load_settings
     from vllm_lifecycle import switch_vllm
+
     settings = load_settings()
     role = settings.get("startup_mode", "analysis")
     role = {"analysis_262k": "analysis", "ocr_only": "ocr"}.get(role, role)
@@ -236,6 +249,7 @@ async def start_container():
 async def start_role_container(role: str):
     from analysis_profiles import switch_in_progress
     from docker_manager import set_vllm_role_running
+
     if role == "analysis" and switch_in_progress():
         raise HTTPException(status_code=409, detail="Analysis model switch is in progress")
 
@@ -253,6 +267,7 @@ async def start_role_container(role: str):
 async def stop_role_container(role: str):
     from analysis_profiles import switch_in_progress
     from docker_manager import set_vllm_role_running
+
     if role == "analysis" and switch_in_progress():
         raise HTTPException(status_code=409, detail="Analysis model switch is in progress")
 
@@ -296,7 +311,9 @@ async def create_container(req: DockerCreateRequest):
         await asyncio.to_thread(switch_vllm, "ocr")
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    settings.update({"startup_mode": "ocr", "model_name": OCR_MODEL, "server_url": "http://127.0.0.1:8000/v1"})
+    settings.update(
+        {"startup_mode": "ocr", "model_name": OCR_MODEL, "server_url": "http://127.0.0.1:8000/v1"}
+    )
     save_settings(settings)
     return MessageResponse(success=True, message="OCR inference is ready in the exclusive slot")
 

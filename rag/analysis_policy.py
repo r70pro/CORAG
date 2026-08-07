@@ -38,9 +38,7 @@ _HIGH_ASSURANCE_MODES = {"expert_analysis", "judge_analysis"}
 def get_analysis_policy(mode: str) -> AnalysisPolicy:
     """Return the authoritative server-side policy for an analysis mode."""
     normalized = (
-        mode
-        if mode in _EXTRACTION_MODES | _ANALYTICAL_MODES | _NO_RETRIEVAL_MODES
-        else "free_qa"
+        mode if mode in _EXTRACTION_MODES | _ANALYTICAL_MODES | _NO_RETRIEVAL_MODES else "free_qa"
     )
     if normalized in _NO_RETRIEVAL_MODES:
         return AnalysisPolicy(normalized, True, False, False, 0, 0.0, False)

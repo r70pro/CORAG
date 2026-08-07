@@ -145,9 +145,7 @@ def perform_reset_cleanup(
                 shutil.rmtree(pycache_path)
             except OSError as exc:
                 relative_path = pycache_path.relative_to(repo_dir)
-                errors.append(
-                    f"Failed to delete bytecode cache `{relative_path}`: {exc}"
-                )
+                errors.append(f"Failed to delete bytecode cache `{relative_path}`: {exc}")
                 continue
 
             freed_space += size

@@ -44,13 +44,25 @@ FAST_CHECKPOINT_VERSION = 4
 CHECKPOINT_ROOT = Path(__file__).resolve().parent.parent / "workspace" / "runtime" / "chronology"
 _ALLOWED_PRECISIONS = {"day", "month", "year", "unknown"}
 _ALLOWED_DATE_ROLES = {
-    "event_date", "encounter_date", "report_authored_date", "result_date",
-    "order_date", "historical_event_date", "document_header_date",
-    "date_of_birth", "relative_date", "duration", "review_interval",
-    "administrative_metadata", "ambiguous",
+    "event_date",
+    "encounter_date",
+    "report_authored_date",
+    "result_date",
+    "order_date",
+    "historical_event_date",
+    "document_header_date",
+    "date_of_birth",
+    "relative_date",
+    "duration",
+    "review_interval",
+    "administrative_metadata",
+    "ambiguous",
 }
 _EXCLUDED_DATE_ROLES = {
-    "date_of_birth", "duration", "review_interval", "administrative_metadata",
+    "date_of_birth",
+    "duration",
+    "review_interval",
+    "administrative_metadata",
 }
 # Australian clinical notes conventionally express weeks as /52 and months as
 # /12.  These expressions must never be interpreted as years or calendar dates.
@@ -62,8 +74,23 @@ _UNSUPPORTED_INFERENCE = re.compile(
     r"\b(likely|presumably|apparently|probably|routine|suggests that)\b", re.IGNORECASE
 )
 _MONTHS = {
-    name.lower(): index for index, name in enumerate(
-        ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"), 1
+    name.lower(): index
+    for index, name in enumerate(
+        (
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ),
+        1,
     )
 }
 _MONTHS.update({name[:3]: number for name, number in list(_MONTHS.items())})
@@ -131,12 +158,22 @@ class ChronologyEvent:
             return None
         value = dict(value)
         aliases = {
-            "d": "event_date", "p": "date_precision", "od": "date_original",
-            "dr": "date_role", "dq": "date_quote", "prr": "provider_role",
-            "t": "event_type", "pr": "provider", "f": "facility",
-            "s": "presenting_symptoms", "dx": "diagnosis",
-            "ix": "investigations_findings", "ip": "intervention_plan",
-            "a": "administrative_context", "src": "source_ids", "q": "source_quote",
+            "d": "event_date",
+            "p": "date_precision",
+            "od": "date_original",
+            "dr": "date_role",
+            "dq": "date_quote",
+            "prr": "provider_role",
+            "t": "event_type",
+            "pr": "provider",
+            "f": "facility",
+            "s": "presenting_symptoms",
+            "dx": "diagnosis",
+            "ix": "investigations_findings",
+            "ip": "intervention_plan",
+            "a": "administrative_context",
+            "src": "source_ids",
+            "q": "source_quote",
         }
         for short, full in aliases.items():
             if full not in value and short in value:
@@ -191,8 +228,13 @@ class ChronologyEvent:
         if date_warning:
             event.warnings.append(date_warning)
         for field_name in (
-            "provider", "facility", "presenting_symptoms", "diagnosis",
-            "investigations_findings", "intervention_plan", "administrative_context",
+            "provider",
+            "facility",
+            "presenting_symptoms",
+            "diagnosis",
+            "investigations_findings",
+            "intervention_plan",
+            "administrative_context",
         ):
             text = getattr(event, field_name)
             match = _UNSUPPORTED_INFERENCE.search(text) if text else None
@@ -437,20 +479,39 @@ def chronology_response_format(detail: str = "fast") -> dict[str, Any]:
         },
     }
     thorough_fields = [
-        "event_date", "date_precision", "date_original", "date_role",
-        "event_type", "provider", "facility", "presenting_symptoms",
-        "diagnosis", "investigations_findings", "intervention_plan",
-        "administrative_context", "source_ids", "source_quote",
+        "event_date",
+        "date_precision",
+        "date_original",
+        "date_role",
+        "event_type",
+        "provider",
+        "facility",
+        "presenting_symptoms",
+        "diagnosis",
+        "investigations_findings",
+        "intervention_plan",
+        "administrative_context",
+        "source_ids",
+        "source_quote",
     ]
     thorough_event = {
         "type": "object",
         "additionalProperties": False,
         "required": thorough_fields,
         "properties": {
-            **{name: missing_or_text for name in thorough_fields if name not in {"date_precision", "date_role", "source_ids"}},
+            **{
+                name: missing_or_text
+                for name in thorough_fields
+                if name not in {"date_precision", "date_role", "source_ids"}
+            },
             "date_precision": {"type": "string", "enum": ["day", "month", "year", "unknown"]},
             "date_role": {"type": "string", "enum": sorted(_ALLOWED_DATE_ROLES)},
-            "source_ids": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"type": "integer"}},
+            "source_ids": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 1,
+                "items": {"type": "integer"},
+            },
         },
     }
     page_size = FAST_EVENTS_PER_PAGE if detail == "fast" else THOROUGH_EVENTS_PER_PAGE
@@ -515,33 +576,27 @@ def _extract_validated_batch(
     events, rejected = parse_batch_response(response, batch)
     structured = _extract_json(response)
     truncated = "Incomplete response" in response
-    needs_repair = (
-        not structured
-        or not isinstance(structured.get("events"), list)
-        or rejected > 0
-    )
+    needs_repair = not structured or not isinstance(structured.get("events"), list) or rejected > 0
     if needs_repair and not truncated:
         if repair_callback:
             repair_callback()
         repair = extraction_messages(batch, detail)
-        repair.append({
-            "role": "user",
-            "content": (
-                f"Your previous response was invalid or contained {rejected} rejected event(s). "
-                "Return one corrected JSON object with an events array only. Preserve every "
-                "documented event. Every event must use exactly one source ID and one short, "
-                "contiguous verbatim quotation copied from that same source. Never join quotation "
-                "fragments with ellipses. Use the exact required missing-value wording. Do not add Markdown."
-            ),
-        })
+        repair.append(
+            {
+                "role": "user",
+                "content": (
+                    f"Your previous response was invalid or contained {rejected} rejected event(s). "
+                    "Return one corrected JSON object with an events array only. Preserve every "
+                    "documented event. Every event must use exactly one source ID and one short, "
+                    "contiguous verbatim quotation copied from that same source. Never join quotation "
+                    "fragments with ellipses. Use the exact required missing-value wording. Do not add Markdown."
+                ),
+            }
+        )
         response = llm(repair)
         events, rejected = parse_batch_response(response, batch)
         structured = _extract_json(response)
-    valid = bool(
-        structured
-        and isinstance(structured.get("events"), list)
-        and rejected == 0
-    )
+    valid = bool(structured and isinstance(structured.get("events"), list) and rejected == 0)
     if checkpoint_path and valid:
         _save_checkpoint(checkpoint_path, response)
     return events, rejected, valid
@@ -592,8 +647,7 @@ def _extract_pages(
     pages_completed = 0
     for page in range(1, FAST_MAX_PAGES_PER_BATCH + 1):
         checkpoint_path = (
-            _batch_checkpoint_path(checkpoint_dir, batch, detail, page)
-            if checkpoint_dir else None
+            _batch_checkpoint_path(checkpoint_dir, batch, detail, page) if checkpoint_dir else None
         )
         response = _load_checkpoint(checkpoint_path) if checkpoint_path else None
         if response is None:
@@ -610,7 +664,8 @@ def _extract_pages(
         raw_events = payload.get("events") if payload else None
         if (
             not isinstance(raw_events, list)
-            or len(raw_events) > (FAST_EVENTS_PER_PAGE if detail == "fast" else THOROUGH_EVENTS_PER_PAGE)
+            or len(raw_events)
+            > (FAST_EVENTS_PER_PAGE if detail == "fast" else THOROUGH_EVENTS_PER_PAGE)
             or not isinstance(payload.get("complete"), bool)
         ):
             return accepted, rejected_total, pages_completed, False
@@ -670,7 +725,9 @@ def _batch_context(batch: list[dict[str, Any]]) -> str:
             "source_char_start": chunk.get("source_char_start"),
             "source_char_end": chunk.get("source_char_end"),
         }
-        blocks.append(f"SOURCE {index} METADATA\n{json.dumps(metadata, ensure_ascii=False)}\nTEXT\n{chunk['text']}")
+        blocks.append(
+            f"SOURCE {index} METADATA\n{json.dumps(metadata, ensure_ascii=False)}\nTEXT\n{chunk['text']}"
+        )
     return "\n\n---\n\n".join(blocks)
 
 
@@ -678,38 +735,42 @@ def extraction_messages(
     batch: list[dict[str, Any]], detail: str = "thorough"
 ) -> list[dict[str, str]]:
     thorough_schema = {
-        "events": [{
-            "event_date": "YYYY-MM-DD, YYYY-MM, YYYY, or empty",
-            "date_precision": "day | month | year | unknown",
-            "date_original": "verbatim date expression",
-            "date_role": "event_date | encounter_date | historical_event_date | other allowed role",
-            "event_type": "consultation/procedure/investigation/etc",
-            "provider": MISSING,
-            "facility": MISSING,
-            "presenting_symptoms": MISSING,
-            "diagnosis": MISSING,
-            "investigations_findings": MISSING,
-            "intervention_plan": MISSING,
-            "administrative_context": "",
-            "source_ids": [1],
-            "source_quote": "short verbatim supporting excerpt",
-        }],
+        "events": [
+            {
+                "event_date": "YYYY-MM-DD, YYYY-MM, YYYY, or empty",
+                "date_precision": "day | month | year | unknown",
+                "date_original": "verbatim date expression",
+                "date_role": "event_date | encounter_date | historical_event_date | other allowed role",
+                "event_type": "consultation/procedure/investigation/etc",
+                "provider": MISSING,
+                "facility": MISSING,
+                "presenting_symptoms": MISSING,
+                "diagnosis": MISSING,
+                "investigations_findings": MISSING,
+                "intervention_plan": MISSING,
+                "administrative_context": "",
+                "source_ids": [1],
+                "source_quote": "short verbatim supporting excerpt",
+            }
+        ],
         "complete": "boolean",
     }
     fast_schema = {
-        "events": [{
-            "d": "YYYY-MM-DD, YYYY-MM, YYYY, or empty",
-            "p": "day | month | year | unknown",
-            "od": "verbatim date",
-            "dr": "event_date | encounter_date | historical_event_date | other allowed role",
-            "t": "short event type",
-            "pr": f"specific documented provider/facility or exactly: {MISSING}",
-            "s": f"brief symptoms/context or exactly: {MISSING}",
-            "dx": f"brief diagnosis/finding or exactly: {MISSING}",
-            "ip": f"specific documented action/plan or exactly: {MISSING}",
-            "src": [1],
-            "q": "one short contiguous verbatim quotation from the single cited source",
-        }],
+        "events": [
+            {
+                "d": "YYYY-MM-DD, YYYY-MM, YYYY, or empty",
+                "p": "day | month | year | unknown",
+                "od": "verbatim date",
+                "dr": "event_date | encounter_date | historical_event_date | other allowed role",
+                "t": "short event type",
+                "pr": f"specific documented provider/facility or exactly: {MISSING}",
+                "s": f"brief symptoms/context or exactly: {MISSING}",
+                "dx": f"brief diagnosis/finding or exactly: {MISSING}",
+                "ip": f"specific documented action/plan or exactly: {MISSING}",
+                "src": [1],
+                "q": "one short contiguous verbatim quotation from the single cited source",
+            }
+        ],
         "complete": "boolean",
     }
     schema = fast_schema if detail == "fast" else thorough_schema
@@ -807,8 +868,20 @@ def _ground_provider_and_facility(event: ChronologyEvent, source: dict[str, Any]
 
 
 _GROUNDING_STOP_WORDS = {
-    "with", "from", "that", "this", "were", "been", "into", "after",
-    "before", "available", "documented", "text", "patient", "event",
+    "with",
+    "from",
+    "that",
+    "this",
+    "were",
+    "been",
+    "into",
+    "after",
+    "before",
+    "available",
+    "documented",
+    "text",
+    "patient",
+    "event",
 }
 
 
@@ -816,14 +889,18 @@ def _ground_descriptive_fields(event: ChronologyEvent, source: dict[str, Any]) -
     """Remove descriptive fields whose material terms are absent from the source."""
     source_tokens = set(re.findall(r"[a-z0-9]{3,}", str(source.get("text") or "").lower()))
     for field_name in (
-        "presenting_symptoms", "diagnosis", "investigations_findings",
-        "intervention_plan", "administrative_context",
+        "presenting_symptoms",
+        "diagnosis",
+        "investigations_findings",
+        "intervention_plan",
+        "administrative_context",
     ):
         value = getattr(event, field_name)
         if value in {MISSING, NOT_APPLICABLE, ""}:
             continue
         tokens = {
-            token for token in re.findall(r"[a-z0-9]{3,}", value.lower())
+            token
+            for token in re.findall(r"[a-z0-9]{3,}", value.lower())
             if token not in _GROUNDING_STOP_WORDS
         }
         if tokens and len(tokens & source_tokens) / len(tokens) < 0.5:
@@ -831,7 +908,9 @@ def _ground_descriptive_fields(event: ChronologyEvent, source: dict[str, Any]) -
             event.warnings.append(f"Removed {field_name} not grounded in source text")
 
 
-def parse_batch_response(text: str, batch: list[dict[str, Any]]) -> tuple[list[ChronologyEvent], int]:
+def parse_batch_response(
+    text: str, batch: list[dict[str, Any]]
+) -> tuple[list[ChronologyEvent], int]:
     payload = _extract_json(text)
     if not payload or not isinstance(payload.get("events"), list):
         return [], 0
@@ -930,7 +1009,7 @@ def _event_source_label(event: ChronologyEvent) -> str:
     quote = " ".join(event.source_quote.split()).strip()
     if len(quote) > 140:
         quote = quote[:137].rstrip() + "…"
-    return f'{sources}; verification: “{quote}”' if quote else sources
+    return f"{sources}; verification: “{quote}”" if quote else sources
 
 
 def render_chronology(events: list[ChronologyEvent], audit: ChronologyAudit) -> str:
@@ -948,18 +1027,27 @@ def render_chronology(events: list[ChronologyEvent], audit: ChronologyAudit) -> 
         ]
         if audit.profile == "ultra_fast":
             lines.insert(1, "")
-            lines.insert(2, "> ⚡ Whole-case dated-text index with bounded semantic filtering. It may not resolve implicit dates or separate multiple events described in one excerpt.")
+            lines.insert(
+                2,
+                "> ⚡ Whole-case dated-text index with bounded semantic filtering. It may not resolve implicit dates or separate multiple events described in one excerpt.",
+            )
         if incomplete:
-            lines.insert(1, "\n> ⚠️ **INCOMPLETE CHRONOLOGY:** Not every indexed source unit completed successfully.")
+            lines.insert(
+                1,
+                "\n> ⚠️ **INCOMPLETE CHRONOLOGY:** Not every indexed source unit completed successfully.",
+            )
         for event in events:
             provider = event.provider
             if event.provider_role == "documenting_provider" and provider != MISSING:
                 provider = f"Recorded by: {provider}"
             if event.facility not in {MISSING, NOT_APPLICABLE, ""}:
-                provider = f"{provider}; {event.facility}" if provider != MISSING else event.facility
+                provider = (
+                    f"{provider}; {event.facility}" if provider != MISSING else event.facility
+                )
             summary_parts = [event.event_type]
             summary_parts.extend(
-                value for value in (
+                value
+                for value in (
                     event.presenting_symptoms,
                     event.diagnosis,
                     event.investigations_findings,
@@ -968,53 +1056,94 @@ def render_chronology(events: list[ChronologyEvent], audit: ChronologyAudit) -> 
             )
             sources = _event_source_label(event)
             lines.append(
-                "| " + " | ".join(_escape(value) for value in (
-                    display_date(event), provider, "; ".join(summary_parts),
-                    event.intervention_plan, sources,
-                )) + " |"
+                "| "
+                + " | ".join(
+                    _escape(value)
+                    for value in (
+                        display_date(event),
+                        provider,
+                        "; ".join(summary_parts),
+                        event.intervention_plan,
+                        sources,
+                    )
+                )
+                + " |"
             )
     else:
         lines = [
-        "## Comprehensive Medicolegal Chronology",
-        "",
-        "| Date | Provider/Facility | Presenting Symptoms | Diagnosis | Investigations/Findings | Intervention/Plan | Source |",
-        "|---|---|---|---|---|---|---|",
+            "## Comprehensive Medicolegal Chronology",
+            "",
+            "| Date | Provider/Facility | Presenting Symptoms | Diagnosis | Investigations/Findings | Intervention/Plan | Source |",
+            "|---|---|---|---|---|---|---|",
         ]
         if incomplete:
-            lines.insert(1, "\n> ⚠️ **INCOMPLETE CHRONOLOGY:** Not every indexed source unit completed successfully.")
+            lines.insert(
+                1,
+                "\n> ⚠️ **INCOMPLETE CHRONOLOGY:** Not every indexed source unit completed successfully.",
+            )
         for event in events:
             provider = event.provider
             if event.facility not in {MISSING, NOT_APPLICABLE, ""}:
-                provider = f"{provider}; {event.facility}" if provider != MISSING else event.facility
+                provider = (
+                    f"{provider}; {event.facility}" if provider != MISSING else event.facility
+                )
             sources = _event_source_label(event)
             lines.append(
-                "| " + " | ".join(_escape(value) for value in (
-                    display_date(event), provider, event.presenting_symptoms,
-                    event.diagnosis, event.investigations_findings,
-                    event.intervention_plan, sources,
-                )) + " |"
+                "| "
+                + " | ".join(
+                    _escape(value)
+                    for value in (
+                        display_date(event),
+                        provider,
+                        event.presenting_symptoms,
+                        event.diagnosis,
+                        event.investigations_findings,
+                        event.intervention_plan,
+                        sources,
+                    )
+                )
+                + " |"
             )
-    lines.extend([
-        "", "### Completeness and data-quality audit", "",
-        f"- Chronology profile: **{audit.profile.title()}**",
-        f"- Documents audited: **{audit.documents_audited}/{audit.documents_total}**",
-        f"- Source chunks successfully processed: **{audit.chunks_completed}/{audit.chunks_total}**",
-        f"- Extraction batches processed: **{audit.batches_processed}/{audit.batches_total}**",
-        f"- Valid extraction pages checkpointed: **{audit.pages_completed}**",
-        f"- Source chunks completed: **{audit.chunks_completed}/{audit.chunks_total}**",
-        f"- Events extracted before deduplication: **{audit.events_extracted}**",
-        f"- Chronology events rendered: **{audit.events_rendered}**",
-        f"- Events rejected for missing/invalid provenance or source quotation: **{audit.rejected_without_source}**",
-        f"- Failed extraction batches: **{audit.batches_failed}**",
-    ])
+    lines.extend(
+        [
+            "",
+            "### Completeness and data-quality audit",
+            "",
+            f"- Chronology profile: **{audit.profile.title()}**",
+            f"- Documents audited: **{audit.documents_audited}/{audit.documents_total}**",
+            f"- Source chunks successfully processed: **{audit.chunks_completed}/{audit.chunks_total}**",
+            f"- Extraction batches processed: **{audit.batches_processed}/{audit.batches_total}**",
+            f"- Valid extraction pages checkpointed: **{audit.pages_completed}**",
+            f"- Source chunks completed: **{audit.chunks_completed}/{audit.chunks_total}**",
+            f"- Events extracted before deduplication: **{audit.events_extracted}**",
+            f"- Chronology events rendered: **{audit.events_rendered}**",
+            f"- Events rejected for missing/invalid provenance or source quotation: **{audit.rejected_without_source}**",
+            f"- Failed extraction batches: **{audit.batches_failed}**",
+        ]
+    )
     warning_count = sum(len(event.warnings) for event in events)
     lines.append(f"- Entries carrying validation warnings: **{warning_count}**")
     if audit.documents_audited < audit.documents_total:
-        lines.extend(["", "> ⚠️ **Incomplete chronology:** One or more indexed documents contained no auditable source chunks."])
+        lines.extend(
+            [
+                "",
+                "> ⚠️ **Incomplete chronology:** One or more indexed documents contained no auditable source chunks.",
+            ]
+        )
     if audit.batches_failed:
-        lines.extend(["", "> ⚠️ **Incomplete chronology:** One or more source batches could not be extracted. Do not rely on this output as a complete record audit."])
+        lines.extend(
+            [
+                "",
+                "> ⚠️ **Incomplete chronology:** One or more source batches could not be extracted. Do not rely on this output as a complete record audit.",
+            ]
+        )
     if warning_count:
-        lines.extend(["", "> ⚠️ Entries with incomplete or invalid dates, or potentially inferential language, require source review."])
+        lines.extend(
+            [
+                "",
+                "> ⚠️ Entries with incomplete or invalid dates, or potentially inferential language, require source review.",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -1067,20 +1196,33 @@ def _ultra_fast_events(
                 rejected += 1
                 continue
             left = max(text.rfind(". ", 0, match.start()), text.rfind("; ", 0, match.start()))
-            right_candidates = [position for position in (text.find(". ", match.end()), text.find("; ", match.end())) if position >= 0]
+            right_candidates = [
+                position
+                for position in (text.find(". ", match.end()), text.find("; ", match.end()))
+                if position >= 0
+            ]
             start = max(left + 2, match.start() - 140)
-            end = min(min(right_candidates) + 1 if right_candidates else len(text), match.end() + 220)
+            end = min(
+                min(right_candidates) + 1 if right_candidates else len(text), match.end() + 220
+            )
             # A sentence or flattened form can enumerate multiple dated events.
             # In that case use the clause beginning at this date, rather than a
             # shared window that leaks the prior event into the next date.
             sentence_date_matches = [
-                candidate for candidate in date_matches
-                if left < candidate.start() < (min(right_candidates) if right_candidates else len(text))
+                candidate
+                for candidate in date_matches
+                if left
+                < candidate.start()
+                < (min(right_candidates) if right_candidates else len(text))
             ]
             if len(sentence_date_matches) > 1:
                 start = match.start()
                 following = next(
-                    (candidate for candidate in sentence_date_matches if candidate.start() > match.start()),
+                    (
+                        candidate
+                        for candidate in sentence_date_matches
+                        if candidate.start() > match.start()
+                    ),
                     None,
                 )
                 end = following.start() if following else end
@@ -1096,7 +1238,11 @@ def _ultra_fast_events(
             lower = quote.lower()
             local_prefix = text[max(0, match.start() - 35) : match.start()]
             local_context = text[max(0, match.start() - 100) : min(len(text), match.end() + 150)]
-            if re.search(r"(?:date of birth|birthdate|d\.?o\.?b\.?)\s*:?[\s\w,/-]*$", local_prefix, re.IGNORECASE):
+            if re.search(
+                r"(?:date of birth|birthdate|d\.?o\.?b\.?)\s*:?[\s\w,/-]*$",
+                local_prefix,
+                re.IGNORECASE,
+            ):
                 continue
             if _ULTRA_NON_EVENT.search(quote) or not _ULTRA_EVENT_SIGNAL.search(local_context):
                 continue
@@ -1108,37 +1254,54 @@ def _ultra_fast_events(
                 if (
                     not _ULTRA_YEAR_SIGNAL.search(local_context)
                     or len(re.findall(r"[A-Za-z]{3,}", quote)) < 3
-                    or re.search(r"(?:\+61|@|\b(?:act|section|division|course|certificate)\b)", quote, re.IGNORECASE)
+                    or re.search(
+                        r"(?:\+61|@|\b(?:act|section|division|course|certificate)\b)",
+                        quote,
+                        re.IGNORECASE,
+                    )
                 ):
                     continue
-            if any(word in lower for word in ("mri", "x-ray", "xray", "ct ", "ultrasound", "scan", "imaging")):
+            if any(
+                word in lower
+                for word in ("mri", "x-ray", "xray", "ct ", "ultrasound", "scan", "imaging")
+            ):
                 event_type = "Investigation/imaging"
             elif any(word in lower for word in ("surgery", "operation", "procedure", "injection")):
                 event_type = "Procedure/treatment"
-            elif any(word in lower for word in ("claim", "insurer", "workcover", "compensation", "capacity")):
+            elif any(
+                word in lower
+                for word in ("claim", "insurer", "workcover", "compensation", "capacity")
+            ):
                 event_type = "Administrative/work capacity"
             else:
                 event_type = "Dated record event"
             provider = str(chunk.get("author") or MISSING).strip()
-            if re.search(r"^(?:electronically approved by|unknown)|\bvisit$", provider, re.IGNORECASE):
+            if re.search(
+                r"^(?:electronically approved by|unknown)|\bvisit$", provider, re.IGNORECASE
+            ):
                 provider = MISSING
-            events.append(ChronologyEvent(
-                event_date=event_date,
-                date_precision=precision,
-                date_original=match.group(0),
-                date_role=(
-                    "historical_event_date"
-                    if re.search(r"\b(?:history|historical|prior|previous|ago|in around|in about)\b", lower)
-                    else "event_date"
-                ),
-                event_type=event_type,
-                provider=provider,
-                provider_role="documenting_provider" if provider != MISSING else "unknown",
-                presenting_symptoms=quote,
-                source_ids=[1],
-                source_quote=quote,
-                sources=[chunk],
-            ))
+            events.append(
+                ChronologyEvent(
+                    event_date=event_date,
+                    date_precision=precision,
+                    date_original=match.group(0),
+                    date_role=(
+                        "historical_event_date"
+                        if re.search(
+                            r"\b(?:history|historical|prior|previous|ago|in around|in about)\b",
+                            lower,
+                        )
+                        else "event_date"
+                    ),
+                    event_type=event_type,
+                    provider=provider,
+                    provider_role="documenting_provider" if provider != MISSING else "unknown",
+                    presenting_symptoms=quote,
+                    source_ids=[1],
+                    source_quote=quote,
+                    sources=[chunk],
+                )
+            )
         if progress_callback and (chunk_index + 1) % 100 == 0:
             progress_callback(
                 0.08 + 0.72 * (chunk_index + 1) / len(chunks),
@@ -1159,10 +1322,14 @@ def _deduplicate_ultra_events(events: list[ChronologyEvent]) -> list[ChronologyE
         )
         tokens = set(re.findall(r"[a-z0-9]{3,}", event.source_quote.lower()))
         duplicates = token_sets.setdefault(key, [])
-        duplicate = next((
-            prior_event for prior, prior_event in duplicates
-            if tokens and len(tokens & prior) / max(len(tokens | prior), 1) >= 0.72
-        ), None)
+        duplicate = next(
+            (
+                prior_event
+                for prior, prior_event in duplicates
+                if tokens and len(tokens & prior) / max(len(tokens | prior), 1) >= 0.72
+            ),
+            None,
+        )
         if duplicate is not None:
             known = {_source_identity(source) for source in duplicate.sources}
             duplicate.sources.extend(
@@ -1180,24 +1347,50 @@ def _adjudicate_ultra_events(
     progress_callback: Callable[[float, str], None] | None = None,
 ) -> list[ChronologyEvent]:
     """Use one bounded concurrent wave to reject deterministic false positives."""
-    groups = [events[i:i + ULTRA_CANDIDATES_PER_REQUEST] for i in range(0, len(events), ULTRA_CANDIDATES_PER_REQUEST)]
+    groups = [
+        events[i : i + ULTRA_CANDIDATES_PER_REQUEST]
+        for i in range(0, len(events), ULTRA_CANDIDATES_PER_REQUEST)
+    ]
     schema = {
         "type": "json_schema",
-        "json_schema": {"name": "timeline_candidate_filter", "strict": True, "schema": {
-            "type": "object", "additionalProperties": False, "required": ["keep"],
-            "properties": {"keep": {"type": "array",
-                "items": {"type": "integer", "minimum": 1, "maximum": ULTRA_CANDIDATES_PER_REQUEST}}},
-        }},
+        "json_schema": {
+            "name": "timeline_candidate_filter",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["keep"],
+                "properties": {
+                    "keep": {
+                        "type": "array",
+                        "items": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": ULTRA_CANDIDATES_PER_REQUEST,
+                        },
+                    }
+                },
+            },
+        },
     }
 
     def adjudicate(index: int, group: list[ChronologyEvent]):
-        candidates = [{"id": i, "date": e.event_date, "excerpt": e.source_quote} for i, e in enumerate(group, 1)]
-        messages = [{"role": "system", "content": (
-            "You are filtering a medicolegal chronology. Keep only substantive patient-specific clinical, "
-            "treatment, investigation, injury, work-capacity, or claim events. Reject DOB/header repetitions, "
-            "document inventories, legal boilerplate, contact details, form metadata, education/employment lists, "
-            "and fragments that do not describe an event. Return JSON only."
-        )}, {"role": "user", "content": json.dumps(candidates, ensure_ascii=False)}]
+        candidates = [
+            {"id": i, "date": e.event_date, "excerpt": e.source_quote}
+            for i, e in enumerate(group, 1)
+        ]
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are filtering a medicolegal chronology. Keep only substantive patient-specific clinical, "
+                    "treatment, investigation, injury, work-capacity, or claim events. Reject DOB/header repetitions, "
+                    "document inventories, legal boilerplate, contact details, form metadata, education/employment lists, "
+                    "and fragments that do not describe an event. Return JSON only."
+                ),
+            },
+            {"role": "user", "content": json.dumps(candidates, ensure_ascii=False)},
+        ]
         response = _call_llm(llm, messages, schema)
         payload = _extract_json(response) or {}
         keep = payload.get("keep")
@@ -1209,13 +1402,18 @@ def _adjudicate_ultra_events(
 
     results: dict[int, list[ChronologyEvent]] = {}
     workers = min(FAST_DEFAULT_CONCURRENCY, len(groups))
-    with ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="ultra-chronology") as pool:
+    with ThreadPoolExecutor(
+        max_workers=max(1, workers), thread_name_prefix="ultra-chronology"
+    ) as pool:
         futures = [pool.submit(adjudicate, index, group) for index, group in enumerate(groups)]
         for completed, future in enumerate(as_completed(futures), 1):
             index, selected = future.result()
             results[index] = selected
             if progress_callback:
-                progress_callback(0.80 + 0.12 * completed / len(groups), f"Ultra-Fast semantic filter: {completed}/{len(groups)} candidate groups completed...")
+                progress_callback(
+                    0.80 + 0.12 * completed / len(groups),
+                    f"Ultra-Fast semantic filter: {completed}/{len(groups)} candidate groups completed...",
+                )
     return [event for index in range(len(groups)) for event in results[index]]
 
 
@@ -1243,7 +1441,9 @@ def generate_comprehensive_chronology(
     extracted: list[ChronologyEvent] = []
     if progress_callback:
         profile_description = (
-            "compact complete-event extraction" if detail == "fast" else "detailed clinical-field extraction"
+            "compact complete-event extraction"
+            if detail == "fast"
+            else "detailed clinical-field extraction"
         )
         progress_callback(
             0.05,
@@ -1267,7 +1467,9 @@ def generate_comprehensive_chronology(
         events = deduplicate_events(extracted)
         audit.events_rendered = len(events)
         if progress_callback:
-            progress_callback(0.94, f"Rendering {len(events)} deterministic dated excerpts with provenance...")
+            progress_callback(
+                0.94, f"Rendering {len(events)} deterministic dated excerpts with provenance..."
+            )
         return render_chronology(events, audit)
 
     if detail == "fast":
@@ -1309,7 +1511,9 @@ def generate_comprehensive_chronology(
             result = _extract_fast_pages(batch, llm, checkpoint_dir, report_page)
             return index, batch, result
 
-        results: dict[int, tuple[list[dict[str, Any]], tuple[list[ChronologyEvent], int, int, bool]]] = {}
+        results: dict[
+            int, tuple[list[dict[str, Any]], tuple[list[ChronologyEvent], int, int, bool]]
+        ] = {}
         if progress_callback:
             progress_callback(
                 0.07,
@@ -1349,11 +1553,15 @@ def generate_comprehensive_chronology(
             extracted.extend(results[index][1][0])
         audit.events_extracted = len(extracted)
         if progress_callback:
-            progress_callback(0.84, f"Validating and deduplicating {len(extracted)} extracted events...")
+            progress_callback(
+                0.84, f"Validating and deduplicating {len(extracted)} extracted events..."
+            )
         events = deduplicate_events(extracted)
         audit.events_rendered = len(events)
         if progress_callback:
-            progress_callback(0.94, f"Rendering {len(events)} validated chronology events with provenance...")
+            progress_callback(
+                0.94, f"Rendering {len(events)} validated chronology events with provenance..."
+            )
         return render_chronology(events, audit)
 
     def process_batch(batch: list[dict[str, Any]], label: str, progress: float, depth: int = 0):
@@ -1372,6 +1580,7 @@ def generate_comprehensive_chronology(
                 ),
             )
         if detail == "fast":
+
             def report_page(pages: int, batch_events: int) -> None:
                 if progress_callback:
                     progress_callback(
@@ -1433,9 +1642,13 @@ def generate_comprehensive_chronology(
             return "Chronology generation cancelled."
     audit.events_extracted = len(extracted)
     if progress_callback:
-        progress_callback(0.84, f"Validating and deduplicating {len(extracted)} extracted events...")
+        progress_callback(
+            0.84, f"Validating and deduplicating {len(extracted)} extracted events..."
+        )
     events = deduplicate_events(extracted)
     audit.events_rendered = len(events)
     if progress_callback:
-        progress_callback(0.94, f"Rendering {len(events)} validated chronology events with provenance...")
+        progress_callback(
+            0.94, f"Rendering {len(events)} validated chronology events with provenance..."
+        )
     return render_chronology(events, audit)
